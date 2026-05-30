@@ -10,11 +10,20 @@ export type PlanDetailView = {
   plan: Plan | null;
   state: PlanState | null;
   canApprove: boolean;
+  /** 执行失败且尚无 PR 时可从控制台重试 */
+  canRetryExecute: boolean;
 };
+
+function canRetryExecuteFor(state: PlanState | null): boolean {
+  if (!state || state.status !== "failed") return false;
+  if (state.prUrl) return false;
+  return true;
+}
 
 export function getPlanDetailView(projectPath: string, planId: string): PlanDetailView | null {
   const approval = getApprovalRecord(projectPath, planId);
   const state = getPlanState(projectPath, planId);
+  const retry = canRetryExecuteFor(state);
 
   if (approval) {
     return {
@@ -24,6 +33,7 @@ export function getPlanDetailView(projectPath: string, planId: string): PlanDeta
       plan: approval.plan,
       state,
       canApprove: approval.status === "pending",
+      canRetryExecute: retry,
     };
   }
 
@@ -36,6 +46,7 @@ export function getPlanDetailView(projectPath: string, planId: string): PlanDeta
       plan: record.plan,
       state,
       canApprove: state?.status === "pending_approval",
+      canRetryExecute: retry,
     };
   }
 
@@ -47,6 +58,7 @@ export function getPlanDetailView(projectPath: string, planId: string): PlanDeta
       plan: null,
       state,
       canApprove: state.status === "pending_approval",
+      canRetryExecute: retry,
     };
   }
 

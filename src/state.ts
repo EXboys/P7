@@ -1,48 +1,266 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
-import type { PlanState, PlanStateStatus } from "./types.ts";
+import { legacyProjectDir, p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
+import type { PlanState, PlanStateStatus, VcsAccountPublishResult } from "./types.ts";
 
-function stateReadPath(projectPath: string): string {
+const STATUS_VALUES: PlanStateStatus[] = [
+  "planned",
+  "pending_approval",
+  "approved",
+  "rejected",
+  "executing",
+  "pushed",
+  "pr_opened",
+  "merged",
+  "failed",
+];
+
+const dbCache = new Map<string, Database>();
+
+export function dbPath(projectPath: string): string {
+  return join(p7ProjectDir(projectPath), "state.db");
+}
+
+function stateJsonPath(projectPath: string): string {
   return join(projectDataDirForRead(projectPath), "state.json");
 }
 
-function stateWritePath(projectPath: string): string {
-  return join(p7ProjectDir(projectPath), "state.json");
-}
-
-function loadAll(projectPath: string): PlanState[] {
-  const path = stateReadPath(projectPath);
-  if (!existsSync(path)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf-8"));
-    return Array.isArray(raw) ? (raw as PlanState[]) : [];
-  } catch {
-    return [];
+function rowToPlanState(row: Record<string, unknown>): PlanState {
+  const accountRaw = row.account_results as string | null | undefined;
+  let accountResults: VcsAccountPublishResult[] | undefined;
+  if (accountRaw) {
+    try {
+      accountResults = JSON.parse(accountRaw) as VcsAccountPublishResult[];
+    } catch {
+      accountResults = undefined;
+    }
   }
+  const state: PlanState = {
+    planId: String(row.plan_id),
+    projectPath: String(row.project_path),
+    goal: String(row.goal),
+    title: String(row.title),
+    status: row.status as PlanStateStatus,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+  if (row.branch) state.branch = String(row.branch);
+  if (row.commit_sha) state.commitSha = String(row.commit_sha);
+  if (row.review_url) state.reviewUrl = String(row.review_url);
+  if (row.pr_url) state.prUrl = String(row.pr_url);
+  if (row.issue_url) state.issueUrl = String(row.issue_url);
+  if (row.merge_status) {
+    state.mergeStatus = row.merge_status as PlanState["mergeStatus"];
+  }
+  if (accountResults?.length) state.accountResults = accountResults;
+  if (row.error) state.error = String(row.error);
+  return state;
 }
 
-function saveAll(projectPath: string, states: PlanState[]): void {
+function planStateBinds(state: PlanState): Record<string, string | null> {
+  return {
+    $plan_id: state.planId,
+    $project_path: state.projectPath,
+    $goal: state.goal,
+    $title: state.title,
+    $status: state.status,
+    $created_at: state.createdAt,
+    $updated_at: state.updatedAt,
+    $branch: state.branch ?? null,
+    $commit_sha: state.commitSha ?? null,
+    $review_url: state.reviewUrl ?? null,
+    $pr_url: state.prUrl ?? null,
+    $issue_url: state.issueUrl ?? null,
+    $merge_status: state.mergeStatus ?? null,
+    $account_results: state.accountResults?.length
+      ? JSON.stringify(state.accountResults)
+      : null,
+    $error: state.error ?? null,
+  };
+}
+
+function withBusyRetry<T>(fn: () => T): T {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return fn();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("SQLITE_BUSY") && attempt < 2) {
+        Bun.sleepSync(50);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("withBusyRetry: unreachable");
+}
+
+function migrateFromJsonIfNeeded(db: Database, projectPath: string): void {
+  const count = Number(
+    (db.query("SELECT COUNT(*) AS c FROM plan_states").get() as { c: number }).c,
+  );
+  if (count > 0) return;
+
+  const candidates = [
+    join(p7ProjectDir(projectPath), "state.json"),
+    join(legacyProjectDir(projectPath), "state.json"),
+    stateJsonPath(projectPath),
+  ];
+  let raw: PlanState[] = [];
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf-8"));
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        raw = parsed as PlanState[];
+        break;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  if (raw.length === 0) return;
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO plan_states (
+      plan_id, project_path, goal, title, status, created_at, updated_at,
+      branch, commit_sha, review_url, pr_url, issue_url, merge_status,
+      account_results, error
+    ) VALUES (
+      $plan_id, $project_path, $goal, $title, $status, $created_at, $updated_at,
+      $branch, $commit_sha, $review_url, $pr_url, $issue_url, $merge_status,
+      $account_results, $error
+    )
+  `);
+
+  const runMigration = db.transaction((states: PlanState[]) => {
+    for (const s of states) {
+      if (!s.planId || !STATUS_VALUES.includes(s.status)) continue;
+      insert.run(planStateBinds(s));
+    }
+  });
+  runMigration(raw);
+}
+
+export function initDb(projectPath: string): Database {
+  const cached = dbCache.get(projectPath);
+  if (cached) return cached;
+
   const dir = p7ProjectDir(projectPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(stateWritePath(projectPath), JSON.stringify(states, null, 2));
+
+  const db = new Database(dbPath(projectPath));
+  db.run("PRAGMA journal_mode = WAL");
+  db.run("PRAGMA foreign_keys = ON");
+
+  const statusList = STATUS_VALUES.map((s) => `'${s}'`).join(", ");
+  db.run(`
+    CREATE TABLE IF NOT EXISTS plan_states (
+      plan_id TEXT PRIMARY KEY,
+      project_path TEXT NOT NULL,
+      goal TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (${statusList})),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      branch TEXT,
+      commit_sha TEXT,
+      review_url TEXT,
+      pr_url TEXT,
+      issue_url TEXT,
+      merge_status TEXT,
+      account_results TEXT,
+      error TEXT
+    )
+  `);
+  db.run(
+    `CREATE INDEX IF NOT EXISTS idx_plan_states_updated ON plan_states(updated_at DESC)`,
+  );
+
+  migrateFromJsonIfNeeded(db, projectPath);
+  dbCache.set(projectPath, db);
+  return db;
+}
+
+export function closeDb(projectPath?: string): void {
+  if (projectPath) {
+    const db = dbCache.get(projectPath);
+    if (db) {
+      db.close();
+      dbCache.delete(projectPath);
+    }
+    return;
+  }
+  for (const [key, db] of dbCache) {
+    db.close();
+    dbCache.delete(key);
+  }
 }
 
 export function upsertPlanState(
   projectPath: string,
   next: Omit<PlanState, "updatedAt"> & { updatedAt?: string },
 ): PlanState {
-  const states = loadAll(projectPath);
-  const idx = states.findIndex((s) => s.planId === next.planId);
+  const db = initDb(projectPath);
+  const existing = getPlanState(projectPath, next.planId);
   const updated: PlanState = {
-    ...(idx >= 0 ? states[idx] : {}),
+    ...(existing ?? {}),
     ...next,
+    planId: next.planId,
+    projectPath: next.projectPath,
+    goal: next.goal,
+    title: next.title,
+    status: next.status,
+    createdAt: existing?.createdAt ?? next.createdAt ?? new Date().toISOString(),
     updatedAt: next.updatedAt ?? new Date().toISOString(),
   };
-  if (idx >= 0) states[idx] = updated;
-  else states.push(updated);
-  saveAll(projectPath, states);
-  return updated;
+  if ("error" in next && next.error === undefined) delete updated.error;
+
+  const stmt = db.prepare(`
+    INSERT INTO plan_states (
+      plan_id, project_path, goal, title, status, created_at, updated_at,
+      branch, commit_sha, review_url, pr_url, issue_url, merge_status,
+      account_results, error
+    ) VALUES (
+      $plan_id, $project_path, $goal, $title, $status, $created_at, $updated_at,
+      $branch, $commit_sha, $review_url, $pr_url, $issue_url, $merge_status,
+      $account_results, $error
+    )
+    ON CONFLICT(plan_id) DO UPDATE SET
+      project_path = excluded.project_path,
+      goal = excluded.goal,
+      title = excluded.title,
+      status = excluded.status,
+      updated_at = excluded.updated_at,
+      branch = excluded.branch,
+      commit_sha = excluded.commit_sha,
+      review_url = excluded.review_url,
+      pr_url = excluded.pr_url,
+      issue_url = excluded.issue_url,
+      merge_status = excluded.merge_status,
+      account_results = excluded.account_results,
+      error = excluded.error
+  `);
+
+  return withBusyRetry(() => {
+    const binds = planStateBinds(updated);
+    if ("error" in next && next.error === undefined) binds.$error = null;
+    stmt.run(binds);
+    return updated;
+  });
+}
+
+/** 失败后重新入队 execute：恢复为已批准并清空错误 */
+export function preparePlanExecuteRetry(projectPath: string, planId: string): PlanState | null {
+  const existing = getPlanState(projectPath, planId);
+  if (!existing || existing.status !== "failed") return null;
+  return upsertPlanState(projectPath, {
+    ...existing,
+    status: "approved",
+    error: undefined,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 export function transitionPlanState(
@@ -51,21 +269,52 @@ export function transitionPlanState(
   status: PlanStateStatus,
   patch: Partial<Omit<PlanState, "planId" | "projectPath" | "status" | "updatedAt">> = {},
 ): PlanState | null {
-  const existing = getPlanState(projectPath, planId);
-  if (!existing) return null;
-  return upsertPlanState(projectPath, {
-    ...existing,
-    ...patch,
-    status,
+  const db = initDb(projectPath);
+  const run = db.transaction(() => {
+    const existing = getPlanState(projectPath, planId);
+    if (!existing) return null;
+    const updated: PlanState = {
+      ...existing,
+      ...patch,
+      status,
+      updatedAt: new Date().toISOString(),
+    };
+    const stmt = db.prepare(`
+      UPDATE plan_states SET
+        goal = $goal,
+        title = $title,
+        status = $status,
+        updated_at = $updated_at,
+        branch = $branch,
+        commit_sha = $commit_sha,
+        review_url = $review_url,
+        pr_url = $pr_url,
+        issue_url = $issue_url,
+        merge_status = $merge_status,
+        account_results = $account_results,
+        error = $error
+      WHERE plan_id = $plan_id
+    `);
+    stmt.run(planStateBinds(updated));
+    return updated;
   });
+  return withBusyRetry(() => run());
 }
 
 export function getPlanState(projectPath: string, planId: string): PlanState | null {
-  return loadAll(projectPath).find((s) => s.planId === planId) ?? null;
+  const db = initDb(projectPath);
+  const row = db
+    .query(`SELECT * FROM plan_states WHERE plan_id = $plan_id`)
+    .get({ $plan_id: planId }) as Record<string, unknown> | null;
+  return row ? rowToPlanState(row) : null;
 }
 
 export function listPlanStates(projectPath: string, limit = 50): PlanState[] {
-  return loadAll(projectPath)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, limit);
+  const db = initDb(projectPath);
+  const rows = db
+    .query(
+      `SELECT * FROM plan_states ORDER BY updated_at DESC LIMIT $limit`,
+    )
+    .all({ $limit: limit }) as Record<string, unknown>[];
+  return rows.map(rowToPlanState);
 }

@@ -4,6 +4,7 @@ import { loadConfig, configPath } from "./config.ts";
 import { homePathForRead } from "./p7-paths.ts";
 import { loadSnapshot } from "./tech-discovery.ts";
 import { hasLlmAuth, mergeLlmEnv } from "./llm-env.ts";
+import type { LlmProbeResult } from "./llm-probe.ts";
 
 export interface PipelineCheckItem {
   id: string;
@@ -74,7 +75,25 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
     ok: hasLlmAuth(merged),
     label: "模型网关鉴权",
     detail: token ? `Base: ${base}` : `缺少 ANTHROPIC_AUTH_TOKEN/API_KEY（Base: ${base}）`,
-    fix: "在 server.json / ~/.claude/settings.json 填 Token，或确保 ~/.hermes/.env 有 DEEPSEEK_API_KEY",
+    fix: "系统设置 → 模型/网关 → API Key，保存后重启控制台",
+  });
+
+  const modelName =
+    merged.ANTHROPIC_MODEL || merged.P7_MODEL || merged.P7_PLANNER_MODEL || "";
+  items.push({
+    id: "llm_model",
+    ok: Boolean(modelName),
+    label: "默认模型名",
+    detail: modelName || "未配置 — Roadmap/Plan 可能无法调用",
+    fix: "系统设置 → 模型/网关 → 默认模型（如 deepseek-v4-pro）",
+  });
+
+  items.push({
+    id: "llm_ping",
+    ok: false,
+    label: "模型连通性（实测）",
+    detail: "尚未检测 — 在工作台点「检测模型请求」",
+    fix: "工作台 → 环境检查 → 检测模型请求",
   });
 
   const snap = loadSnapshot(projectPath);
@@ -93,6 +112,14 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
     label: "ROADMAP.md",
     detail: existsSync(roadmapPath) ? "已存在" : "不存在 — 需 LLM 刷新或模板生成",
     fix: "bun run src/index.ts discover-daily <project> 或控制台「趋势→Roadmap」",
+  });
+
+  items.push({
+    id: "project_config",
+    ok: Boolean(cfg),
+    label: "项目 .p7/config.json",
+    detail: cfg ? "已加载" : "缺失 — 使用默认策略",
+    fix: "在项目根目录初始化 .p7/config.json",
   });
 
   if (cfg) {
@@ -118,19 +145,46 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
 
   const serverPath = homePathForRead("server.json");
   items.push({
+    id: "server_config",
+    ok: existsSync(serverPath),
+    label: "控制台配置",
+    detail: existsSync(serverPath) ? serverPath : "缺少 ~/.p7/server.json",
+    fix: "首次访问 /settings 会自动创建，或手动配置 project_aliases",
+  });
+
+  items.push({
     id: "worker",
-    ok: true,
-    label: "后台 Worker",
+    ok: existsSync(serverPath),
+    label: "任务队列 Worker",
     detail: existsSync(serverPath)
-      ? "需运行 bun run start（server/index.ts，不是仅 admin）才会消费队列、自动 execute"
-      : "缺少 ~/.p7/server.json",
-    fix: "bun run start",
+      ? "须用 bun run server/index.ts（或 bun run start）启动，才会消费 discover/execute 队列"
+      : "先配置 server.json 并启动完整服务",
+    fix: "cd p7 源码 && PORT=8765 bun run server/index.ts",
   });
 
   return items;
 }
 
+export function applyLlmProbeResult(
+  items: PipelineCheckItem[],
+  probe: LlmProbeResult,
+): PipelineCheckItem[] {
+  return items.map((i) =>
+    i.id === "llm_ping"
+      ? {
+          ...i,
+          ok: probe.ok,
+          detail: probe.detail,
+          fix: probe.ok ? undefined : "系统设置 → 模型/网关；确认 Base URL / Key / 模型名后重试",
+        }
+      : i,
+  );
+}
+
 export function pipelineReady(items: PipelineCheckItem[]): boolean {
-  const required = ["git", "remote", "llm_auth"];
-  return required.every((id) => items.find((i) => i.id === id)?.ok);
+  const required = ["git", "remote", "llm_auth", "llm_model"];
+  const core = required.every((id) => items.find((i) => i.id === id)?.ok);
+  const ping = items.find((i) => i.id === "llm_ping");
+  if (ping && ping.detail.includes("尚未检测")) return core;
+  return core && (ping?.ok !== false);
 }

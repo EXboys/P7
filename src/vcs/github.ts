@@ -25,11 +25,21 @@ function commandExists(cwd: string, name: string): boolean {
   return run(cwd, ["sh", "-c", `command -v ${name}`]).ok;
 }
 
+function issueNumberFromUrl(issueUrl: string): string | undefined {
+  const m = issueUrl.match(/\/issues\/(\d+)\b/i);
+  return m?.[1];
+}
+
 function markdownBody(input: VcsPublishInput, issueUrl?: string): string {
   const changes = input.plan.changes
     .map((c) => `- \`${c.file}\`: ${c.description}`)
     .join("\n");
-  const issue = issueUrl ? `\n\nRelated issue: ${issueUrl}` : "";
+  const num = issueUrl ? issueNumberFromUrl(issueUrl) : undefined;
+  const issue = issueUrl
+    ? num
+      ? `\n\nCloses #${num}\n\nRelated issue: ${issueUrl}`
+      : `\n\nRelated issue: ${issueUrl}`
+    : "";
   return `## Summary
 ${input.plan.motivation}
 

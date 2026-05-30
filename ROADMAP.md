@@ -1,39 +1,22 @@
 # Roadmap
-
 ## Active
-Feature: 执行阶段可靠性加固（基于 SQLite 持久化队列）(started 2026-05-30)
-> 北极星对齐：信号 #4「SQLite is all you need for durable workflows」— 执行可靠性直接决定代码质量交付的确定性。当前 executor 依赖内存状态 + JSON 文件，中断后无法恢复，存在重复执行或遗漏变更的风险。
-- [ ] 将 PlanState 存储从 JSON 文件迁移到 SQLite（bun:sqlite），支持事务性状态流转与并发安全
-- [ ] 在 executor 中实现步骤级 checkpoint：每完成一个 plan change 后写入 SQLite，记录文件路径与变更摘要
-- [ ] 实现 executor 启动时 crash recovery：检测 stuck 状态的 plan，从最后 checkpoint 恢复继续执行
-- [ ] 为 state.ts 添加 plan 执行日志表（plan_execution_log），记录每次状态变更的时间线与触发原因
+Feature: AI 代码审查幻觉防御 (started 2026-05-31)
+- [ ] 重写 diff-critic 系统提示词，从「通用审查 4 项」扩展为 6 维度——逻辑/安全/边界/资源/幻觉引用/范围外文件，新增「幻觉引用」维度要求逐条验证导入路径、API 名称、类型引用是否在项目依赖或标准库中真实存在
+- [ ] 增强 diff-critic.ts 输出解析，废弃单一正则 `OK: true/false`，改为结构化解析：提取 FINDINGS 列表并按严重级别（blocker/warning/info）分类，blocker 命中幻觉或安全问题时强制 OK: false
+- [ ] 编写幻觉检测 fixture 测试集——构造包含虚构 npm 包导入、不存在的 Node API、错误类型签名的 diff snippet，验证 diff-critic 能否捕获至少 80% 的已知幻觉模式
+- [ ] 将 diff-critic 结果写入 PlanState 的 review 字段，失败时在 auto_merge 路径阻断 PR 合并，并将幻觉类发现沉淀到 agent-memory 的 lessons
 
-Feature: Diff 审查精准度提升 (started 2026-05-30)
-> 北极星对齐：信号 #14「On Rendering Diffs」— diff-critic 是代码质量守门员，当前仅做正则匹配 OK: true/false，审查维度模糊、误报率高，直接影响交付效率。
-- [ ] 重构 prompts/diff-critic.md：显式拆分逻辑正确性、安全性、范围合规、类型安全四个审查维度，每维度输出独立判定
-- [ ] 实现 diff-critic 结构化输出解析（JSON Schema），替代当前正则匹配 OK: true/false 的脆弱解析逻辑
-- [ ] 为 diff-critic.ts 的 tolerated_files 配置添加 glob 模式支持，替换当前未生效的精确匹配
+Feature: 构建系统质量门禁 (started 2026-05-31)
+- [ ] 在 executor 执行流程中插入 pre-check 阶段——执行 `tsc --noEmit` 类型检查与 Biome lint（如已配置），失败时拒绝进入文件修改步骤，错误信息写入 PlanState
+- [ ] 将 pre-check 结果格式化为结构化 JSON（文件/行号/错误码/严重级别），作为 diff-critic 的上下文输入，避免 AI 审查时对已存在的类型错误重复报告
+- [ ] 为构建门禁编写降级策略——当 tsc/Biome 不可用时（未安装、版本不兼容），自动 fallback 到项目已有的 test_command（若配置），确保门禁不成为阻断点
 
 ## Backlog
-- 追踪 MCP 协议演进动态，评估 Agent SDK 依赖升级至最新稳定版的风险与收益
-- 将 AI 代码审查最佳实践沉淀到 prompts/diff-critic.md，补充典型误报/漏报案例作为 Few-shot
-- agent-memory 经验库（CLAUDE.md Lessons learned）支持按关键词检索，当前仅追加最近 50 条且无检索能力
-- 引入 executor 执行耗时与失败率监控面板，对齐北极星「可维护性」目标
+- Openrsync 代码审计模式研究——提取 OpenBSD 团队在 rsync 重实现中使用的安全检查清单（内存安全、边界条件、协议合规），沉淀为 diff-critic 的安全维度增强 prompt 模板
+- AI 成本可观测性仪表板——在 discovery-daily 与 executor 中加入 token 用量与成本估算指标，输出到 PlanState，支持成本上限熔断
+- plan-critic 结构化升级——参照 diff-critic 的结构化输出方案，将 plan-critic 的输出从自由文本改为 FINDINGS + OK 结构化格式
 
 ## Done
-- （待执行器完成 Active 步骤后写入）
-
----
-
-### 规划 reasoning
-
-**Feature 选择依据**：从 4 个雷达主题中优选了 2 个直接可落地的方向放入 Active：
-
-| 雷达信号 | 选择 | 理由 |
-|---------|------|------|
-| #4 SQLite 持久化工作流 | ✅ Active | 雷达摘要明确标注"最值得跟进"，直接加固 executor 可靠性，对齐北极星质量目标。项目已有 state.ts + retry.ts 基础设施，迁移成本可控 |
-| #14 Diff 渲染优化 | ✅ Active | 低成本高收益 Quick Win。diff-critic.ts 当前仅 22 行，prompt 也只有 18 行 — 改动面积极小，收益明确 |
-| #6 AI 代码质量保障 | 🔜 Backlog | 与 #14 有交集但更偏方法论层面，先做完 #14 的基础设施再引入最佳实践沉淀 |
-| #13 MCP 协议演进 | 🔜 Backlog | 外部依赖跟踪，不阻塞当前迭代，作为持续观测项进入 Backlog |
-
-**步骤粒度**：每个步骤均控制在 1 天内可完成、对应一个 Plan（≤5 文件、≤200 行 diff）。SQLite 迁移拆分为存储层 → checkpoint → recovery → 日志四步渐进式交付，避免大爆炸重构。
+- P7 自主开发管线初始化（discovery → Roadmap → Plan → PR 全链路）
+- 基础 diff-critic 实现（regex OK: true/false 判定）
+- 基础 plan-critic 实现（4 维审查）
