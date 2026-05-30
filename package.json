@@ -1,0 +1,29 @@
+{
+  "name": "p7",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "p7": "bun run src/index.ts",
+    "server": "bun run server/index.ts",
+    "admin": "bun run server/node-entry.ts",
+    "start": "PORT=8791 bun run server/index.ts",
+    "start:admin": "PORT=8791 bun run server/node-entry.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "pipeline-check": "bun run src/index.ts pipeline check",
+    "discover": "bun run src/index.ts discover",
+    "discover-daily": "bun run src/index.ts discover-daily"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.145",
+    "@hono/node-server": "^2.0.4",
+    "hono": "^4.7.4",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "bun-types": "^1.3.14",
+    "typescript": "^5.8.2"
+  }
+}
