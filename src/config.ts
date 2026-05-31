@@ -104,6 +104,8 @@ export const DevAgentConfigSchema = z.object({
       auto_plan_after_refresh: z.boolean().default(true),
       auto_execute_after_approve: z.boolean().default(true),
       allow_template_fallback: z.boolean().default(false),
+      /** Roadmap 有未完成步骤且无待执行 Plan 时，调度器自动从 Roadmap 生成 Plan */
+      auto_recover_stall: z.boolean().default(true),
     })
     .default({
       enabled: true,
@@ -114,6 +116,7 @@ export const DevAgentConfigSchema = z.object({
       auto_plan_after_refresh: true,
       auto_execute_after_approve: true,
       allow_template_fallback: false,
+      auto_recover_stall: true,
     }),
   max_pending_plans: z.number().int().positive().default(5),
   max_consecutive_failures: z.number().int().positive().default(3),
@@ -180,6 +183,7 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         auto_plan_after_refresh: true,
         auto_execute_after_approve: true,
         allow_template_fallback: false,
+        auto_recover_stall: true,
       },
       max_pending_plans: 5,
       max_consecutive_failures: 3,

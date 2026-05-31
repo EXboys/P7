@@ -12,6 +12,7 @@ import { pickNextApprovedPlanForExecution } from "../src/approval.ts";
 import { getPlanState, preparePlanExecuteRetry } from "../src/state.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { ghInstalled, gitRemoteOrigin } from "../src/gh-status.ts";
+import { shouldEnqueuePipelineRecovery } from "../src/pipeline-stall.ts";
 
 export function schedulerIntervalMs(cfg: ServerConfig): number {
   return (cfg.scheduler_interval_minutes ?? 2) * 60 * 1000;
@@ -64,6 +65,28 @@ function runSchedulerTick(cfg: ServerConfig): void {
       continue;
     }
     if (hasPendingDailyToday(alias)) {
+      const stall = shouldEnqueuePipelineRecovery(path, alias, dc);
+      if (stall) {
+        const gate =
+          ghInstalled() && gitRemoteOrigin(path)
+            ? checkPrWorkGate(path, dc)
+            : { blocked: false };
+        if (!gate.blocked) {
+          enqueueJob({
+            kind: "discover-daily",
+            payload: { projectPath: path, recoverStall: true },
+            projectAlias: alias,
+          });
+          audit("scheduler.recovery_enqueued", {
+            alias,
+            reason: stall.reason,
+            goal: stall.suggestedGoal?.slice(0, 80),
+          });
+          continue;
+        }
+        audit("scheduler.skipped", { alias, reason: "open_prs_block_recovery" });
+        continue;
+      }
       audit("scheduler.skipped", { alias, reason: "daily_exists" });
       continue;
     }

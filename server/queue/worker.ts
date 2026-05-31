@@ -115,6 +115,7 @@ async function runJob(
     args.push("discover-daily", projectPath);
     const d = payload as DailyJobPayload;
     if (d.planOnly) args.push("--plan-only");
+    if (d.recoverStall) args.push("--recover-stall");
   } else if (kind === "pr-review") {
     args.push("pr-review", projectPath);
   } else {
@@ -185,13 +186,20 @@ function maybeEnqueueExecuteAfterDiscover(
   projectPath: string,
   result: unknown,
   planOnly?: boolean,
+  recoverStall?: boolean,
 ): void {
-  if (planOnly) return;
+  if (planOnly && !recoverStall) return;
   const r = result as { planId?: string; phase?: string } | null;
   if (!r?.planId) return;
   const approval = getApprovalRecord(projectPath, r.planId);
   if (approval?.status !== "approved") return;
-  if (r.phase !== "approved" && r.phase !== "planned") return;
+  if (
+    r.phase !== "approved" &&
+    r.phase !== "planned" &&
+    r.phase !== "recovery_approved"
+  ) {
+    return;
+  }
   try {
     const dc = loadConfig(projectPath);
     if (
@@ -315,16 +323,19 @@ export function startWorker(cfg: ServerConfig): () => void {
         }
 
         if (job.kind === "discover-daily") {
+          const dailyPayload = payload as DailyJobPayload;
           maybeEnqueueExecuteAfterDiscover(
             cfg,
             job.project_alias,
             projectPath,
             result,
-            (payload as DailyJobPayload).planOnly,
+            dailyPayload.planOnly,
+            dailyPayload.recoverStall,
           );
         }
 
-        if (job.kind === "daily" || job.kind === "discover-daily") {
+        const recoverStall = (payload as DailyJobPayload).recoverStall;
+        if ((job.kind === "daily" || job.kind === "discover-daily") && !recoverStall) {
           const decision = maybeContinueLoop(cfg, job.project_alias, projectPath, result);
           if (decision.continue) {
             const dc = loadConfig(projectPath);
