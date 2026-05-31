@@ -178,6 +178,22 @@ export function initDb(projectPath: string): Database {
     `CREATE INDEX IF NOT EXISTS idx_plan_states_updated ON plan_states(updated_at DESC)`,
   );
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sdk_costs (
+      plan_id TEXT,
+      role TEXT NOT NULL,
+      model TEXT,
+      cost_usd REAL NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+  db.run(
+    `CREATE INDEX IF NOT EXISTS idx_sdk_costs_plan ON sdk_costs(plan_id)`,
+  );
+  db.run(
+    `CREATE INDEX IF NOT EXISTS idx_sdk_costs_created ON sdk_costs(created_at DESC)`,
+  );
+
   migrateFromJsonIfNeeded(db, projectPath);
   dbCache.set(projectPath, db);
   return db;
@@ -317,4 +333,24 @@ export function listPlanStates(projectPath: string, limit = 50): PlanState[] {
     )
     .all({ $limit: limit }) as Record<string, unknown>[];
   return rows.map(rowToPlanState);
+}
+
+export function writeSdkCost(
+  projectPath: string,
+  params: { planId?: string; role: string; model?: string; costUsd: number },
+): void {
+  const db = initDb(projectPath);
+  const stmt = db.prepare(`
+    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at)
+    VALUES ($plan_id, $role, $model, $cost_usd, $created_at)
+  `);
+  withBusyRetry(() => {
+    stmt.run({
+      $plan_id: params.planId ?? null,
+      $role: params.role,
+      $model: params.model ?? null,
+      $cost_usd: params.costUsd,
+      $created_at: new Date().toISOString(),
+    });
+  });
 }
