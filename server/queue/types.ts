@@ -30,7 +30,7 @@ export interface JobRow {
   progress: string | null;
   result_json: string | null;
   error: string | null;
-  step_states?: string;
+  step_states?: string | null;
 }
 
 export interface DailyJobPayload {
