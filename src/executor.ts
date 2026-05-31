@@ -148,17 +148,58 @@ async function runTypecheck(wtPath: string): Promise<{ ok: boolean; out: string 
   };
 }
 
-function diffStats(wtPath: string): { files: number; lines: number } {
-  const raw = git(wtPath, ["diff", "--numstat"]);
-  if (!raw.ok || !raw.out) return { files: 0, lines: 0 };
+function diffStatsAgainstBase(wtPath: string, baseCommit: string): { files: number; lines: number } {
+  const raw = git(wtPath, ["diff", baseCommit, "--numstat"]);
+  if (!raw.ok || !raw.out.trim()) return { files: 0, lines: 0 };
   let files = 0;
   let lines = 0;
   for (const row of raw.out.split("\n").filter(Boolean)) {
-    const [adds, dels] = row.split("\t");
-    files++;
-    lines += (adds === "-" ? 0 : Number(adds)) + (dels === "-" ? 0 : Number(dels));
+    const parts = row.split("\t");
+    if (parts.length < 3) continue;
+    const adds = parts[0] === "-" ? 0 : Number(parts[0]) || 0;
+    const dels = parts[1] === "-" ? 0 : Number(parts[1]) || 0;
+    if (adds + dels > 0) files++;
+    lines += adds + dels;
   }
   return { files, lines };
+}
+
+function hasUncommittedChanges(wtPath: string): boolean {
+  const st = git(wtPath, ["status", "--porcelain"]);
+  return st.ok && st.out.length > 0;
+}
+
+function commitsAheadOf(wtPath: string, baseCommit: string): number {
+  const r = git(wtPath, ["rev-list", "--count", `${baseCommit}..HEAD`]);
+  return r.ok ? Number(r.out) || 0 : 0;
+}
+
+function commitWorktreeChanges(
+  wt: WorktreeInfo,
+  baseCommit: string,
+  planTitle: string,
+): { sha: string; reused: boolean } {
+  if (hasUncommittedChanges(wt.path)) {
+    git(wt.path, ["add", "-A"]);
+    const commit = git(wt.path, ["commit", "-m", planTitle]);
+    if (!commit.ok) {
+      const clean = /nothing to commit|working tree clean/i.test(commit.out);
+      if (clean && commitsAheadOf(wt.path, baseCommit) > 0) {
+        return {
+          sha: git(wt.path, ["rev-parse", "HEAD"]).out.slice(0, 7),
+          reused: true,
+        };
+      }
+      throw new Error(`commit failed: ${commit.out}`);
+    }
+    return { sha: git(wt.path, ["rev-parse", "HEAD"]).out.slice(0, 7), reused: false };
+  }
+  if (commitsAheadOf(wt.path, baseCommit) > 0) {
+    return { sha: git(wt.path, ["rev-parse", "HEAD"]).out.slice(0, 7), reused: true };
+  }
+  throw new Error(
+    "executor produced no file changes (working tree clean and no commits ahead of base)",
+  );
 }
 
 export async function executePlan(
@@ -212,39 +253,63 @@ export async function executePlan(
     const planText = JSON.stringify(plan, null, 2);
     const maxTurns = deriveMaxTurns(plan);
 
-    const runOnce = async () => {
-      const result = await runSdkQuery({
-        prompt: `在 worktree 中执行以下计划：\n\`\`\`json\n${planText}\n\`\`\``,
-        cwd: wt!.path,
-        systemPrompt: system,
-        role: "executor",
-        allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
-        hooks: buildPreToolHook(allowedFiles) as never,
-        maxTurns,
-      });
-      if (typeof result.costUsd === "number" && result.costUsd > cfg.execution_cost_limit) {
-        throw new Error(
-          `execution cost exceeded limit: ${result.costUsd} > ${cfg.execution_cost_limit}`,
-        );
-      }
-    };
+    const maxAgentPasses = 2;
+    let stats = { files: 0, lines: 0 };
+    let diffStatOut = "";
 
-    recordStepStart("sdk.execute");
-    await withExponentialBackoff(async () => {
-      try {
-        await runOnce();
-      } catch (e) {
+    for (let pass = 0; pass < maxAgentPasses; pass++) {
+      const retryHint =
+        pass > 0
+          ? "\n\n【重要】上一轮未产生任何文件变更。你必须用 Edit/Write 修改计划中列出的每个文件，禁止空跑。"
+          : "";
+
+      const runOnce = async () => {
+        const result = await runSdkQuery({
+          prompt: `在 worktree 中执行以下计划：\n\`\`\`json\n${planText}\n\`\`\`${retryHint}`,
+          cwd: wt!.path,
+          systemPrompt: system,
+          role: "executor",
+          allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
+          hooks: buildPreToolHook(allowedFiles) as never,
+          maxTurns,
+        });
+        if (typeof result.costUsd === "number" && result.costUsd > cfg.execution_cost_limit) {
+          throw new Error(
+            `execution cost exceeded limit: ${result.costUsd} > ${cfg.execution_cost_limit}`,
+          );
+        }
+      };
+
+      await withExponentialBackoff(async () => {
+        try {
+          await runOnce();
+        } catch (e) {
+          resetWorktree(wt!.path);
+          throw e;
+        }
+      });
+
+      const diffStat = git(wt.path, ["diff", baseCommit, "--stat"]);
+      if (!diffStat.ok) throw new Error(`git diff failed: ${diffStat.out}`);
+      diffStatOut = diffStat.out;
+      stats = diffStatsAgainstBase(wt.path, baseCommit);
+      if (stats.files > 0) break;
+      if (pass < maxAgentPasses - 1) {
+        await appendLesson(
+          projectPath,
+          `execute:retry pass ${pass + 2} — no diff vs ${baseCommit.slice(0, 7)}`,
+        );
         resetWorktree(wt!.path);
-        throw e;
       }
-    });
-    recordStepEnd("sdk.execute");
+    }
+
+    if (stats.files === 0) {
+      throw new Error(
+        "executor produced no file changes after 2 attempts; use console「重试执行」or fix plan scope",
+      );
+    }
 
     recordStepStart("validate.diff");
-    const diffStat = git(wt.path, ["diff", "--stat"]);
-    if (!diffStat.ok) throw new Error(`git diff failed: ${diffStat.out}`);
-
-    const stats = diffStats(wt.path);
     const maxFiles = Math.min(limits.maxFiles, cfg.diff_critic.max_files_ceiling);
     const maxDiffLines = Math.min(
       Math.max(
@@ -280,17 +345,14 @@ export async function executePlan(
     recordStepEnd("validate.test");
 
     recordStepStart("review.diff");
-    const critic = await reviewDiff(wt.path, diffStat.out, plan.title);
+    const critic = await reviewDiff(wt.path, diffStatOut, plan.title);
     if (!critic.ok) {
       throw new Error(`diff-critic blocked: ${critic.findings.slice(0, 300)}`);
     }
     recordStepEnd("review.diff");
 
     recordStepStart("git.commit");
-    git(wt.path, ["add", "-A"]);
-    const commit = git(wt.path, ["commit", "-m", plan.title]);
-    if (!commit.ok) throw new Error(`commit failed: ${commit.out}`);
-    const sha = git(wt.path, ["rev-parse", "HEAD"]).out.slice(0, 7);
+    const { sha } = commitWorktreeChanges(wt, baseCommit, plan.title);
     recordStepEnd("git.commit");
 
     recordStepStart("git.push");

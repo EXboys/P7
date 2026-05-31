@@ -6,7 +6,7 @@ import type { ServerConfig } from "./config.ts";
 import { saveServerConfig, writeClaudeSettings } from "./config.ts";
 import { listJobsForProject, listAllJobs, enqueueJob } from "./queue/store.ts";
 import { audit } from "./audit.ts";
-import { listPlanStates } from "../src/state.ts";
+import { listPlanStates, preparePlanExecuteRetry } from "../src/state.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
 import { listPendingApprovals, decideApproval } from "../src/approval.ts";
 import { getPlanDetailView } from "../src/plan-detail.ts";
@@ -19,7 +19,9 @@ import { getApprovalRecord, savePendingApproval } from "../src/approval.ts";
 import { assertLlmAuth } from "../src/llm-env.ts";
 import { readJobLog } from "./queue/worker.ts";
 import { getJob } from "./queue/store.ts";
-import { runPipelineCheck } from "../src/pipeline-check.ts";
+import { applyLlmProbeResult, pipelineReady, runPipelineCheck } from "../src/pipeline-check.ts";
+import { probeLlmConnection } from "../src/llm-probe.ts";
+import { applyAllLlmEnv, hasLlmAuth, mergeLlmEnv } from "../src/llm-env.ts";
 import { loadRoadmap } from "../src/roadmap.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
 import type { DevAgentConfig } from "../src/config.ts";
@@ -39,6 +41,7 @@ import {
   renderPlanRoadmapRegenForm,
   renderPlanGenerateForm,
   renderPlanDetailPage,
+  renderPipelineChecksPanel,
   projectShell,
   discoverToolbar,
   renderTrendsPage,
@@ -261,14 +264,19 @@ export function createDashboard(
     );
   });
 
-  app.get("/project/:alias/overview", (c) => {
+  app.get("/project/:alias/overview", async (c) => {
     const cfg = getCfg();
     const alias = c.req.param("alias");
     const proj = resolveProject(cfg, alias);
     if (!proj) return c.text("not found", 404);
     const flash = c.req.query("flash");
     const base = `/project/${encodeURIComponent(alias)}`;
-    const checks = existsSync(proj.path) ? runPipelineCheck(proj.path) : [];
+    let checks = existsSync(proj.path) ? runPipelineCheck(proj.path) : [];
+    if (c.req.query("probe") === "1") {
+      applyAllLlmEnv();
+      const probe = await probeLlmConnection();
+      checks = applyLlmProbeResult(checks, probe);
+    }
     const blockers = checks.filter((x) => !x.ok);
     const pending = existsSync(proj.path) ? listPendingApprovals(proj.path).length : 0;
     const states = existsSync(proj.path) ? listPlanStates(proj.path, 8) : [];
@@ -277,15 +285,9 @@ export function createDashboard(
     const prCount = states.filter((s) => s.prUrl).length;
     const signalCount = snap?.signals.length ?? 0;
 
-    const healthHtml = blockers.length
-      ? `<div class="health-banner fail"><span class="health-icon">!</span><div><strong>有 ${blockers.length} 项阻塞完整链路</strong><span>${esc(blockers.map((b) => b.label).join("、"))}</span></div></div>
-<div class="blockers" style="margin-top:10px">${blockers
-          .map(
-            (b) =>
-              `<div class="blocker fail"><span class="icon">·</span><div class="body"><strong>${esc(b.label)}</strong><span>${esc(b.detail)}${b.fix ? ` — ${esc(b.fix)}` : ""}</span></div></div>`,
-          )
-          .join("")}</div>`
-      : `<div class="health-banner ok"><span class="health-icon">✓</span><div><strong>链路就绪</strong><span>可执行「发现 → Roadmap → Plan → 运行 → PR」全流程。</span></div></div>`;
+    const healthHtml = checks.length
+      ? renderPipelineChecksPanel(alias, checks)
+      : `<p class="muted">项目路径不可用</p>`;
 
     const roadmap = existsSync(proj.path) ? loadRoadmap(proj.path) : null;
     const roadmapHtml = roadmap?.active.length
@@ -539,6 +541,7 @@ ${themes}
       body,
       pipelineDone: 3,
       section: "plans",
+      flash: c.req.query("flash"),
     });
     return c.html(html ?? "not found", html ? 200 : 404);
   });
@@ -705,6 +708,37 @@ ${themes}
     return c.redirect(`/project/${encodeURIComponent(alias)}/plan?section=plans&flash=approved`);
   });
 
+  app.post("/project/:alias/llm-probe", async (c) => {
+    const alias = c.req.param("alias");
+    const proj = resolveProject(getCfg(), alias);
+    if (!proj) return c.text("not found", 404);
+    applyAllLlmEnv();
+    if (!hasLlmAuth()) {
+      return c.redirect(
+        `/project/${encodeURIComponent(alias)}/overview?flash=${encodeURIComponent("未配置模型 Key，请先在系统设置填写")}`,
+      );
+    }
+    const probe = await probeLlmConnection();
+    audit("dashboard.llm_probe", { alias, ok: probe.ok });
+    const flash = probe.ok ? `✓ ${probe.detail}` : `✗ ${probe.detail}`;
+    return c.redirect(
+      `/project/${encodeURIComponent(alias)}/overview?probe=1&flash=${encodeURIComponent(flash.slice(0, 220))}`,
+    );
+  });
+
+  app.get("/project/:alias/pipeline-check", async (c) => {
+    const alias = c.req.param("alias");
+    const proj = resolveProject(getCfg(), alias);
+    if (!proj) return c.text("not found", 404);
+    const items = runPipelineCheck(proj.path);
+    if (c.req.query("probe") === "1" && hasLlmAuth(mergeLlmEnv())) {
+      applyAllLlmEnv();
+      const probe = await probeLlmConnection();
+      return c.json({ ready: pipelineReady(applyLlmProbeResult(items, probe)), items: applyLlmProbeResult(items, probe), probe });
+    }
+    return c.json({ ready: pipelineReady(items), items });
+  });
+
   app.post("/trigger/roadmap-refresh", async (c) => {
     const body = (await c.req.parseBody()) as Record<string, string>;
     const alias = String(body.alias ?? "");
@@ -779,6 +813,31 @@ ${themes}
     return c.redirect(`/project/${encodeURIComponent(alias)}/run?flash=${encodeURIComponent("已批准并入队执行")}`);
   });
 
+  app.post("/trigger/retry-execute", async (c) => {
+    const body = (await c.req.parseBody()) as Record<string, string>;
+    const cfg = getCfg();
+    const alias = String(body.alias ?? "");
+    const planId = String(body.planId ?? "");
+    const proj = resolveProject(cfg, alias);
+    if (!proj) return c.text("unknown alias", 400);
+    const detailUrl = `/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(planId)}`;
+    const prepared = preparePlanExecuteRetry(proj.path, planId);
+    if (!prepared) {
+      return c.redirect(
+        `${detailUrl}?flash=${encodeURIComponent("无法重试：需为执行失败且尚无 PR")}`,
+      );
+    }
+    enqueueJob({
+      kind: "execute",
+      payload: { projectPath: proj.path, planId },
+      projectAlias: alias,
+    });
+    audit("dashboard.retry_execute", { alias, planId });
+    return c.redirect(
+      `/project/${encodeURIComponent(alias)}/run?flash=${encodeURIComponent(`Plan ${planId} 已重新入队执行`)}`,
+    );
+  });
+
   app.post("/reject", async (c) => {
     const body = (await c.req.parseBody()) as Record<string, string>;
     const cfg = getCfg();
@@ -803,33 +862,9 @@ ${themes}
     const m = cfg.claude_models ?? {};
     const settingsBody = `
 <div class="panel">
-<h2 style="margin-top:0">项目绑定</h2>
-<p class="muted">绑定后进入项目页管理趋势 / Roadmap / Plan / 执行 / PR。网关与人设为全局。</p>
-<table><tr><th>别名</th><th>路径</th><th>GitHub</th><th></th></tr>${aliasRows || `<tr><td colspan="4" class="muted">暂无</td></tr>`}</table>
-<form method="post" action="/settings/project/add" style="margin-top:14px">
-<div class="row"><div><label>别名</label><input name="alias" placeholder="P7" required/></div>
-<div><label>本地绝对路径</label><input name="path" placeholder="/Users/you/code/myapp" required/></div></div>
-<button class="btn" style="margin-top:12px">添加项目</button></form>
-</div>
-
-<div class="panel">
-<h2 style="margin-top:0">调度与并发</h2>
-<form method="post" action="/settings/scheduler">
-<div class="row">
-<div><label>调度器</label><select name="scheduler_enabled"><option value="1" ${cfg.scheduler_enabled ? "selected" : ""}>开启</option><option value="0" ${!cfg.scheduler_enabled ? "selected" : ""}>关闭</option></select></div>
-<div><label>最大并发项目数</label><input name="max_concurrent_projects" type="number" value="${esc(String(cfg.max_concurrent_projects))}"/></div>
-</div>
-<div class="row">
-<div><label>每日成本上限 (USD)</label><input name="daily_cost_cap_usd" type="number" step="0.01" value="${esc(String(cfg.daily_cost_cap_usd))}"/></div>
-<div><label>端口</label><input name="port" type="number" value="${esc(String(cfg.port))}"/></div>
-</div>
-<button class="btn" style="margin-top:12px">保存调度设置</button></form>
-</div>
-
-<div class="panel">
 <h2 style="margin-top:0">模型 / 网关 (全局)</h2>
-<p class="muted" style="margin-top:0">Anthropic 兼容网关，作用于所有项目的 Agent 调用。</p>
-<form method="post" action="/settings/models">
+<p class="muted" style="margin-top:0">Anthropic 兼容网关，作用于所有项目的 Agent 调用。保存 Key 只更新本节，<strong>不会</strong>添加项目。</p>
+<form id="settings-models" method="post" action="/settings/models">
 <datalist id="model-list">
 <option value="deepseek-v4-pro"></option>
 <option value="deepseek-v4-flash"></option>
@@ -855,12 +890,37 @@ ${themes}
 </div>
 <label>Base URL</label><input name="anthropic_base_url" value="${esc(cfg.anthropic_base_url ?? "")}"/>
 <div class="row">
-<div><label>Auth Token</label><input name="anthropic_auth_token" type="password" placeholder="留空不修改"/></div>
-<div><label>API Key</label><input name="anthropic_api_key" type="password" placeholder="留空不修改"/></div>
+<div><label>Auth Token</label><input name="anthropic_auth_token" type="password" autocomplete="new-password" placeholder="留空不修改"/></div>
+<div><label>API Key</label><input name="anthropic_api_key" type="password" autocomplete="new-password" placeholder="留空不修改"/></div>
 </div>
-<button class="btn" style="margin-top:12px">保存</button></form>
+<button type="submit" class="btn" style="margin-top:12px">保存模型与 Key</button></form>
 <form method="post" action="/settings/write-claude-settings" style="margin-top:10px">
-<button class="btn ghost">写入 ~/.claude/settings.json</button></form>
+<button type="submit" class="btn ghost">写入 ~/.claude/settings.json</button></form>
+<p class="muted" style="margin:14px 0 0;font-size:12px">保存后请到 <a href="/project/${esc(Object.keys(cfg.project_aliases)[0] ?? "p7")}/overview#health">工作台 → 环境检查</a>，点「检测模型请求」验证 Key 与模型是否可用。</p>
+</div>
+
+<div class="panel">
+<h2 style="margin-top:0">项目绑定</h2>
+<p class="muted">绑定本地仓库路径；与上方模型 Key 无关。误点「添加项目」才会新增绑定。</p>
+<table><tr><th>别名</th><th>路径</th><th>GitHub</th><th></th></tr>${aliasRows || `<tr><td colspan="4" class="muted">暂无</td></tr>`}</table>
+<form id="settings-project-add" method="post" action="/settings/project/add" style="margin-top:14px">
+<div class="row"><div><label>别名</label><input name="alias" placeholder="P7" autocomplete="off" required/></div>
+<div><label>本地绝对路径</label><input name="path" placeholder="/Users/you/code/myapp" autocomplete="off" required/></div></div>
+<button type="submit" class="btn ghost" style="margin-top:12px">添加项目（非保存 Key）</button></form>
+</div>
+
+<div class="panel">
+<h2 style="margin-top:0">调度与并发</h2>
+<form method="post" action="/settings/scheduler">
+<div class="row">
+<div><label>调度器</label><select name="scheduler_enabled"><option value="1" ${cfg.scheduler_enabled ? "selected" : ""}>开启</option><option value="0" ${!cfg.scheduler_enabled ? "selected" : ""}>关闭</option></select></div>
+<div><label>最大并发项目数</label><input name="max_concurrent_projects" type="number" value="${esc(String(cfg.max_concurrent_projects))}"/></div>
+</div>
+<div class="row">
+<div><label>每日成本上限 (USD)</label><input name="daily_cost_cap_usd" type="number" step="0.01" value="${esc(String(cfg.daily_cost_cap_usd))}"/></div>
+<div><label>端口</label><input name="port" type="number" value="${esc(String(cfg.port))}"/></div>
+</div>
+<button type="submit" class="btn" style="margin-top:12px">保存调度设置</button></form>
 </div>
 
 <div class="panel">
@@ -984,7 +1044,26 @@ ${themes}
     );
   });
 
-  app.get("/healthz", (c) => c.json({ ok: true, ts: new Date().toISOString() }));
+  app.get("/healthz", async (c) => {
+    applyAllLlmEnv();
+    const env = mergeLlmEnv();
+    const body: Record<string, unknown> = {
+      ok: true,
+      ts: new Date().toISOString(),
+      llm: {
+        configured: hasLlmAuth(env),
+        baseUrl: env.ANTHROPIC_BASE_URL || null,
+        model: env.ANTHROPIC_MODEL || env.P7_MODEL || null,
+      },
+    };
+    if (c.req.query("probe") === "1" && hasLlmAuth(env)) {
+      const probe = await probeLlmConnection(env);
+      body.ok = probe.ok;
+      body.llm = { ...(body.llm as object), probe };
+      return c.json(body, probe.ok ? 200 : 503);
+    }
+    return c.json(body);
+  });
 
   return app;
 }

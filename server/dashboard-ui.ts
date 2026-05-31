@@ -1,5 +1,7 @@
 import type { ServerConfig } from "./config.ts";
 import type { PlanDetailView } from "../src/plan-detail.ts";
+import type { PipelineCheckItem } from "../src/pipeline-check.ts";
+import { pipelineReady } from "../src/pipeline-check.ts";
 
 export const DASHBOARD_STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap');
@@ -104,6 +106,10 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius
 .muted{color:var(--mut);font-size:13px}
 .flash{background:rgba(91,141,239,.12);border:1px solid rgba(91,141,239,.35);color:var(--fg);padding:12px 16px;border-radius:var(--radius);margin-bottom:18px;font-size:13px}
 .flash.ok{background:rgba(62,207,142,.12);border-color:rgba(62,207,142,.45)}
+.busy-banner{position:fixed;top:0;left:0;right:0;z-index:9999;display:flex;align-items:center;justify-content:center;gap:12px;padding:14px 20px;background:rgba(12,16,28,.95);border-bottom:1px solid rgba(91,141,239,.5);color:var(--fg);font-size:14px;transform:translateY(-100%);transition:transform .2s;pointer-events:none}
+.busy-banner.show{transform:translateY(0)}
+.busy-spinner{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:p7spin .8s linear infinite;flex-shrink:0}
+@keyframes p7spin{to{transform:rotate(360deg)}}
 .gh-form{display:flex;flex-direction:column;gap:18px}
 .gh-status{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
 .gh-stat{background:var(--surface2);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
@@ -182,6 +188,15 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius
 @media(max-width:800px){.overview-grid{grid-template-columns:1fr}}
 .flash.warn-banner{background:rgba(229,181,103,.1);border-color:rgba(229,181,103,.4);display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .flash.warn-banner strong{color:var(--fg)}
+.checks-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.check-row{display:flex;gap:10px;padding:10px 12px;border-radius:10px;border:1px solid var(--line);font-size:13px;line-height:1.45}
+.check-row.ok{border-color:rgba(62,207,142,.35);background:rgba(62,207,142,.06)}
+.check-row.fail{border-color:rgba(244,112,103,.35);background:rgba(244,112,103,.06)}
+.check-icon{width:18px;flex-shrink:0;font-weight:700;color:var(--mut)}
+.check-row.ok .check-icon{color:var(--ok)}
+.check-row.fail .check-icon{color:var(--err)}
+.check-fix{margin-top:4px;font-size:11px;color:var(--mut)}
+.health-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:14px}
 .panel.next-step{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-color:rgba(107,159,255,.35);background:linear-gradient(135deg,rgba(107,159,255,.08),transparent)}
 .panel.next-step .next-label{margin:0 0 2px;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
 .panel.next-step .next-title{margin:0;font-size:15px;font-weight:600}
@@ -291,6 +306,30 @@ export function esc(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+export function renderPipelineChecksPanel(
+  alias: string,
+  items: PipelineCheckItem[],
+): string {
+  const ready = pipelineReady(items);
+  const blockers = items.filter((i) => !i.ok);
+  const banner = ready
+    ? `<div class="health-banner ok"><span class="health-icon">✓</span><div><strong>核心环境就绪</strong><span>Git、鉴权、模型名已配置；建议完成模型连通检测后再跑 Roadmap。</span></div></div>`
+    : `<div class="health-banner fail"><span class="health-icon">!</span><div><strong>${blockers.length} 项未通过</strong><span>${esc(blockers.map((b) => b.label).join("、"))}</span></div></div>`;
+
+  const rows = items
+    .map(
+      (i) =>
+        `<div class="check-row ${i.ok ? "ok" : "fail"}"><span class="check-icon">${i.ok ? "✓" : "!"}</span><div><strong>${esc(i.label)}</strong> — <span class="muted">${esc(i.detail)}</span>${i.fix && !i.ok ? `<div class="check-fix">${esc(i.fix)}</div>` : ""}</div></div>`,
+    )
+    .join("");
+
+  return `${banner}<div class="checks-list">${rows}</div>
+<div class="health-actions">
+<form class="inline" method="post" action="/project/${encodeURIComponent(alias)}/llm-probe"><button type="submit" class="btn sm">检测模型请求</button></form>
+<a class="btn ghost sm" href="/settings">系统设置</a>
+</div>`;
 }
 
 export function overviewNextStep(opts: {
@@ -514,11 +553,17 @@ ${metricCard(p.validation, "验证方式")}
     ? `<div class="plan-pending-banner">待你确认范围与风险后再批准执行</div>`
     : "";
 
+  const retryAction = detail.canRetryExecute
+    ? `<form class="inline" method="post" action="/trigger/retry-execute"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(planId)}"/><button class="btn ok">重试执行</button></form>`
+    : st?.prUrl && st?.error
+      ? `<span class="muted" style="font-size:13px">已有 PR，无需重试执行</span>`
+      : "";
+
   const actions = detail.canApprove
     ? `<form class="inline" method="post" action="/approve"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(planId)}"/><button class="btn ok">批准并执行</button></form>
 <form class="inline" method="post" action="/approve-only"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(planId)}"/><button class="btn ghost">仅批准</button></form>
 <form class="inline" method="post" action="/reject"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(planId)}"/><button class="btn err">拒绝</button></form>`
-    : "";
+    : retryAction;
 
   return `<div class="plan-detail-page">
 <nav class="plan-crumb"><a href="${base}/plan?section=plans">← Plan 审批</a><span>/</span><span>${esc(planId)}</span></nav>
@@ -690,13 +735,36 @@ ${pathLine}
 ${headToolbar}
 </div>
 <div class="content-body">
-${opts.flash ? `<div class="flash${/已保存|成功/.test(opts.flash) ? " ok" : ""}">${esc(opts.flash)}</div>` : ""}
+${opts.flash ? `<div class="flash${/已保存|成功|✓|响应正常|请求成功/.test(opts.flash) ? " ok" : ""}">${esc(opts.flash)}</div>` : ""}
 ${opts.body}
 </div>
 </div>
 </div>
+${DASHBOARD_BUSY_SCRIPT}
 </body></html>`;
 }
+
+const DASHBOARD_BUSY_SCRIPT = `<script>
+(function(){
+  document.querySelectorAll("form.p7-busy-form").forEach(function(form){
+    form.addEventListener("submit",function(){
+      var msg=form.getAttribute("data-busy-msg")||"处理中，请稍候…";
+      var el=document.getElementById("p7-busy-banner");
+      if(!el){
+        el=document.createElement("div");
+        el.id="p7-busy-banner";
+        el.className="busy-banner";
+        el.innerHTML='<span class="busy-spinner"></span><span class="busy-text"></span>';
+        document.body.appendChild(el);
+      }
+      var t=el.querySelector(".busy-text");
+      if(t) t.textContent=msg;
+      el.classList.add("show");
+      form.querySelectorAll('button[type="submit"],input[type="submit"]').forEach(function(b){b.disabled=true;});
+    });
+  });
+})();
+</script>`;
 
 export function projectShell(
   cfg: ServerConfig,
@@ -724,12 +792,13 @@ export function projectShell(
 }
 
 export function workbenchToolbar(alias: string): string {
-  return `<form class="inline" method="post" action="/trigger/discover-daily"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn">一键：发现 → Roadmap</button></form>`;
+  return `<form class="inline" method="post" action="/project/${encodeURIComponent(alias)}/llm-probe"><button type="submit" class="btn ghost">检测模型</button></form>
+<form class="inline p7-busy-form" data-busy-msg="已提交，正在跳转任务页…" method="post" action="/trigger/discover-daily"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn">一键：发现 → Roadmap</button></form>`;
 }
 
 export function planToolbar(alias: string, section: string): string {
   if (section === "roadmap") {
-    return `<form class="inline" method="post" action="/trigger/discover-daily"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn ghost">发现 → Roadmap</button></form>`;
+    return `<form class="inline p7-busy-form" data-busy-msg="已提交，正在入队…" method="post" action="/trigger/discover-daily"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn ghost">发现 → Roadmap</button></form>`;
   }
   return `<form class="inline" method="post" action="/trigger/discover-daily"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn ghost">趋势 → Roadmap</button></form>`;
 }
@@ -741,8 +810,8 @@ export function renderPlanRoadmapRegenForm(alias: string, hasRadar: boolean): st
     : "今日尚无雷达数据；取消勾选后仅根据项目现状与北极星生成。";
   return `<div class="regen-panel panel">
 <h3 style="margin:0 0 8px;font-size:14px">按你的说明重新生成 Roadmap</h3>
-<p class="muted" style="margin:0 0 14px;font-size:12px">在下方填写补充要求（例如优先级、技术栈、本季度重点）。留空则与「AI 刷新」相同，仅按默认 prompt 生成。</p>
-<form method="post" action="/trigger/roadmap-refresh">
+<p class="muted" style="margin:0 0 14px;font-size:12px">在下方填写补充要求（例如优先级、技术栈、本季度重点）。留空则与「AI 刷新」相同，仅按默认 prompt 生成。提交后需调用模型，通常约 30 秒～2 分钟，页顶会显示进度条。</p>
+<form class="p7-busy-form" data-busy-msg="正在生成 Roadmap（调用模型中）…请勿关闭此页" method="post" action="/trigger/roadmap-refresh">
 <input type="hidden" name="alias" value="${esc(alias)}"/>
 <label for="roadmap-instructions">补充说明 / 自定义 prompt</label>
 <textarea id="roadmap-instructions" name="user_instructions" rows="4" placeholder="例：优先落地可观测性；本迭代不做前端大改；对齐 ROADMAP 里 Phase 2…"></textarea>
@@ -757,8 +826,8 @@ export function renderPlanRoadmapRegenForm(alias: string, hasRadar: boolean): st
 export function renderPlanGenerateForm(alias: string, suggestedGoal: string): string {
   return `<div class="regen-panel panel">
 <h3 style="margin:0 0 8px;font-size:14px">生成新 Plan</h3>
-<p class="muted" style="margin:0 0 14px;font-size:12px">填写本次要实现的目标；可附加约束。生成后出现在下方待审批列表（需配置 LLM）。</p>
-<form method="post" action="/trigger/plan-generate">
+<p class="muted" style="margin:0 0 14px;font-size:12px">填写本次要实现的目标；可附加约束。生成后出现在下方待审批列表（需配置 LLM）。通常约 30 秒～2 分钟，页顶会显示进度。</p>
+<form class="p7-busy-form" data-busy-msg="正在生成 Plan（调用模型中）…请勿关闭此页" method="post" action="/trigger/plan-generate">
 <input type="hidden" name="alias" value="${esc(alias)}"/>
 <label for="plan-goal">本次目标</label>
 <textarea id="plan-goal" name="goal" rows="2" placeholder="例：为 API 增加请求超时与重试">${esc(suggestedGoal)}</textarea>

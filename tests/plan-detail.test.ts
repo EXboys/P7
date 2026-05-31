@@ -70,6 +70,32 @@ describe("getPlanDetailView", () => {
     }
   });
 
+  test("canRetryExecute when failed without pr", () => {
+    const root = setupProject();
+    const da = join(root, ".p7");
+    writeFileSync(
+      join(da, "state.json"),
+      JSON.stringify([
+        {
+          planId: "failed-1",
+          projectPath: root,
+          goal: "g",
+          title: "Failed",
+          status: "failed",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          error: "commit failed",
+        },
+      ]),
+    );
+    try {
+      const v = getPlanDetailView(root, "failed-1");
+      expect(v?.canRetryExecute).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("returns null for unknown id", () => {
     const root = setupProject();
     try {
