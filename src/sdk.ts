@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { applyAllLlmEnv, buildSdkEnv } from "./llm-env.ts";
+import { renderTemplate } from "./prompt-template.ts";
 
 export type ModelRole = "default" | "planner" | "executor" | "selector";
 
@@ -18,6 +19,17 @@ export function resolveModel(role: ModelRole): string | undefined {
 export function readPrompt(name: string): string {
   const path = join(import.meta.dir, "..", "prompts", name);
   return readFileSync(path, "utf-8");
+}
+
+/**
+ * 读取 prompt 模板文件并渲染变量。
+ * vars 为 undefined 时返回原始内容（向后兼容）；
+ * 传入 vars 对象时，会对其中的 {{key}} 和 {{$if key}} 进行渲染。
+ */
+export function renderPrompt(name: string, vars?: Record<string, unknown>): string {
+  const content = readPrompt(name);
+  if (!vars) return content;
+  return renderTemplate(content, vars);
 }
 
 let personaCache: string | null | undefined;
@@ -37,15 +49,19 @@ export function readPersona(): string | null {
   return personaCache;
 }
 
-function composeSystemPrompt(systemPrompt: string): string {
+function composeSystemPrompt(systemPrompt: string, vars?: Record<string, unknown>): string {
   let base = systemPrompt;
   try {
-    base = `${readPrompt("core-context.md")}\n\n---\n\n${base}`;
+    const coreCtx = readPrompt("core-context.md");
+    base = `${vars ? renderTemplate(coreCtx, vars) : coreCtx}\n\n---\n\n${base}`;
   } catch {
     /* optional */
   }
   const persona = readPersona();
-  return persona ? `${persona}\n\n---\n\n${base}` : base;
+  if (persona) {
+    return `${vars ? renderTemplate(persona, vars) : persona}\n\n---\n\n${base}`;
+  }
+  return base;
 }
 
 export async function runSdkQuery(opts: {
