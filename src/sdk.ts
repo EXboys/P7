@@ -3,6 +3,7 @@ import { join } from "path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { applyAllLlmEnv, buildSdkEnv } from "./llm-env.ts";
 import { renderTemplate } from "./prompt-template.ts";
+import { writeSdkCost } from "./state.ts";
 
 export type ModelRole = "default" | "planner" | "executor" | "selector";
 
@@ -73,6 +74,8 @@ export async function runSdkQuery(opts: {
   agents?: Record<string, { description: string; prompt: string; tools?: string[] }>;
   hooks?: Parameters<typeof query>[0]["options"] extends { hooks?: infer H } ? H : never;
   maxTurns?: number;
+  planId?: string;
+  projectPath?: string;
 }): Promise<{ text: string; costUsd?: number }> {
   applyAllLlmEnv();
   const model = resolveModel(opts.role ?? "default");
@@ -110,6 +113,15 @@ export async function runSdkQuery(opts: {
       }
     }
   });
+
+  if (costUsd !== undefined && costUsd > 0 && opts.projectPath) {
+    writeSdkCost(opts.projectPath, {
+      planId: opts.planId,
+      role: opts.role ?? "default",
+      model,
+      costUsd,
+    });
+  }
 
   return { text, costUsd };
 }
