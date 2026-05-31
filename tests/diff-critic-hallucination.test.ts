@@ -10,7 +10,12 @@ describe("hallucination diff fixtures", () => {
     for (const fixture of HALLUCINATION_FIXTURES) {
       expect(fixture.id.length).toBeGreaterThan(0);
       expect(HALLUCINATION_CATEGORIES).toContain(fixture.category);
-      expect(fixture.expectedBlockers.length).toBeGreaterThan(0);
+      if (fixture.isNegative) {
+        // Negative fixtures validate that no blockers are raised.
+        expect(fixture.expectedBlockers.length).toBe(0);
+      } else {
+        expect(fixture.expectedBlockers.length).toBeGreaterThan(0);
+      }
       expect(Object.keys(fixture.setupFiles).length).toBeGreaterThan(0);
       for (const [path, content] of Object.entries(fixture.setupFiles)) {
         expect(path.length).toBeGreaterThan(0);
@@ -28,11 +33,25 @@ describe("hallucination diff fixtures", () => {
     for (const category of HALLUCINATION_CATEGORIES) {
       expect(seen.has(category)).toBe(true);
     }
-    expect(HALLUCINATION_FIXTURES.length).toBe(9);
+    expect(HALLUCINATION_FIXTURES.length).toBe(17);
   });
 
-  test("each fixture diffStat contains its expectedBlockers keywords", () => {
+  test("each category has at least 5 fixtures", () => {
+    const counts = new Map<HallucinationCategory, number>();
     for (const fixture of HALLUCINATION_FIXTURES) {
+      counts.set(fixture.category, (counts.get(fixture.category) ?? 0) + 1);
+    }
+    for (const category of HALLUCINATION_CATEGORIES) {
+      expect(counts.get(category) ?? 0).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  test("each fixture diffStat contains its expectedBlockers keywords (skip negative)", () => {
+    for (const fixture of HALLUCINATION_FIXTURES) {
+      if (fixture.isNegative) {
+        // Negative fixtures are expected to have no blockers; skip keyword check.
+        continue;
+      }
       for (const keyword of fixture.expectedBlockers) {
         expect(fixture.diffStat).toContain(keyword);
       }
@@ -42,5 +61,18 @@ describe("hallucination diff fixtures", () => {
   test("fixture ids are unique", () => {
     const ids = HALLUCINATION_FIXTURES.map((f) => f.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test("negative fixtures have empty expectedBlockers and isNegative flag", () => {
+    const negatives = HALLUCINATION_FIXTURES.filter((f) => f.isNegative);
+    expect(negatives.length).toBeGreaterThanOrEqual(2);
+    for (const fixture of negatives) {
+      expect(fixture.expectedBlockers.length).toBe(0);
+      // Negative fixtures' diffStat should NOT reference obviously fictional symbols.
+      const suspicious = /@[a-z]+[/-][a-z]+|Fake[A-Z]|NonExistent|\/\/\s+TODO/.test(
+        fixture.diffStat,
+      );
+      expect(suspicious).toBe(false);
+    }
   });
 });
