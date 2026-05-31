@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from "path";
 import { projectSubpathForRead, projectSubpathForWrite } from "./p7-paths.ts";
 import type { DevAgentConfig } from "./config.ts";
-import { transitionPlanState, upsertPlanState } from "./state.ts";
+import { getPlanState, transitionPlanState, upsertPlanState } from "./state.ts";
+import { recommendRoadmapGoal } from "./roadmap.ts";
 import type { ApprovalRecord, Plan, PlanRecord } from "./types.ts";
 
 export function approvalsDir(projectPath: string): string {
@@ -149,4 +150,46 @@ export function listApprovedForExecution(projectPath: string): ApprovalRecord[] 
     .filter((f) => f.endsWith(".json"))
     .map((f) => JSON.parse(readFileSync(join(dir, f), "utf-8")) as ApprovalRecord)
     .filter((r) => r.status === "approved");
+}
+
+const EXECUTE_SKIP_STATES = new Set([
+  "executing",
+  "pushed",
+  "pr_opened",
+  "merged",
+  "failed",
+]);
+
+function titleMatchesRoadmapGoal(title: string, goal: string): boolean {
+  const t = title.toLowerCase();
+  const g = goal.toLowerCase();
+  const a = g.slice(0, Math.min(18, g.length));
+  const b = t.slice(0, Math.min(18, t.length));
+  return a.length >= 8 && (g.includes(b) || t.includes(a));
+}
+
+/** 下一个应入队 execute 的已批准 Plan（跳过已结束；优先对齐当前 Roadmap 步骤） */
+export function pickNextApprovedPlanForExecution(
+  projectPath: string,
+): ApprovalRecord | null {
+  const candidates: ApprovalRecord[] = [];
+  for (const rec of listApprovedForExecution(projectPath)) {
+    const state = getPlanState(projectPath, rec.planId);
+    if (state && EXECUTE_SKIP_STATES.has(state.status)) continue;
+    candidates.push(rec);
+  }
+  if (candidates.length === 0) return null;
+
+  const roadmapGoal = recommendRoadmapGoal(projectPath);
+  if (roadmapGoal) {
+    const aligned = candidates.find((r) =>
+      titleMatchesRoadmapGoal(r.plan.title, roadmapGoal),
+    );
+    if (aligned) return aligned;
+  }
+
+  candidates.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+  return candidates[0];
 }
