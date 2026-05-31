@@ -1,9 +1,29 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
-import { backupRoadmap, loadRoadmap, roadmapPath } from "./roadmap.ts";
+import {
+  isRoadmapExhausted,
+  latestRoadmapBackupPath,
+  loadRoadmap,
+  roadmapPath,
+  backupRoadmap,
+} from "./roadmap.ts";
 import { readPrompt, runSdkQuery } from "./sdk.ts";
-import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
+import {
+  deriveThemesFromSignals,
+  formatDiscoveryForPrompt,
+  loadSnapshot,
+} from "./tech-discovery.ts";
+import { appendLesson } from "./agent-memory.ts";
+import { writeFallbackRoadmap } from "./roadmap-template.ts";
+import { hasLlmAuth } from "./llm-env.ts";
+import { scanProject } from "./scanner.ts";
 import type { DevAgentConfig } from "./config.ts";
 import type { ProjectScan } from "./types.ts";
+
+export type RoadmapRefreshResult = {
+  exhausted: boolean;
+  refreshed: boolean;
+  backupPath?: string;
+};
 
 function withUserInstructions(prompt: string, userInstructions?: string): string {
   const extra = userInstructions?.trim();
@@ -107,6 +127,70 @@ Feature: <名称> (started ${new Date().toISOString().slice(0, 10)})
 
   writeFileSync(path, md.trim() + "\n");
   return true;
+}
+
+/**
+ * Active 步骤全部完成后：备份当前 ROADMAP.md，再生成新一版。
+ * @param force — 执行器路径为 true，不受 discovery.auto_refresh_roadmap 关闭影响
+ */
+export async function refreshRoadmapIfExhausted(
+  projectPath: string,
+  cfg: DevAgentConfig,
+  opts: { force?: boolean } = {},
+): Promise<RoadmapRefreshResult> {
+  if (!isRoadmapExhausted(projectPath)) {
+    return { exhausted: false, refreshed: false };
+  }
+  if (!opts.force && !cfg.discovery.auto_refresh_roadmap) {
+    return { exhausted: true, refreshed: false };
+  }
+
+  const scan = await scanProject(projectPath);
+  const snap = loadSnapshot(projectPath);
+  const themes =
+    snap?.themes?.length
+      ? snap.themes
+      : snap?.signals?.length
+        ? deriveThemesFromSignals(snap.signals, cfg.discovery.theme_count)
+        : [];
+
+  const allowTemplate = cfg.discovery.allow_template_fallback === true;
+  let refreshed = false;
+
+  try {
+    if (themes.length > 0) {
+      refreshed = await refreshRoadmapFromRadar(projectPath, scan, cfg, themes);
+    } else {
+      refreshed = await refreshRoadmap(projectPath, scan, cfg);
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!allowTemplate || !hasLlmAuth()) throw e;
+    if (!snap?.signals?.length) throw e;
+    refreshed = writeFallbackRoadmap(projectPath, {
+      signals: snap.signals,
+      northStar: cfg.initial_goal,
+      themes,
+    });
+    await appendLesson(projectPath, `roadmap:exhausted-fallback (${msg.slice(0, 80)})`);
+  }
+
+  if (!refreshed && allowTemplate && snap?.signals?.length) {
+    refreshed = writeFallbackRoadmap(projectPath, {
+      signals: snap.signals,
+      northStar: cfg.initial_goal,
+      themes,
+    });
+  }
+
+  const backupPath = latestRoadmapBackupPath(projectPath);
+  if (refreshed) {
+    await appendLesson(projectPath, "roadmap:exhausted-refreshed (备份已写入 roadmap-history)");
+  } else if (backupPath) {
+    await appendLesson(projectPath, "roadmap:exhausted-backup-only (生成内容与旧版相同，已备份)");
+  }
+
+  return { exhausted: true, refreshed, backupPath: backupPath || undefined };
 }
 
 /** 控制台：可选用户说明 + 是否纳入今日雷达 */

@@ -3,12 +3,8 @@ import { join } from "path";
 import type { DevAgentConfig } from "./config.ts";
 import { projectSubpathForRead } from "./p7-paths.ts";
 import { bigramJaccard, extractLastJsonBlock } from "./json-utils.ts";
-import {
-  firstUnfinishedStep,
-  isRoadmapExhausted,
-  recommendRoadmapGoal,
-} from "./roadmap.ts";
-import { refreshRoadmap } from "./roadmap-refresh.ts";
+import { firstUnfinishedStep, recommendRoadmapGoal } from "./roadmap.ts";
+import { refreshRoadmapIfExhausted } from "./roadmap-refresh.ts";
 import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
 import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { GoalSelectionSchema, type GoalSelection, type ProjectScan } from "./types.ts";
@@ -53,9 +49,7 @@ export async function selectGoal(
   scan: ProjectScan,
   cfg: DevAgentConfig,
 ): Promise<GoalSelection> {
-  if (isRoadmapExhausted(projectPath)) {
-    await refreshRoadmap(projectPath, scan, cfg);
-  }
+  await refreshRoadmapIfExhausted(projectPath, cfg);
 
   const fast = recommendRoadmapGoal(projectPath);
   const failures = loadFailureTargets(projectPath);

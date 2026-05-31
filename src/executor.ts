@@ -5,6 +5,7 @@ import type { DevAgentConfig } from "./config.ts";
 import { reviewDiff } from "./diff-critic.ts";
 import { appendLesson } from "./agent-memory.ts";
 import { markRoadmapStepDone } from "./roadmap.ts";
+import { refreshRoadmapIfExhausted } from "./roadmap-refresh.ts";
 import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { loadLatestPlanRecord, recordFailedPlan } from "./planner.ts";
 import { transitionPlanState } from "./state.ts";
@@ -430,6 +431,7 @@ export async function executePlan(
     }
     recordStepEnd("vcs.publish");
     await markRoadmapStepDone(projectPath, plan.title, sha);
+    await refreshRoadmapIfExhausted(projectPath, cfg, { force: true });
 
     const durationSec = Math.round((Date.now() - start) / 1000);
     await appendLesson(

@@ -28,7 +28,7 @@ import { getJob } from "./queue/store.ts";
 import { applyLlmProbeResult, pipelineReady, runPipelineCheck } from "../src/pipeline-check.ts";
 import { probeLlmConnection } from "../src/llm-probe.ts";
 import { applyAllLlmEnv, hasLlmAuth, mergeLlmEnv } from "../src/llm-env.ts";
-import { loadRoadmap } from "../src/roadmap.ts";
+import { listRoadmapBackups, loadRoadmap } from "../src/roadmap.ts";
 import { listOpenPullRequests } from "../src/vcs/open-prs.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
@@ -453,10 +453,22 @@ ${themes}
     if (section === "roadmap") {
       const snap = loadSnapshot(proj.path);
       const hasRadar = Boolean(snap?.themes.length);
+      const backups = listRoadmapBackups(proj.path);
+      const backupHtml = backups.length
+        ? `<div class="panel" style="margin-bottom:14px"><div class="panel-head"><h2>历史备份</h2></div><ul class="roadmap-preview">${backups
+            .map((f) => {
+              const ts = f.match(/ROADMAP-(\d+)\.md/)?.[1];
+              const when = ts
+                ? new Date(Number(ts)).toLocaleString("zh-CN", { hour12: false })
+                : f;
+              return `<li><span class="dot"></span><span class="muted">${esc(when)}</span> <code>${esc(f)}</code></li>`;
+            })
+            .join("")}</ul><p class="muted" style="font-size:12px;margin:8px 0 0">Active 全部完成后执行器会自动备份并生成新 Roadmap，文件位于 <code>.p7/roadmap-history/</code></p></div>`
+        : "";
       const roadmap = existsSync(join(proj.path, "ROADMAP.md"))
         ? `<pre>${esc(readFileSync(join(proj.path, "ROADMAP.md"), "utf-8"))}</pre>`
         : `<div class="empty">尚无 ROADMAP.md，填写下方说明后点「重新生成」，或先跑「发现 → Roadmap」</div>`;
-      body = `${renderPlanRoadmapRegenForm(alias, hasRadar)}<div class="panel">${roadmap}</div>`;
+      body = `${renderPlanRoadmapRegenForm(alias, hasRadar)}${backupHtml}<div class="panel">${roadmap}</div>`;
     } else {
       const dc = loadConfig(proj.path);
       const suggestedGoal =

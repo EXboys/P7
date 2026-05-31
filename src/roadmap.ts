@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 import { p7ProjectDir } from "./p7-paths.ts";
 
@@ -133,4 +133,21 @@ export function backupRoadmap(projectPath: string): string {
   const dest = join(histDir, `ROADMAP-${Date.now()}.md`);
   writeFileSync(dest, readFileSync(src, "utf-8"));
   return dest;
+}
+
+/** 最近备份的 ROADMAP（新→旧） */
+export function listRoadmapBackups(projectPath: string, limit = 8): string[] {
+  const histDir = join(p7ProjectDir(projectPath), "roadmap-history");
+  if (!existsSync(histDir)) return [];
+  return readdirSync(histDir)
+    .filter((f) => f.startsWith("ROADMAP-") && f.endsWith(".md"))
+    .sort()
+    .reverse()
+    .slice(0, limit);
+}
+
+export function latestRoadmapBackupPath(projectPath: string): string {
+  const name = listRoadmapBackups(projectPath, 1)[0];
+  if (!name) return "";
+  return join(p7ProjectDir(projectPath), "roadmap-history", name);
 }
