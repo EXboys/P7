@@ -229,6 +229,60 @@ export function hasActiveJob(alias: string): boolean {
   return row.c > 0;
 }
 
+/**
+ * 单步 upsert：读取当前 step_states JSON 数组，按 step_name 匹配并更新或追加，
+ * 然后写回。相比 updateJobStepStates()，调用方无需自行维护完整数组。
+ *
+ * 注意：仅在 P7_JOB_ID 环境变量存在时生效（由 Worker 进程注入）。
+ * 用户直接 CLI 运行时（如 bun run src/index.ts execute ./project）无 jobId，
+ * 此函数不会被调用 —— 这是设计妥协而非 bug。
+ */
+export async function updateJobStepState(
+  id: string,
+  step: StepState,
+): Promise<void> {
+  const d = getDb();
+  // 读取当前 step_states
+  const row = d
+    .query("SELECT step_states FROM jobs WHERE id = ?")
+    .get(id) as { step_states: string | null } | null;
+  if (!row) return; // job 不存在，静默跳过
+
+  let steps: StepState[] = [];
+  if (row.step_states) {
+    try {
+      steps = JSON.parse(row.step_states) as StepState[];
+      if (!Array.isArray(steps)) steps = [];
+    } catch {
+      steps = []; // 损坏的 JSON，重置为空数组
+    }
+  }
+
+  // 按 step_name 查找并更新，未找到则追加
+  const idx = steps.findIndex((s) => s.step_name === step.step_name);
+  if (idx >= 0) {
+    steps[idx] = step;
+  } else {
+    steps.push(step);
+  }
+
+  // Retry up to 3 times on SQLITE_BUSY (WAL mode concurrent write contention)
+  const json = JSON.stringify(steps);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      d.run("UPDATE jobs SET step_states = ? WHERE id = ?", [json, id]);
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("SQLITE_BUSY") && attempt < 2) {
+        await Bun.sleep(10 + Math.random() * 20);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 export async function updateJobStepStates(id: string, steps: StepState[]): Promise<void> {
   const json = JSON.stringify(steps);
   const d = getDb();
