@@ -1,3 +1,11 @@
+export interface StepState {
+  step_name: string;
+  status: "running" | "completed" | "failed";
+  started_at: string;
+  finished_at?: string;
+  error?: string;
+}
+
 export type JobKind =
   | "daily"
   | "discover-daily"
@@ -21,6 +29,7 @@ export interface JobRow {
   progress: string | null;
   result_json: string | null;
   error: string | null;
+  step_states?: string;
 }
 
 export interface DailyJobPayload {

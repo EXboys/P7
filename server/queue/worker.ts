@@ -24,7 +24,7 @@ function jobLogPath(id: string): string {
   return join(dir, `${id}.log`);
 }
 
-function mergeEnv(cfg: ServerConfig, projectAlias?: string): Record<string, string> {
+function mergeEnv(cfg: ServerConfig, projectAlias?: string, jobId?: string): Record<string, string> {
   const base = dashboardBaseUrl(cfg);
   const env: Record<string, string> = {
     ...process.env,
@@ -32,6 +32,7 @@ function mergeEnv(cfg: ServerConfig, projectAlias?: string): Record<string, stri
     ...modelEnvs(cfg),
     ...(base ? { DASHBOARD_BASE_URL: base, P7_DASHBOARD_URL: base } : {}),
     ...(projectAlias ? { P7_PROJECT_ALIAS: projectAlias } : {}),
+    ...(jobId ? { P7_JOB_ID: jobId } : {}),
   };
   if (cfg.dingtalk?.webhook) {
     env.DINGTALK_WEBHOOK = cfg.dingtalk.webhook;
@@ -76,7 +77,7 @@ async function runJob(
 
   const proc = Bun.spawn(args, {
     cwd: join(import.meta.dir, "../.."),
-    env: mergeEnv(cfg, projectAlias),
+    env: mergeEnv(cfg, projectAlias, jobId),
     stdout: "pipe",
     stderr: "pipe",
   });

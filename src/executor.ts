@@ -18,6 +18,8 @@ import {
   type WorktreeInfo,
 } from "./worktree.ts";
 import { withExponentialBackoff } from "./retry.ts";
+import type { StepState } from "../server/queue/types.ts";
+import { updateJobStepStates } from "../server/queue/db.ts";
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string } {
   const proc = Bun.spawnSync(["git", "-C", cwd, ...args], {
@@ -213,9 +215,40 @@ export async function executePlan(
   const start = Date.now();
   let wt: WorktreeInfo | null = null;
 
+  // ── Step state tracking (persisted to jobs.db for resumability) ──
+  const jobId = process.env.P7_JOB_ID;
+  const steps: StepState[] = [];
+
+  const recordStepStart = (stepName: string) => {
+    if (!jobId) return;
+    const step: StepState = {
+      step_name: stepName,
+      status: "running",
+      started_at: new Date().toISOString(),
+    };
+    steps.push(step);
+    updateJobStepStates(jobId, [...steps]).catch(() => {});
+  };
+
+  const recordStepEnd = (stepName: string, error?: string) => {
+    if (!jobId) return;
+    const step = steps.find(
+      (s) => s.step_name === stepName && s.status === "running",
+    );
+    if (step) {
+      step.status = error ? "failed" : "completed";
+      step.finished_at = new Date().toISOString();
+      if (error) step.error = error;
+    }
+    updateJobStepStates(jobId, [...steps]).catch(() => {});
+  };
+  // ────────────────────────────────────────────────────────────────
+
   try {
     if (planId) transitionPlanState(projectPath, planId, "executing");
+    recordStepStart("worktree.create");
     wt = createWorktree(projectPath, baseCommit);
+    recordStepEnd("worktree.create");
     const system = readPrompt("executor-system.md");
     const planText = JSON.stringify(plan, null, 2);
     const maxTurns = deriveMaxTurns(plan);
@@ -275,6 +308,8 @@ export async function executePlan(
         "executor produced no file changes after 2 attempts; use console「重试执行」or fix plan scope",
       );
     }
+
+    recordStepStart("validate.diff");
     const maxFiles = Math.min(limits.maxFiles, cfg.diff_critic.max_files_ceiling);
     const maxDiffLines = Math.min(
       Math.max(
@@ -289,10 +324,14 @@ export async function executePlan(
     if (stats.lines > maxDiffLines) {
       throw new Error(`Diff too large: ${stats.lines} lines > ${maxDiffLines}`);
     }
+    recordStepEnd("validate.diff");
 
+    recordStepStart("validate.typecheck");
     const tc = await runTypecheck(wt.path);
     if (!tc.ok) throw new Error(`typecheck failed: ${tc.out.slice(0, 500)}`);
+    recordStepEnd("validate.typecheck");
 
+    recordStepStart("validate.test");
     if (cfg.test_command) {
       const testProc = Bun.spawnSync(["sh", "-c", cfg.test_command], {
         cwd: wt.path,
@@ -303,19 +342,26 @@ export async function executePlan(
         throw new Error(`test failed: ${new TextDecoder().decode(testProc.stderr).slice(0, 500)}`);
       }
     }
+    recordStepEnd("validate.test");
 
+    recordStepStart("review.diff");
     const critic = await reviewDiff(wt.path, diffStatOut, plan.title);
     if (!critic.ok) {
       throw new Error(`diff-critic blocked: ${critic.findings.slice(0, 300)}`);
     }
+    recordStepEnd("review.diff");
 
+    recordStepStart("git.commit");
     const { sha } = commitWorktreeChanges(wt, baseCommit, plan.title);
+    recordStepEnd("git.commit");
 
+    recordStepStart("git.push");
     const push = git(wt.path, ["push", "-u", "origin", wt.branch]);
     if (!push.ok) {
       const fallback = git(wt.path, ["push", "origin", `HEAD:${wt.branch}`]);
       if (!fallback.ok) throw new Error(`push failed: ${push.out}; fallback: ${fallback.out}`);
     }
+    recordStepEnd("git.push");
 
     const branch = wt.branch;
     if (planId) {
@@ -324,6 +370,7 @@ export async function executePlan(
         commitSha: sha,
       });
     }
+    recordStepStart("vcs.publish");
     const vcs = await publishToVcs({
       projectPath: wt.path,
       remoteUrl: scanRemote,
@@ -344,6 +391,7 @@ export async function executePlan(
         accountResults: vcs.accountResults,
       });
     }
+    recordStepEnd("vcs.publish");
     await markRoadmapStepDone(projectPath, plan.title, sha);
 
     const durationSec = Math.round((Date.now() - start) / 1000);
@@ -371,6 +419,15 @@ export async function executePlan(
     recordFailedPlan(projectPath, plan, err);
     if (planId) transitionPlanState(projectPath, planId, "failed", { error: err });
     await appendLesson(projectPath, `execute:failed "${plan.title}" x ${err.slice(0, 120)}`);
+    // Mark any running steps as failed so no step stays in "running" forever
+    for (const step of steps) {
+      if (step.status === "running") {
+        step.status = "failed";
+        step.finished_at = new Date().toISOString();
+        step.error = step.error ?? err.slice(0, 500);
+      }
+    }
+    if (jobId) updateJobStepStates(jobId, [...steps]).catch(() => {});
     return {
       ok: false,
       error: err,
