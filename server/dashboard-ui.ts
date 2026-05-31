@@ -145,42 +145,67 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius
 .regen-panel textarea{resize:vertical;min-height:64px}
 .check-row{display:flex!important;align-items:center;gap:8px;margin:12px 0 0!important;color:var(--fg)!important;font-size:13px!important;font-weight:400!important}
 .check-row input{width:auto;margin:0}
-.plan-detail-page{display:flex;flex-direction:column;gap:18px}
-.plan-crumb{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.content-body:has(.plan-detail-page){max-width:1120px}
+.plan-detail-page{display:flex;flex-direction:column;gap:20px;padding-bottom:8px}
+.plan-crumb{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .plan-crumb a{color:var(--mut);text-decoration:none}
 .plan-crumb a:hover{color:var(--accent);text-decoration:none}
-.plan-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap;padding:20px 22px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--elev)}
-.plan-hero-main{flex:1;min-width:200px}
-.plan-id{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut);letter-spacing:.02em}
-.plan-hero-title{margin:8px 0 0;font-size:20px;font-weight:700;letter-spacing:-.02em;line-height:1.3}
-.plan-hero-goal{margin:12px 0 0;font-size:13px;color:var(--mut);line-height:1.55;max-width:640px}
-.plan-hero-goal strong{color:var(--fg);font-weight:600}
-.plan-hero-aside{display:flex;flex-direction:column;align-items:flex-end;gap:10px}
-.plan-detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,300px);gap:16px;align-items:start}
-@media(max-width:900px){.plan-detail-grid{grid-template-columns:1fr}}
-.plan-motivation{margin:0;padding:14px 16px 14px 18px;border-left:3px solid var(--accent);background:var(--surface2);border-radius:0 var(--radius) var(--radius) 0;font-size:13px;line-height:1.6;color:var(--fg)}
-.plan-empty-state{padding:28px 20px;text-align:center;color:var(--mut);font-size:13px;line-height:1.55}
+.plan-crumb span{opacity:.45}
+.plan-hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px 24px;padding:22px 24px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--elev)}
+@media(max-width:720px){.plan-hero{grid-template-columns:1fr}}
+.plan-hero-top{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px}
+.plan-id{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut);padding:4px 10px;background:var(--bg);border:1px solid var(--line);border-radius:999px}
+.plan-hero-title{margin:0;font-size:clamp(18px,2.4vw,22px);font-weight:700;letter-spacing:-.03em;line-height:1.35}
+.plan-hero-goal{margin:14px 0 0;font-size:13px;color:var(--mut);line-height:1.65}
+.plan-hero-goal-label{display:block;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin-bottom:6px}
+.plan-goal-text{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.plan-hero-aside{display:flex;flex-direction:column;align-items:flex-end;gap:12px;min-width:120px}
+@media(max-width:720px){.plan-hero-aside{align-items:flex-start}}
+.plan-stat-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;padding-top:16px;border-top:1px solid var(--line);grid-column:1/-1}
+.plan-stat{display:inline-flex;align-items:baseline;gap:6px;padding:8px 12px;background:var(--surface2);border:1px solid var(--line);border-radius:9px;font-size:12px;color:var(--mut)}
+.plan-stat b{font-size:15px;font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums}
+.plan-stat.warn b{color:var(--warn)}
+.plan-detail-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+@media(max-width:960px){.plan-detail-grid{grid-template-columns:1fr}}
+.plan-main{display:flex;flex-direction:column;gap:16px}
+.plan-aside{display:flex;flex-direction:column;gap:14px;position:sticky;top:16px}
+@media(max-width:960px){.plan-aside{position:static}}
+.plan-section{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;box-shadow:var(--elev)}
+.plan-section h2{margin:0 0 14px;font-size:14px;font-weight:600;letter-spacing:-.01em}
+.plan-motivation{margin:0;font-size:13px;line-height:1.7;color:var(--fg)}
+.plan-empty-state{padding:24px 16px;text-align:center;color:var(--mut);font-size:13px;line-height:1.55}
 .plan-empty-state p{margin:0 0 12px}
-.changes-table tbody td:first-child{width:36%;vertical-align:top}
-.changes-table code{font-size:12px;word-break:break-all}
-.changes-lines{text-align:right;color:var(--mut);font-variant-numeric:tabular-nums;white-space:nowrap}
-.risk-pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.risk-pill{padding:5px 11px;font-size:12px;border-radius:999px;background:rgba(244,112,103,.1);border:1px solid rgba(244,112,103,.28);color:var(--fg)}
-.risk-none{color:var(--mut);font-size:13px}
-.delivery-dl{margin:0}
-.delivery-dl dt{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:14px 0 0}
-.delivery-dl dt:first-child{margin-top:0}
-.delivery-dl dd{margin:5px 0 0;font-size:13px;line-height:1.45;word-break:break-word}
-.delivery-dl dd code{font-size:12px}
-.delivery-link{display:inline-flex;align-items:center;gap:6px;font-weight:500}
-.plan-timeline{font-size:12px;color:var(--mut);line-height:1.6}
-.plan-pending-banner{width:100%;padding:12px 14px;border-radius:var(--radius);background:rgba(229,181,103,.1);border:1px solid rgba(229,181,103,.35);font-size:13px;text-align:right}
-.plan-actions-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:16px 18px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--elev)}
-.plan-actions-bar .actions-spacer{flex:1;min-width:8px}
-.panel.error-panel{border-color:rgba(244,112,103,.4);background:rgba(244,112,103,.06)}
-.panel.error-panel h2{color:var(--err)}
-.critique-list{margin:8px 0 0;padding-left:18px;color:var(--mut);font-size:13px}
-.critique-list li{margin:4px 0}
+.change-list{display:flex;flex-direction:column;gap:10px;margin:0;padding:0;list-style:none}
+.change-item{padding:14px 16px;background:var(--surface2);border:1px solid var(--line);border-radius:10px}
+.change-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
+.change-path{font-size:12px;line-height:1.45;color:var(--accent);word-break:break-word}
+.change-lines{flex-shrink:0;font-size:11px;font-weight:600;color:var(--mut);padding:3px 8px;background:var(--bg);border:1px solid var(--line);border-radius:6px;font-variant-numeric:tabular-nums}
+.change-desc{margin:0;font-size:12px;line-height:1.55;color:var(--mut)}
+.risk-pills{display:flex;flex-wrap:wrap;gap:8px}
+.risk-pill{padding:6px 12px;font-size:12px;border-radius:8px;background:rgba(240,113,120,.08);border:1px solid rgba(240,113,120,.25);color:var(--fg);line-height:1.35}
+.risk-none{color:var(--mut);font-size:13px;margin:0}
+.meta-tiles{display:flex;flex-direction:column;gap:8px}
+.meta-tile{display:flex;flex-direction:column;gap:4px;padding:12px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:10px;text-decoration:none;color:inherit;transition:border-color .12s,background .12s}
+a.meta-tile:hover{border-color:rgba(107,159,255,.4);background:rgba(107,159,255,.06);text-decoration:none}
+.meta-k{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.meta-v{font-size:13px;font-weight:500;line-height:1.4;word-break:break-word}
+.meta-v code{font-size:12px}
+.meta-plain{padding:12px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:10px}
+.meta-plain .meta-v{margin-top:4px}
+.plan-timeline{display:grid;gap:8px;margin:0}
+.plan-timeline-row{display:flex;justify-content:space-between;gap:12px;font-size:12px}
+.plan-timeline-row dt{color:var(--mut);margin:0}
+.plan-timeline-row dd{margin:0;color:var(--fg);font-variant-numeric:tabular-nums}
+.plan-pending-banner{padding:10px 14px;border-radius:9px;background:rgba(229,181,103,.12);border:1px solid rgba(229,181,103,.35);font-size:12px;line-height:1.45;text-align:center;max-width:220px}
+@media(max-width:720px){.plan-pending-banner{max-width:none;text-align:left}}
+.plan-actions-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:14px 18px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--elev);position:sticky;bottom:12px;z-index:2}
+.plan-actions-bar .actions-spacer{flex:1;min-width:12px}
+.plan-section.error-panel{border-color:rgba(244,112,103,.4);background:rgba(244,112,103,.06)}
+.plan-section.error-panel h2{color:var(--err)}
+.plan-section.error-panel pre{margin:0;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word;color:var(--fg)}
+.critique-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.critique-list li{padding:10px 12px;background:var(--surface2);border-radius:8px;font-size:13px;line-height:1.5;color:var(--mut)}
+.account-list{margin:6px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;font-size:12px}
 .badge.warn{color:var(--warn);background:rgba(227,179,65,.12);border-color:rgba(227,179,65,.35)}
 .overview-page{display:flex;flex-direction:column;gap:18px}
 .overview-themes{margin:0 0 4px}
@@ -717,6 +742,21 @@ function shortLinkLabel(url: string, kind: "pr" | "issue" | "review"): string {
   }
 }
 
+function planStatChip(
+  value: string | number,
+  label: string,
+  tone?: "warn",
+): string {
+  return `<span class="plan-stat${tone ? ` ${tone}` : ""}"><b>${esc(String(value))}</b> ${esc(label)}</span>`;
+}
+
+function renderMetaTile(label: string, valueHtml: string, href?: string): string {
+  const inner = `<span class="meta-k">${esc(label)}</span><span class="meta-v">${valueHtml}</span>`;
+  return href
+    ? `<a class="meta-tile" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>`
+    : `<div class="meta-plain">${inner}</div>`;
+}
+
 export function renderPlanDetailPage(alias: string, detail: PlanDetailView): string {
   const base = `/project/${encodeURIComponent(alias)}`;
   const planId = detail.planId;
@@ -724,110 +764,121 @@ export function renderPlanDetailPage(alias: string, detail: PlanDetailView): str
   const p = detail.plan;
   const title = st?.title ?? p?.title ?? `Plan ${planId}`;
 
-  const metrics = p
-    ? `<div class="cards">
-${metricCard(p.changes.length, "涉及文件")}
-${metricCard(p.estimated_diff_lines, "估算行数", p.estimated_diff_lines > 120 ? "warn" : undefined)}
-${metricCard(complexityLabel(p.complexity), "复杂度")}
-${metricCard(p.validation, "验证方式")}
+  const statRow = p
+    ? `<div class="plan-stat-row">
+${planStatChip(p.changes.length, "文件")}
+${planStatChip(p.estimated_diff_lines, "估算行数", p.estimated_diff_lines > 120 ? "warn" : undefined)}
+${planStatChip(complexityLabel(p.complexity), "复杂度")}
+${planStatChip(p.validation, "验证")}
 </div>`
     : "";
 
   let changesBlock = "";
   if (p && p.changes.length > 0) {
-    const rows = p.changes
+    const items = p.changes
       .map(
         (ch) =>
-          `<tr><td><code>${esc(ch.file)}</code><div class="muted" style="font-size:12px;margin-top:4px">${esc(ch.description)}</div></td><td class="changes-lines">${esc(String(ch.estimated_lines))} 行</td></tr>`,
+          `<li class="change-item"><div class="change-head"><code class="change-path">${esc(ch.file)}</code><span class="change-lines">${esc(String(ch.estimated_lines))} 行</span></div><p class="change-desc">${esc(ch.description)}</p></li>`,
       )
       .join("");
-    changesBlock = `<div class="panel"><h2>变更清单</h2>
-<div class="tbl-wrap" style="margin:0"><table class="changes-table"><thead><tr><th>文件</th><th style="text-align:right">规模</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    changesBlock = `<section class="plan-section"><h2>变更清单 <span class="muted" style="font-weight:500;font-size:12px">共 ${p.changes.length} 项</span></h2><ul class="change-list">${items}</ul></section>`;
   } else if (!p) {
-    changesBlock = `<div class="panel"><h2>变更清单</h2>
-<div class="plan-empty-state">
-<p>该 Plan 未保留详细变更列表（常见于示例数据或早期记录）。</p>
-<a class="btn ghost sm" href="${base}/review">Review / PR</a>
-</div></div>`;
+    changesBlock = `<section class="plan-section"><h2>变更清单</h2><div class="plan-empty-state"><p>该 Plan 未保留详细变更列表。</p><a class="btn ghost sm" href="${base}/review">查看 Review / PR</a></div></section>`;
   }
 
   const motivationBlock = p?.motivation
-    ? `<div class="panel"><h2>动机</h2><p class="plan-motivation">${esc(p.motivation)}</p></div>`
+    ? `<section class="plan-section"><h2>动机</h2><p class="plan-motivation">${esc(p.motivation)}</p></section>`
     : "";
 
   const risksBlock = p
-    ? `<div class="panel"><h2>风险</h2>${
+    ? `<section class="plan-section"><h2>风险 ${
+        p.risks.length > 0 ? `<span class="muted" style="font-weight:500;font-size:12px">${p.risks.length} 条</span>` : ""
+      }</h2>${
         p.risks.length > 0
           ? `<div class="risk-pills">${p.risks.map((r) => `<span class="risk-pill">${esc(r)}</span>`).join("")}</div>`
           : `<p class="risk-none">未标注风险</p>`
-      }</div>`
+      }</section>`
     : "";
 
   const critiqueBlock =
     p?.critique_notes && p.critique_notes.length > 0
-      ? `<div class="panel"><h2>评审备注</h2><ul class="critique-list">${p.critique_notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>`
+      ? `<section class="plan-section"><h2>评审备注</h2><ul class="critique-list">${p.critique_notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></section>`
       : "";
 
-  const deliveryItems: string[] = [];
+  const metaTiles: string[] = [];
   if (st?.branch) {
-    deliveryItems.push(`<dt>分支</dt><dd><code>${esc(st.branch)}</code></dd>`);
+    metaTiles.push(renderMetaTile("分支", `<code>${esc(st.branch)}</code>`));
   }
   if (st?.commitSha) {
-    deliveryItems.push(`<dt>提交</dt><dd><code>${esc(st.commitSha)}</code></dd>`);
+    metaTiles.push(renderMetaTile("提交", `<code>${esc(st.commitSha)}</code>`));
   }
   if (st?.prUrl) {
-    deliveryItems.push(
-      `<dt>Pull Request</dt><dd><a class="delivery-link" href="${esc(st.prUrl)}" target="_blank" rel="noopener">${esc(shortLinkLabel(st.prUrl, "pr"))} ↗</a></dd>`,
+    metaTiles.push(
+      renderMetaTile(
+        "Pull Request",
+        `${esc(shortLinkLabel(st.prUrl, "pr"))} ↗`,
+        st.prUrl,
+      ),
     );
   }
   if (st?.issueUrl) {
-    deliveryItems.push(
-      `<dt>Issue</dt><dd><a class="delivery-link" href="${esc(st.issueUrl)}" target="_blank" rel="noopener">${esc(shortLinkLabel(st.issueUrl, "issue"))} ↗</a></dd>`,
+    metaTiles.push(
+      renderMetaTile(
+        "Issue",
+        `${esc(shortLinkLabel(st.issueUrl, "issue"))} ↗`,
+        st.issueUrl,
+      ),
     );
   }
   if (st?.reviewUrl) {
-    deliveryItems.push(
-      `<dt>Review</dt><dd><a class="delivery-link" href="${esc(st.reviewUrl)}" target="_blank" rel="noopener">${esc(shortLinkLabel(st.reviewUrl, "review"))} ↗</a></dd>`,
+    metaTiles.push(
+      renderMetaTile(
+        "Compare",
+        `${esc(shortLinkLabel(st.reviewUrl, "review"))} ↗`,
+        st.reviewUrl,
+      ),
     );
   }
   if (st?.mergeStatus) {
-    deliveryItems.push(`<dt>合并状态</dt><dd>${esc(mergeStatusLabel(st.mergeStatus))}</dd>`);
-  }
-  if (st?.accountResults && st.accountResults.length > 0) {
-    const accRows = st.accountResults
-      .map((a) => {
-        const link = a.prUrl
-          ? `<a href="${esc(a.prUrl)}" target="_blank" rel="noopener">${esc(shortLinkLabel(a.prUrl, "pr"))}</a>`
-          : "—";
-        return `<li><strong>${esc(a.accountId)}</strong> · ${a.ok ? "成功" : "失败"} · ${link}</li>`;
-      })
-      .join("");
-    deliveryItems.push(`<dt>多账号发布</dt><dd><ul style="margin:6px 0 0;padding-left:16px;font-size:12px">${accRows}</ul></dd>`);
+    metaTiles.push(
+      renderMetaTile("合并", esc(mergeStatusLabel(st.mergeStatus))),
+    );
   }
 
   const deliveryPanel =
-    deliveryItems.length > 0
-      ? `<div class="panel"><h2>交付</h2><dl class="delivery-dl">${deliveryItems.join("")}</dl></div>`
-      : `<div class="panel"><h2>交付</h2><p class="muted" style="margin:0;font-size:13px">尚无分支、提交或 PR 信息。</p></div>`;
+    metaTiles.length > 0
+      ? `<section class="plan-section"><h2>交付</h2><div class="meta-tiles">${metaTiles.join("")}</div>${
+          st?.accountResults && st.accountResults.length > 0
+            ? `<ul class="account-list">${st.accountResults
+                .map((a) => {
+                  const link = a.prUrl
+                    ? `<a href="${esc(a.prUrl)}" target="_blank" rel="noopener">${esc(shortLinkLabel(a.prUrl, "pr"))}</a>`
+                    : "—";
+                  return `<li><strong>${esc(a.accountId)}</strong> · ${a.ok ? "成功" : "失败"} · ${link}</li>`;
+                })
+                .join("")}</ul>`
+            : ""
+        }</section>`
+      : `<section class="plan-section"><h2>交付</h2><p class="muted" style="margin:0;font-size:13px">尚无分支、提交或 PR。</p></section>`;
 
-  const timelinePanel = `<div class="panel"><h2>时间线</h2>
-<div class="plan-timeline">
-<p>创建：${esc(formatPlanTime(st?.createdAt))}</p>
-<p>更新：${esc(formatPlanTime(st?.updatedAt))}</p>
-</div></div>`;
+  const timelinePanel = `<section class="plan-section"><h2>时间线</h2>
+<dl class="plan-timeline">
+<div class="plan-timeline-row"><dt>创建</dt><dd>${esc(formatPlanTime(st?.createdAt))}</dd></div>
+<div class="plan-timeline-row"><dt>更新</dt><dd>${esc(formatPlanTime(st?.updatedAt))}</dd></div>
+</dl></section>`;
 
   const errorPanel = st?.error
-    ? `<div class="panel error-panel"><h2>错误</h2><pre style="margin:0;border:none;background:transparent;padding:0;max-height:none">${esc(st.error)}</pre></div>`
+    ? `<section class="plan-section error-panel"><h2>错误</h2><pre>${esc(st.error)}</pre></section>`
     : "";
 
   const pendingBanner = detail.canApprove
-    ? `<div class="plan-pending-banner">待你确认范围与风险后再批准执行</div>`
+    ? `<div class="plan-pending-banner">待确认范围与风险后再批准</div>`
     : "";
 
   const retryAction = detail.canRetryExecute
     ? `<form class="inline" method="post" action="/trigger/retry-execute"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(planId)}"/><button class="btn ok">重试执行</button></form>`
     : st?.prUrl && st?.error
-      ? `<span class="muted" style="font-size:13px">已有 PR，无需重试执行</span>`
+      ? `<span class="muted" style="font-size:13px">已有 PR，无需重试</span>`
       : "";
 
   const actions = detail.canApprove
@@ -837,21 +888,20 @@ ${metricCard(p.validation, "验证方式")}
     : retryAction;
 
   return `<div class="plan-detail-page">
-<nav class="plan-crumb"><a href="${base}/plan?section=plans">← Plan 审批</a><span>/</span><span>${esc(planId)}</span></nav>
+<nav class="plan-crumb"><a href="${base}/plan?section=plans">← Plan 审批</a><span>/</span><span class="plan-id" style="border:none;padding:0;background:transparent">${esc(planId)}</span></nav>
 
 <header class="plan-hero">
-<div class="plan-hero-main">
-<span class="plan-id">${esc(planId)}</span>
+<div>
+<div class="plan-hero-top">${planStatusBadge(detail.status)}</div>
 <h2 class="plan-hero-title">${esc(title)}</h2>
-<p class="plan-hero-goal"><strong>目标</strong> — ${esc(detail.goal)}</p>
+<div class="plan-hero-goal">
+<span class="plan-hero-goal-label">目标</span>
+<span class="plan-goal-text" title="${esc(detail.goal)}">${esc(detail.goal)}</span>
 </div>
-<div class="plan-hero-aside">
-${planStatusBadge(detail.status)}
-${pendingBanner}
+${statRow}
 </div>
+<div class="plan-hero-aside">${pendingBanner}</div>
 </header>
-
-${metrics}
 
 <div class="plan-detail-grid">
 <div class="plan-main">
@@ -871,6 +921,7 @@ ${timelinePanel}
 ${actions}
 <span class="actions-spacer"></span>
 <a class="btn ghost sm" href="${base}/plan?section=plans">返回列表</a>
+<a class="btn ghost sm" href="${base}/run">运行</a>
 <a class="btn ghost sm" href="${base}/review">Review</a>
 </div>
 </div>`;

@@ -715,11 +715,10 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
 
     const st = detail.state;
     const body = renderPlanDetailPage(alias, detail);
+    const planTitle = st?.title ?? detail.plan?.title ?? planId;
     const html = projectShell(cfg, alias, "plan", {
-      title: st?.title ?? detail.plan?.title ?? `Plan ${planId}`,
-      description: detail.canApprove
-        ? "确认变更范围与风险后批准。"
-        : "Plan 详情、交付链路与审批操作。",
+      title: "Plan 详情",
+      description: planTitle,
       body,
       pipelineDone: 3,
       section: "plans",
