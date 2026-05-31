@@ -18,6 +18,8 @@ export const ServerConfigSchema = z.object({
   cli_entry: z.string().default(""),
   bun_bin: z.string().default("bun"),
   scheduler_enabled: z.boolean().default(true),
+  /** 无 OPEN PR 阻塞且无运行中任务时，调度器巡检间隔（分钟） */
+  scheduler_interval_minutes: z.number().min(1).max(30).default(2),
   daily_cost_cap_usd: z.number().default(1000),
   max_concurrent_projects: z.number().int().default(2),
   persona_enabled: z.boolean().default(true),
@@ -58,6 +60,7 @@ export function loadServerConfig(): ServerConfig {
       cli_entry: join(import.meta.dir, "..", "src", "index.ts"),
       bun_bin: "bun",
       scheduler_enabled: true,
+      scheduler_interval_minutes: 2,
       daily_cost_cap_usd: 1000,
       max_concurrent_projects: 2,
       persona_enabled: true,

@@ -1,7 +1,10 @@
 import type { ServerConfig } from "./config.ts";
+import type { ProjectActivity } from "./project-activity.ts";
+import { getProjectActivity } from "./project-activity.ts";
 import type { PlanDetailView } from "../src/plan-detail.ts";
 import type { PipelineCheckItem } from "../src/pipeline-check.ts";
 import { pipelineReady } from "../src/pipeline-check.ts";
+import type { SdkTokenUsage } from "../src/sdk-cost.ts";
 
 export const DASHBOARD_STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap');
@@ -50,13 +53,31 @@ body{margin:0;font-family:"DM Sans",-apple-system,system-ui,sans-serif;backgroun
 .sidebar-foot{padding:12px 10px 16px;border-top:1px solid var(--line)}
 .sidebar-foot .nav-group-title{padding-top:0}
 .sidebar-foot .nav-item{font-size:12px;padding:7px 10px}
+.sidebar-activity{margin:10px 0 0;padding:8px 10px;border-radius:8px;font-size:11px;line-height:1.35;border:1px solid var(--line);background:var(--surface2)}
+.sidebar-activity.running{border-color:rgba(107,159,255,.4);color:var(--accent)}
+.sidebar-activity.failed{border-color:rgba(240,113,120,.35);color:var(--err)}
+.sidebar-activity.idle{color:var(--mut)}
+.sidebar-activity strong{font-weight:600;display:block;margin-bottom:2px;font-size:11px}
+.activity-strip{display:flex;align-items:center;gap:12px;padding:10px 14px;margin-bottom:16px;border-radius:var(--radius);border:1px solid var(--line);background:var(--surface2);font-size:13px}
+.activity-strip.running{border-color:rgba(107,159,255,.45);background:rgba(107,159,255,.08)}
+.activity-strip.failed{border-color:rgba(240,113,120,.4);background:rgba(240,113,120,.06)}
+.activity-strip.idle{color:var(--mut)}
+.activity-strip.idle-warn{border-color:rgba(229,181,103,.4);background:rgba(229,181,103,.08);color:var(--warn)}
+.activity-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--mut)}
+.activity-strip.running .activity-dot{background:var(--accent);box-shadow:0 0 0 3px rgba(107,159,255,.25);animation:p7pulse 1.4s ease infinite}
+.activity-strip.failed .activity-dot{background:var(--err)}
+.activity-strip.idle .activity-dot{background:var(--ok)}
+.activity-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.activity-main strong{font-size:13px;font-weight:600}
+.activity-main .muted{font-size:12px;color:var(--mut);word-break:break-word}
+@keyframes p7pulse{0%,100%{opacity:1}50%{opacity:.45}}
 .main-col{flex:1;min-width:0;display:flex;flex-direction:column;min-height:100vh;background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(107,159,255,.08),transparent 55%)}
 .content-head{padding:24px 28px 0;display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap}
 .content-head h1{margin:0;font-size:22px;font-weight:700;letter-spacing:-.02em}
 .content-head .desc{margin:6px 0 0;color:var(--mut);font-size:13px;max-width:560px;line-height:1.45}
 .content-head .path{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut);margin-top:8px;opacity:.8}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.content-body{padding:18px 28px 44px;max-width:1080px;width:100%}
+.content-body{padding:18px 28px 44px;max-width:1080px;width:100%;min-width:0;overflow-x:hidden}
 .subnav{display:flex;gap:4px;margin-bottom:20px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);width:fit-content}
 .subnav a{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:500;color:var(--mut);text-decoration:none}
 .subnav a:hover{color:var(--fg);text-decoration:none}
@@ -131,6 +152,20 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius
 .gh-advanced{margin-top:4px;padding-top:16px;border-top:1px solid var(--line)}
 .gh-advanced summary{cursor:pointer;font-size:13px;font-weight:500;color:var(--mut);list-style:none;padding:4px 0}
 .gh-advanced summary::-webkit-details-marker{display:none}
+.roadmap-history{overflow:hidden;max-width:100%}
+.roadmap-history summary::-webkit-details-marker{display:none}
+.roadmap-history summary::before{content:"▸ ";color:var(--mut);font-size:12px}
+.roadmap-history[open] summary::before{content:"▾ "}
+.roadmap-backup-item{width:100%;min-width:0;max-width:100%;margin:0;border:1px solid var(--line);border-radius:8px;background:var(--surface2);overflow:hidden}
+.roadmap-backup-item summary{cursor:pointer;list-style:none;padding:10px 12px;display:flex;align-items:flex-start;flex-wrap:wrap;gap:8px;min-width:0}
+.roadmap-backup-item summary::-webkit-details-marker{display:none}
+.roadmap-backup-item summary code{word-break:break-all;font-size:11px}
+.roadmap-backup-item[open] summary{border-bottom:1px solid var(--line)}
+.roadmap-body,.roadmap-backup-body{margin:0;padding:12px 14px;max-width:100%;max-height:min(42vh,360px);overflow:auto;font-size:12px;line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:8px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+.roadmap-backup-body{border:none;border-radius:0;max-height:min(38vh,320px)}
+.roadmap-preview{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;max-width:100%}
+.roadmap-preview li{width:100%;min-width:0;display:block;font-size:13px;line-height:1.4}
+.roadmap-preview .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);margin-top:7px;flex-shrink:0}
 .gh-advanced[open] summary{color:var(--fg);margin-bottom:14px}
 .toggle-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
 .toggle-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:10px}
@@ -233,9 +268,6 @@ a.meta-tile:hover{border-color:rgba(107,159,255,.4);background:rgba(107,159,255,
 .health-banner .health-icon{font-size:18px;font-weight:700;line-height:1;flex-shrink:0}
 .health-banner strong{display:block;font-size:13px;margin-bottom:2px}
 .health-banner span{font-size:12px;color:var(--mut)}
-.roadmap-preview{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
-.roadmap-preview li{display:flex;align-items:flex-start;gap:10px;font-size:13px;line-height:1.4}
-.roadmap-preview .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);margin-top:7px;flex-shrink:0}
 .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
 .panel-head h2{margin:0}
 .panel-head a{font-size:12px;font-weight:600;text-decoration:none}
@@ -387,6 +419,7 @@ export function renderPipelineChecksPanel(
 
   return `${banner}<div class="checks-list">${rows}</div>
 <div class="health-actions">
+<a class="btn ghost sm" href="/project/${encodeURIComponent(alias)}/overview?refresh=1">刷新环境检查</a>
 <form class="inline" method="post" action="/project/${encodeURIComponent(alias)}/llm-probe"><button type="submit" class="btn sm">检测模型请求</button></form>
 <a class="btn ghost sm" href="/settings">系统设置</a>
 </div>`;
@@ -542,6 +575,52 @@ export function formatDateTime(iso?: string | null): string {
   }
 }
 
+export function formatUsd(amount?: number | null): string {
+  if (amount == null || !Number.isFinite(amount)) return "—";
+  if (amount > 0 && amount < 0.01) return `$${amount.toFixed(4)}`;
+  return `$${amount.toFixed(2)}`;
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+export function formatTokenUsage(usage?: SdkTokenUsage | null): string {
+  if (!usage) return "—";
+  const total =
+    usage.inputTokens +
+    usage.outputTokens +
+    usage.cacheReadInputTokens +
+    usage.cacheCreationInputTokens;
+  if (total <= 0) return "—";
+  return `${formatTokenCount(usage.inputTokens)} in / ${formatTokenCount(usage.outputTokens)} out`;
+}
+
+export function parseJobResultCost(resultJson: string | null | undefined): {
+  costUsd?: number;
+  tokenUsage?: SdkTokenUsage;
+} {
+  if (!resultJson) return {};
+  try {
+    const r = JSON.parse(resultJson) as {
+      costUsd?: number;
+      tokenUsage?: SdkTokenUsage;
+      result?: { costUsd?: number; tokenUsage?: SdkTokenUsage };
+    };
+    if (typeof r.costUsd === "number") {
+      return { costUsd: r.costUsd, tokenUsage: r.tokenUsage };
+    }
+    if (typeof r.result?.costUsd === "number") {
+      return { costUsd: r.result.costUsd, tokenUsage: r.result.tokenUsage };
+    }
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
 /** 开始 → 结束（运行中则用当前时间） */
 export function formatJobDuration(
   startedAt: string | null | undefined,
@@ -566,6 +645,97 @@ export function formatJobDuration(
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`;
+}
+
+function parseJobPlanId(payload: string): string | undefined {
+  try {
+    return (JSON.parse(payload) as { planId?: string }).planId;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatRetryEta(retryAtMs: number | null): string {
+  if (!retryAtMs) return "稍后";
+  const sec = Math.max(0, Math.ceil((retryAtMs - Date.now()) / 1000));
+  if (sec < 60) return `${sec} 秒`;
+  return `${Math.ceil(sec / 60)} 分钟`;
+}
+
+export function renderSidebarActivity(activity: ProjectActivity | null): string {
+  if (!activity) return "";
+  const { activeJob, failedPlan } = activity;
+  if (activeJob) {
+    const label = jobKindLabel(activeJob.kind);
+    const state = activeJob.status === "pending" ? "排队" : "运行中";
+    return `<div class="sidebar-activity running"><strong>${esc(label)}</strong>${esc(state)}${activeJob.progress ? ` · ${esc(activeJob.progress.slice(0, 40))}` : ""}</div>`;
+  }
+  if (failedPlan) {
+    const hint = failedPlan.canRetryNow
+      ? "等待自动重试"
+      : failedPlan.attemptsUsed >= failedPlan.maxAttempts
+        ? "需手动重试"
+        : `${formatRetryEta(failedPlan.retryAtMs)} 后重试`;
+    return `<div class="sidebar-activity failed"><strong>Plan 失败</strong>${esc(hint)}</div>`;
+  }
+  if (!activity.schedulerEnabled) {
+    return `<div class="sidebar-activity idle">调度器已关闭</div>`;
+  }
+  return `<div class="sidebar-activity idle">系统空闲</div>`;
+}
+
+export function renderActivityStrip(alias: string, activity: ProjectActivity | null): string {
+  if (!activity) return "";
+  const { activeJob, failedPlan, schedulerEnabled, schedulerIntervalMinutes } = activity;
+  const intervalLabel = `${schedulerIntervalMinutes} 分钟`;
+
+  if (activeJob) {
+    const planId = parseJobPlanId(activeJob.payload);
+    const duration = formatJobDuration(
+      activeJob.started_at,
+      activeJob.finished_at,
+      activeJob.status === "running",
+    );
+    const label = jobKindLabel(activeJob.kind);
+    const progress = activeJob.progress ? ` · ${activeJob.progress}` : "";
+    const runLink =
+      activeJob.kind === "execute"
+        ? `/project/${encodeURIComponent(alias)}/run`
+        : `/jobs/${encodeURIComponent(activeJob.id)}/log`;
+    return `<div class="activity-strip running">
+<span class="activity-dot" aria-hidden="true"></span>
+<div class="activity-main">
+<strong>${esc(label)} · ${activeJob.status === "pending" ? "排队中" : esc(duration)}</strong>
+<span class="muted">${planId ? `Plan ${esc(planId)}` : esc(activeJob.id)}${esc(progress)}</span>
+</div>
+<a class="btn sm" href="${runLink}">查看进度</a>
+</div>`;
+  }
+
+  if (failedPlan) {
+    const retryHint = failedPlan.canRetryNow
+      ? `调度器将在约 ${intervalLabel} 内自动重试`
+      : failedPlan.attemptsUsed >= failedPlan.maxAttempts
+        ? `已自动重试 ${failedPlan.attemptsUsed} 次，请在 Plan 详情点「重试执行」或换 Plan`
+        : `约 ${formatRetryEta(failedPlan.retryAtMs)} 后自动重试（${failedPlan.attemptsUsed}/${failedPlan.maxAttempts}）`;
+    return `<div class="activity-strip failed">
+<span class="activity-dot" aria-hidden="true"></span>
+<div class="activity-main">
+<strong>Plan 执行失败 · 仍已批准</strong>
+<span class="muted">${esc(failedPlan.title.slice(0, 80))}</span>
+<span class="muted">${esc(failedPlan.error.slice(0, 120))}</span>
+<span class="muted">${esc(retryHint)}</span>
+</div>
+<a class="btn sm ghost" href="/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(failedPlan.planId)}">Plan 详情</a>
+<a class="btn sm" href="/project/${encodeURIComponent(alias)}/run">运行页</a>
+</div>`;
+  }
+
+  if (!schedulerEnabled) {
+    return `<div class="activity-strip idle-warn"><span class="activity-dot warn"></span><div class="activity-main"><strong>调度器已关闭</strong><span class="muted">不会自动 discover / execute</span></div></div>`;
+  }
+
+  return `<div class="activity-strip idle"><span class="activity-dot ok"></span><div class="activity-main"><strong>系统空闲</strong><span class="muted">调度器每 ${esc(intervalLabel)} 巡检；无 OPEN PR 阻塞且无运行中任务时自动启动</span></div><a class="btn sm ghost" href="/jobs">任务队列</a></div>`;
 }
 
 function formatPlanTime(iso?: string): string {
@@ -644,6 +814,7 @@ export function renderReviewPage(opts: {
     error: string | null;
   }>;
   ghReady: boolean;
+  prListLive?: boolean;
   workGate?: { blocked: boolean; reason: string };
 }): string {
   const v = opts.dc.vcs;
@@ -713,11 +884,12 @@ export function renderReviewPage(opts: {
 <div class="health-banner ${schedOn ? "ok" : "fail"}"><span class="health-icon">${schedOn ? "✓" : "!"}</span><div><strong>历史 PR 复查</strong><span>${esc(configLine)}</span></div></div>
 <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:16px 0">
 <form class="inline p7-busy-form" data-busy-msg="已入队 PR 复查…" method="post" action="/trigger/pr-review"><input type="hidden" name="alias" value="${esc(opts.alias)}"/><button type="submit" class="btn" ${opts.ghReady ? "" : "disabled"}>立即复查 OPEN PR</button></form>
+<a class="btn ghost" href="${base}/review?refresh=1">刷新 PR 列表</a>
 <a class="btn ghost" href="${base}/settings?section=github">调整 Review / 合并策略</a>
 </div>
 <div class="panel"><h2>GitHub 上的 OPEN PR</h2>
-<p class="muted">来自 <code>gh pr list</code>；复查任务会对每个 PR 自动 review，并在开启自动合并时尝试合并、修复冲突。</p>
-<div class="tbl-wrap"><table><thead><tr><th>PR</th><th>标题</th><th>分支</th><th>标签</th><th>合并状态</th><th></th></tr></thead><tbody>${openRows || `<tr><td colspan="6" class="empty">暂无 OPEN PR</td></tr>`}</tbody></table></div></div>
+<p class="muted">${opts.prListLive ? "来自 <code>gh pr list</code>；复查任务会对每个 PR 自动 review，并在开启自动合并时尝试合并、修复冲突。" : "打开页面时不调用 GitHub。点「刷新 PR 列表」获取最新 OPEN PR；执行任务时会自动拉取。"}</p>
+<div class="tbl-wrap"><table><thead><tr><th>PR</th><th>标题</th><th>分支</th><th>标签</th><th>合并状态</th><th></th></tr></thead><tbody>${openRows || `<tr><td colspan="6" class="empty">${opts.prListLive ? "暂无 OPEN PR" : "未刷新 — 点上方「刷新 PR 列表」"}</td></tr>`}</tbody></table></div></div>
 <div class="panel"><h2>Plan 关联的 PR</h2>
 <div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>链接</th><th>合并</th><th>备注</th></tr></thead><tbody>${planRows || `<tr><td colspan="6" class="empty">尚无关联 PR</td></tr>`}</tbody></table></div></div>
 <div class="panel"><h2>Review 任务</h2>
@@ -996,6 +1168,7 @@ function renderSidebar(
     projectTab?: ProjectTab;
     section?: string;
     systemPage?: SystemPage;
+    activity?: ProjectActivity | null;
   },
 ): string {
   const aliases = cfg ? Object.keys(cfg.project_aliases) : [];
@@ -1004,6 +1177,7 @@ function renderSidebar(
   const head = `<div class="sidebar-head">
 <a href="/" class="sidebar-brand"><span class="mark">P7</span><span class="text"><span class="name">P7</span><span class="tag">发现 → PR</span></span></a>
 ${cfg && aliases.length > 0 && projectAlias ? projectSwitcher(cfg, projectAlias) : ""}
+${opts.activity ? renderSidebarActivity(opts.activity) : ""}
 </div>`;
 
   const scroll = `<div class="sidebar-scroll">
@@ -1030,14 +1204,23 @@ export function layout(opts: {
   projectPath?: string;
   toolbar?: string;
   pipelineDone?: number;
+  activity?: ProjectActivity | null;
+  autoRefresh?: boolean;
 }): string {
   const headToolbar = opts.toolbar ? `<div class="toolbar">${opts.toolbar}</div>` : "";
   const pathLine = opts.projectPath
     ? `<div class="path">${esc(opts.projectPath)}</div>`
     : "";
+  const activityAlias = opts.project?.alias ?? opts.activeProject;
+  const activityStrip =
+    activityAlias && opts.activity
+      ? renderActivityStrip(activityAlias, opts.activity)
+      : "";
+  const refreshMeta = opts.autoRefresh ? `<meta http-equiv="refresh" content="8"/>` : "";
 
   return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
+${refreshMeta}
 <title>${opts.project ? `${esc(opts.project.alias)} · ` : ""}${esc(opts.title)}</title>
 <style>${DASHBOARD_STYLE}</style></head><body>
 <div class="app-shell">
@@ -1046,6 +1229,7 @@ export function layout(opts: {
   projectTab: opts.project?.tab,
   section: opts.project?.section,
   systemPage: opts.systemPage,
+  activity: opts.activity,
 })}</aside>
 <div class="main-col">
 <div class="content-head">
@@ -1057,6 +1241,7 @@ ${pathLine}
 ${headToolbar}
 </div>
 <div class="content-body">
+${activityStrip}
 ${opts.flash ? `<div class="flash${/已保存|成功|✓|响应正常|请求成功/.test(opts.flash) ? " ok" : ""}">${esc(opts.flash)}</div>` : ""}
 ${opts.body}
 </div>
@@ -1104,12 +1289,20 @@ export function projectShell(
 ): string | null {
   const proj = resolveProject(cfg, alias);
   if (!proj) return null;
+  const activity = getProjectActivity(
+    alias,
+    proj.path,
+    cfg.scheduler_enabled !== false,
+    cfg.scheduler_interval_minutes ?? 2,
+  );
   return layout({
     ...opts,
     activeProject: alias,
     project: { alias, tab, section: opts.section },
     cfg,
     projectPath: proj.path,
+    activity,
+    autoRefresh: activity.activeJob?.status === "running",
   });
 }
 

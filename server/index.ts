@@ -16,7 +16,7 @@ const app = createDashboard(
   },
 );
 
-const stopScheduler = startScheduler(cfg);
+const stopScheduler = startScheduler(() => cfg);
 const stopPrReviewScheduler = startPrReviewScheduler(cfg);
 const stopWorker = startWorker(cfg);
 

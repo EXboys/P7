@@ -4,8 +4,8 @@ import { homedir } from "os";
 import { join } from "path";
 import type { ServerConfig } from "./config.ts";
 import { saveServerConfig, writeClaudeSettings } from "./config.ts";
-import { listJobsForProject, listAllJobs, enqueueJob } from "./queue/store.ts";
 import { audit } from "./audit.ts";
+import { listJobsForProject, listAllJobs, enqueueJob, sumTodayJobCostUsd, sumMonthJobCostUsd } from "./queue/store.ts";
 import { listPlanStates, preparePlanExecuteRetry } from "../src/state.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
 import {
@@ -28,7 +28,7 @@ import { getJob } from "./queue/store.ts";
 import { applyLlmProbeResult, pipelineReady, runPipelineCheck } from "../src/pipeline-check.ts";
 import { probeLlmConnection } from "../src/llm-probe.ts";
 import { applyAllLlmEnv, hasLlmAuth, mergeLlmEnv } from "../src/llm-env.ts";
-import { listRoadmapBackups, loadRoadmap } from "../src/roadmap.ts";
+import { listRoadmapBackups, loadRoadmap, readRoadmapBackup } from "../src/roadmap.ts";
 import { listOpenPullRequests } from "../src/vcs/open-prs.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
@@ -55,6 +55,9 @@ import {
   jobKindLabel,
   formatDateTime,
   formatJobDuration,
+  formatTokenUsage,
+  formatUsd,
+  parseJobResultCost,
   renderReviewPage,
   projectShell,
   discoverToolbar,
@@ -99,6 +102,8 @@ function applyVcsConfigFromBody(
   }
   const bb = String(body.vcs_base_branch ?? "").trim();
   dc.vcs.base_branch = bb || undefined;
+  const wb = String(body.vcs_work_branch ?? "").trim();
+  dc.vcs.work_branch = wb || undefined;
   const labelsRaw = String(body.vcs_labels ?? "").trim();
   if (labelsRaw) {
     dc.vcs.labels = labelsRaw
@@ -142,12 +147,15 @@ function renderGithubConfigPanel(
   projectPath: string,
   dc: DevAgentConfig,
   formAction: string,
+  liveAuth = false,
+  refreshHref?: string,
+  schedulerIntervalMinutes = 2,
 ): string {
   const remote = gitRemoteOrigin(projectPath);
   const defaultGh = dc.vcs.accounts.length === 0;
-  const checks = collectGhAuthChecks(projectPath, dc.vcs.accounts);
+  const checks = liveAuth ? collectGhAuthChecks(projectPath, dc.vcs.accounts) : [];
   const ghOk = ghInstalled();
-  const authOk = checks.every((c) => c.ok);
+  const authOk = liveAuth ? checks.every((c) => c.ok) : ghOk;
   const hostPills = checks
     .map((a) => {
       const cls = a.ok ? "ok" : "fail";
@@ -167,9 +175,9 @@ function renderGithubConfigPanel(
 <div class="gh-status">
 <div class="gh-stat ${ghOk ? "ok" : "fail"}"><div class="k">GitHub CLI</div><div class="v">${ghOk ? "gh 已安装" : "未安装 · brew install gh"}</div></div>
 <div class="gh-stat ${remote ? "ok" : "fail"}"><div class="k">仓库 origin</div><div class="v">${remote ? esc(remote) : "未配置 remote"}</div></div>
-<div class="gh-stat ${authOk ? "ok" : "fail"}"><div class="k">登录状态</div><div class="v">${authOk ? "已就绪" : "需 gh auth login"}</div></div>
+<div class="gh-stat ${authOk ? "ok" : "fail"}"><div class="k">登录状态</div><div class="v">${liveAuth ? (authOk ? "已就绪" : "需 gh auth login") : "打开页面时未检测"}</div></div>
 </div>
-${hostPills ? `<div class="host-pills">${hostPills}</div>` : ""}
+${liveAuth && hostPills ? `<div class="host-pills">${hostPills}</div>` : liveAuth ? "" : `<p class="muted" style="margin:0 0 14px"><a href="${esc(refreshHref ?? `${formAction}?refresh=1`)}">刷新登录检测</a> — 仅在你需要确认 gh 账号时执行，日常浏览不调用 GitHub。</p>`}
 
 <div class="gh-section">
 <h3>用哪个 GitHub 账号发 PR？</h3>
@@ -209,8 +217,10 @@ ${accountRows ? `<div class="tbl-wrap" style="margin-bottom:14px"><table><thead>
 <p class="section-hint">Plan 执行成功并 push 分支后的自动化动作。</p>
 <div class="row" style="margin-bottom:12px">
 <div><label>合并到分支</label><input name="vcs_base_branch" value="${esc(dc.vcs.base_branch ?? "")}" placeholder="main（留空用默认）"/></div>
+<div><label>固定工作分支</label><input name="vcs_work_branch" value="${esc(dc.vcs.work_branch ?? "")}" placeholder="p7/dev（留空则每次新建分支）"/></div>
 <div><label>PR 标签</label><input name="vcs_labels" value="${esc(dc.vcs.labels.join(", "))}" placeholder="p7"/></div>
 </div>
+<p class="section-hint muted" style="margin:-4px 0 12px">固定工作分支：所有 Plan 共用同一条分支 push / 开 PR，执行前自动重置到基线；适合单账号串行开发。留空则仍为「一任务一分支」。</p>
 <div class="toggle-grid">
 <div class="toggle-item"><span>创建 Pull Request</span><select name="vcs_create_pr">${yesNo(dc.vcs.create_pr)}</select></div>
 <div class="toggle-item"><span>创建 Issue</span><select name="vcs_create_issue">${yesNo(dc.vcs.create_issue)}</select></div>
@@ -221,7 +231,7 @@ ${accountRows ? `<div class="tbl-wrap" style="margin-bottom:14px"><table><thead>
 </div>
 <div class="gh-section" style="margin-top:16px">
 <h3>历史 PR 定时复查</h3>
-<p class="section-hint">服务每 5 分钟检查；仍有 OPEN PR 时每 <strong>${dc.vcs.pr_review_fast_interval_minutes ?? 8}</strong> 分钟入队 <code>pr-review</code>。运行期间会与 Roadmap / 执行 Plan 互斥（同项目）。</p>
+<p class="section-hint">主调度器每 <strong>${schedulerIntervalMinutes}</strong> 分钟巡检；无 OPEN PR 阻塞且无运行中任务时入队 execute / discover。仍有 OPEN PR 时每 <strong>${dc.vcs.pr_review_fast_interval_minutes ?? 8}</strong> 分钟入队 <code>pr-review</code>。</p>
 <div class="toggle-grid">
 <div class="toggle-item"><span>定时复查 OPEN PR</span><select name="vcs_review_open_prs">${yesNo(dc.vcs.review_open_prs !== false)}</select></div>
 <div class="toggle-item"><span>仅带 P7 标签的 PR</span><select name="vcs_pr_review_only_p7_label">${yesNo(dc.vcs.pr_review_only_p7_label !== false)}</select></div>
@@ -345,7 +355,9 @@ export function createDashboard(
     if (!proj) return c.text("not found", 404);
     const flash = c.req.query("flash");
     const base = `/project/${encodeURIComponent(alias)}`;
-    let checks = existsSync(proj.path) ? runPipelineCheck(proj.path) : [];
+    let checks = existsSync(proj.path)
+      ? runPipelineCheck(proj.path, { remote: c.req.query("refresh") === "1" })
+      : [];
     if (c.req.query("probe") === "1") {
       applyAllLlmEnv();
       const probe = await probeLlmConnection();
@@ -454,21 +466,35 @@ ${themes}
       const snap = loadSnapshot(proj.path);
       const hasRadar = Boolean(snap?.themes.length);
       const backups = listRoadmapBackups(proj.path);
+      const selectedBackup = c.req.query("backup");
       const backupHtml = backups.length
-        ? `<div class="panel" style="margin-bottom:14px"><div class="panel-head"><h2>历史备份</h2></div><ul class="roadmap-preview">${backups
+        ? `<details class="panel roadmap-history" style="margin-top:14px"${selectedBackup ? " open" : ""}>
+<summary class="panel-head" style="cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px">
+<h2 style="margin:0;font-size:15px">历史备份</h2>
+<span class="muted" style="font-size:12px">${backups.length} 个归档 · 点击条目查看内容</span>
+</summary>
+<ul class="roadmap-preview" style="margin-top:12px">${backups
             .map((f) => {
               const ts = f.match(/ROADMAP-(\d+)\.md/)?.[1];
               const when = ts
                 ? new Date(Number(ts)).toLocaleString("zh-CN", { hour12: false })
                 : f;
-              return `<li><span class="dot"></span><span class="muted">${esc(when)}</span> <code>${esc(f)}</code></li>`;
+              const content = readRoadmapBackup(proj.path, f);
+              const open = selectedBackup === f ? " open" : "";
+              return `<li><details class="roadmap-backup-item"${open}>
+<summary><span class="dot"></span><span class="muted">${esc(when)}</span> <code>${esc(f)}</code> <span class="muted" style="font-size:11px;margin-left:6px">查看</span></summary>
+${content ? `<pre class="roadmap-backup-body">${esc(content)}</pre>` : `<p class="muted roadmap-backup-body">无法读取该备份</p>`}
+</details></li>`;
             })
-            .join("")}</ul><p class="muted" style="font-size:12px;margin:8px 0 0">Active 全部完成后执行器会自动备份并生成新 Roadmap，文件位于 <code>.p7/roadmap-history/</code></p></div>`
+            .join("")}</ul>
+<p class="muted" style="font-size:12px;margin:8px 0 0">Active 全部完成后执行器会自动备份旧版并写入 <code>.p7/roadmap-history/</code>；日常以上方「当前 Roadmap」为准。</p>
+</details>`
         : "";
-      const roadmap = existsSync(join(proj.path, "ROADMAP.md"))
-        ? `<pre>${esc(readFileSync(join(proj.path, "ROADMAP.md"), "utf-8"))}</pre>`
+      const roadmapContent = existsSync(join(proj.path, "ROADMAP.md"))
+        ? `<pre class="roadmap-body">${esc(readFileSync(join(proj.path, "ROADMAP.md"), "utf-8"))}</pre>`
         : `<div class="empty">尚无 ROADMAP.md，填写下方说明后点「重新生成」，或先跑「发现 → Roadmap」</div>`;
-      body = `${renderPlanRoadmapRegenForm(alias, hasRadar)}${backupHtml}<div class="panel">${roadmap}</div>`;
+      const currentRoadmapPanel = `<div class="panel" style="margin-bottom:14px"><div class="panel-head"><h2>当前 Roadmap</h2><span class="muted" style="font-size:12px">以 <code>ROADMAP.md</code> 为准 · 调度与 Plan 均读取此文件</span></div>${roadmapContent}</div>`;
+      body = `${currentRoadmapPanel}${renderPlanRoadmapRegenForm(alias, hasRadar)}${backupHtml}`;
     } else {
       const dc = loadConfig(proj.path);
       const suggestedGoal =
@@ -532,6 +558,9 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     const flash = c.req.query("flash");
     const states = existsSync(proj.path) ? listPlanStates(proj.path, 40) : [];
     const jobs = listJobsForProject(alias, 30);
+    const todayCost = sumTodayJobCostUsd(alias);
+    const monthCost = sumMonthJobCostUsd(alias);
+    const dailyCap = getCfg().daily_cost_cap_usd;
     const jobByPlanId = new Map<string, (typeof jobs)[0]>();
     for (const j of jobs) {
       if (j.kind !== "execute") continue;
@@ -549,11 +578,15 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
         const startAt = job?.started_at ?? (s.status === "executing" ? s.updatedAt : s.createdAt);
         const active = s.status === "executing" || job?.status === "running";
         const duration = formatJobDuration(startAt, job?.finished_at, active);
+        const jobCost = job ? parseJobResultCost(job.result_json) : {};
+        const costUsd = s.costUsd ?? jobCost.costUsd;
+        const tokens = formatTokenUsage(s.tokenUsage ?? jobCost.tokenUsage);
         return `<tr>
 <td><a href="/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(s.planId)}">${esc(s.planId)}</a></td>
 <td>${statusBadge(s.status)}</td><td>${esc(s.title)}</td>
 <td class="muted">${esc(formatDateTime(startAt))}</td>
 <td class="muted">${esc(duration)}${active ? " <span class=\"badge run\">进行中</span>" : ""}</td>
+<td class="muted">${formatUsd(costUsd)}<div style="font-size:11px;margin-top:2px">${esc(tokens)}</div></td>
 <td>${s.branch ? `<code>${esc(s.branch)}</code>` : "—"}</td>
 <td class="muted">${esc((s.error ?? "").slice(0, 60))}</td></tr>`;
       })
@@ -573,23 +606,34 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
             ? "排队中"
             : formatJobDuration(startAt, j.finished_at, j.status === "running");
         const progress = j.progress ? `<div class="muted" style="font-size:11px">${esc(j.progress)}</div>` : "";
+        const jobCost = parseJobResultCost(j.result_json);
+        const costCell = jobCost.costUsd != null
+          ? `${formatUsd(jobCost.costUsd)}<div class="muted" style="font-size:11px">${esc(formatTokenUsage(jobCost.tokenUsage))}</div>`
+          : "—";
         return `<tr>
 <td><a href="/jobs/${encodeURIComponent(j.id)}/log">${esc(j.id.slice(0, 12))}…</a></td>
 <td>${esc(jobKindLabel(j.kind))}</td>
 <td>${jobStatusBadge(j.status)}${progress}</td>
 <td class="muted">${esc(formatDateTime(startAt))}</td>
 <td class="muted">${esc(duration)}${j.status === "running" ? " <span class=\"badge run\">进行中</span>" : ""}</td>
+<td class="muted">${costCell}</td>
 <td class="muted">${esc((j.error ?? "").slice(0, 50))}</td></tr>`;
       })
       .join("");
     const body = `
-<p class="muted" style="margin-bottom:14px">PR 复查与自动合并请前往侧栏 <a href="/project/${encodeURIComponent(alias)}/review"><strong>Review</strong></a>。</p>
+<div class="cards" style="margin-bottom:20px">
+${metricCard(formatUsd(todayCost), "今日消耗", todayCost >= dailyCap * 0.8 ? "warn" : undefined)}
+${metricCard(formatUsd(monthCost.total), "本月累计", undefined)}
+${metricCard(String(monthCost.jobs), "本月计费任务")}
+${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
+</div>
+<p class="muted" style="margin-bottom:14px">模型费用来自 Claude SDK 返回的 <code>total_cost_usd</code> 与 token 统计；仅新执行会记录，历史任务显示 —。PR 复查请前往侧栏 <a href="/project/${encodeURIComponent(alias)}/review"><strong>Review</strong></a>。</p>
 <div class="panel"><h2>执行记录</h2>
-<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="7" class="empty">暂无</td></tr>`}</tbody></table></div></div>
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="8" class="empty">暂无</td></tr>`}</tbody></table></div></div>
 <div class="panel"><h2>PR / 交付</h2>
 <div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>链接</th><th>合并</th></tr></thead><tbody>${prRows || `<tr><td colspan="4" class="empty">尚无 PR</td></tr>`}</tbody></table></div></div>
 <div class="panel"><h2>后台任务</h2><p class="muted">队列任务；运行中时长随页面刷新更新。</p>
-<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>开始时间</th><th>执行时长</th><th>错误</th></tr></thead><tbody>${jobRows || `<tr><td colspan="6" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
+<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>错误</th></tr></thead><tbody>${jobRows || `<tr><td colspan="7" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
     const html = projectShell(cfg, alias, "run", {
       title: "运行与交付",
       description: "执行进度、队列任务、已创建的 PR。",
@@ -606,16 +650,18 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     const proj = resolveProject(cfg, alias);
     if (!proj) return c.text("not found", 404);
     const flash = c.req.query("flash");
+    const refreshGh = c.req.query("refresh") === "1";
     const dc = loadConfig(proj.path);
     const vcs = dc.vcs;
     const label =
       vcs.pr_review_only_p7_label !== false && vcs.labels.length > 0
         ? vcs.labels[0]
         : undefined;
-    const ghReady = ghInstalled() && collectGhAuthChecks(proj.path, dc.vcs.accounts).every((x) => x.ok);
-    const openPrs = ghReady && gitRemoteOrigin(proj.path)
-      ? listOpenPullRequests(proj.path, { label, limit: 25 })
-      : [];
+    const ghOk = ghInstalled();
+    const openPrs =
+      refreshGh && ghOk && gitRemoteOrigin(proj.path)
+        ? listOpenPullRequests(proj.path, { label, limit: 25 })
+        : [];
     const states = existsSync(proj.path) ? listPlanStates(proj.path, 60) : [];
     const planPrRows = states
       .filter((s) => s.prUrl)
@@ -630,7 +676,7 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
       }));
     const reviewJobs = listJobsForProject(alias, 30).filter((j) => j.kind === "pr-review");
     const workGate =
-      ghReady && gitRemoteOrigin(proj.path)
+      refreshGh && ghOk && gitRemoteOrigin(proj.path)
         ? checkPrWorkGate(proj.path, dc)
         : { blocked: false, prs: [], reason: "" };
     const body = renderReviewPage({
@@ -639,7 +685,8 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
       openPrs,
       planPrRows,
       reviewJobs,
-      ghReady,
+      ghReady: ghOk,
+      prListLive: refreshGh,
       workGate: workGate.blocked
         ? { blocked: true, reason: workGate.reason }
         : undefined,
@@ -665,7 +712,14 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     if (!dc) return c.text("not found", 404);
     let body = "";
     if (section === "github") {
-      body = renderGithubConfigPanel(proj.path, dc, `/project/${encodeURIComponent(alias)}/github`);
+      body = renderGithubConfigPanel(
+        proj.path,
+        dc,
+        `/project/${encodeURIComponent(alias)}/github`,
+        c.req.query("refresh") === "1",
+        `/project/${encodeURIComponent(alias)}/settings?section=github&refresh=1`,
+        cfg.scheduler_interval_minutes ?? 2,
+      );
     } else {
       body = `<form method="post" action="/project/${encodeURIComponent(alias)}/config" class="panel">
 <label>北极星目标</label>
@@ -932,7 +986,7 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     audit("dashboard.llm_probe", { alias, ok: probe.ok });
     const flash = probe.ok ? `✓ ${probe.detail}` : `✗ ${probe.detail}`;
     return c.redirect(
-      `/project/${encodeURIComponent(alias)}/overview?probe=1&flash=${encodeURIComponent(flash.slice(0, 220))}`,
+      `/project/${encodeURIComponent(alias)}/overview?flash=${encodeURIComponent(flash.slice(0, 220))}`,
     );
   });
 
@@ -940,7 +994,7 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     const alias = c.req.param("alias");
     const proj = resolveProject(getCfg(), alias);
     if (!proj) return c.text("not found", 404);
-    const items = runPipelineCheck(proj.path);
+    const items = runPipelineCheck(proj.path, { remote: true });
     if (c.req.query("probe") === "1" && hasLlmAuth(mergeLlmEnv())) {
       applyAllLlmEnv();
       const probe = await probeLlmConnection();
@@ -1182,6 +1236,7 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
 <form method="post" action="/settings/scheduler">
 <div class="row">
 <div><label>调度器</label><select name="scheduler_enabled"><option value="1" ${cfg.scheduler_enabled ? "selected" : ""}>开启</option><option value="0" ${!cfg.scheduler_enabled ? "selected" : ""}>关闭</option></select></div>
+<div><label>巡检间隔（分钟）</label><input name="scheduler_interval_minutes" type="number" min="1" max="30" value="${esc(String(cfg.scheduler_interval_minutes ?? 2))}"/><p class="muted" style="font-size:11px;margin:6px 0 0">无 OPEN PR 阻塞且无运行中任务时，每 N 分钟尝试 execute / discover</p></div>
 <div><label>最大并发项目数</label><input name="max_concurrent_projects" type="number" value="${esc(String(cfg.max_concurrent_projects))}"/></div>
 </div>
 <div class="row">
@@ -1241,6 +1296,11 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     const cfg = getCfg();
     const body = (await c.req.parseBody()) as Record<string, string>;
     cfg.scheduler_enabled = body.scheduler_enabled === "1";
+    const interval = Number(body.scheduler_interval_minutes);
+    cfg.scheduler_interval_minutes =
+      Number.isFinite(interval) && interval >= 1 && interval <= 30
+        ? Math.round(interval)
+        : (cfg.scheduler_interval_minutes ?? 2);
     cfg.max_concurrent_projects = Number(body.max_concurrent_projects) || cfg.max_concurrent_projects;
     cfg.daily_cost_cap_usd = Number(body.daily_cost_cap_usd) || cfg.daily_cost_cap_usd;
     cfg.port = Number(body.port) || cfg.port;

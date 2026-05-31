@@ -188,11 +188,20 @@ export function loadLatestPlanRecord(projectPath: string): PlanRecord | null {
   return loadPlanRecord(projectPath, files[0].replace(/\.json$/, ""));
 }
 
-export function recordFailedPlan(projectPath: string, plan: Plan, reason: string): void {
+export function recordFailedPlan(
+  projectPath: string,
+  plan: Plan & { planId?: string },
+  reason: string,
+): void {
   const dir = projectSubpathForWrite(projectPath, FAILED_PLANS_DIR);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, `${Date.now()}.json`),
-    JSON.stringify({ title: plan.title, reason, failedAt: new Date().toISOString() }),
+    JSON.stringify({
+      planId: plan.planId,
+      title: plan.title,
+      reason,
+      failedAt: new Date().toISOString(),
+    }),
   );
 }

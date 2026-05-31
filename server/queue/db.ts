@@ -201,23 +201,40 @@ export function hasPendingDailyToday(alias: string): boolean {
 }
 
 export function sumTodayJobCostUsd(alias: string): number {
-  const day = new Date().toISOString().slice(0, 10);
+  return sumJobCostInRange(alias, `${new Date().toISOString().slice(0, 10)}%`).total;
+}
+
+export function sumMonthJobCostUsd(alias: string): { total: number; jobs: number } {
+  return sumJobCostInRange(alias, `${new Date().toISOString().slice(0, 7)}%`);
+}
+
+function sumJobCostInRange(alias: string, createdPrefix: string): { total: number; jobs: number } {
   const rows = getDb()
     .query(
       `SELECT result_json FROM jobs WHERE project_alias = ? AND created_at LIKE ? AND status = 'done'`,
     )
-    .all(alias, `${day}%`) as { result_json: string | null }[];
-  let sum = 0;
+    .all(alias, createdPrefix) as { result_json: string | null }[];
+  let total = 0;
+  let jobs = 0;
   for (const row of rows) {
-    if (!row.result_json) continue;
-    try {
-      const r = JSON.parse(row.result_json) as { costUsd?: number };
-      if (typeof r.costUsd === "number") sum += r.costUsd;
-    } catch {
-      /* ignore */
-    }
+    const cost = parseResultCostUsd(row.result_json);
+    if (cost == null) continue;
+    total += cost;
+    jobs += 1;
   }
-  return sum;
+  return { total, jobs };
+}
+
+function parseResultCostUsd(resultJson: string | null): number | null {
+  if (!resultJson) return null;
+  try {
+    const r = JSON.parse(resultJson) as { costUsd?: number; result?: { costUsd?: number } };
+    if (typeof r.costUsd === "number") return r.costUsd;
+    if (typeof r.result?.costUsd === "number") return r.result.costUsd;
+  } catch {
+    /* ignore */
+  }
+  return null;
 }
 
 export function hasActiveJob(alias: string): boolean {

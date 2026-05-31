@@ -54,6 +54,8 @@ export const DevAgentConfigSchema = z.object({
       block_new_work_until_prs_clear: z.boolean().default(true),
       block_new_work_only_conflicting: z.boolean().default(true),
       base_branch: z.string().optional(),
+      /** 固定工作分支；设置后每次 Plan 复用该分支，不再新建 p7/时间戳 分支 */
+      work_branch: z.string().optional(),
       reviewers: z.array(z.string()).default([]),
       labels: z.array(z.string()).default(["p7"]),
       accounts: z

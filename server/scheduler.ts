@@ -9,82 +9,105 @@ import {
 } from "./queue/store.ts";
 import { loadConfig } from "../src/config.ts";
 import { pickNextApprovedPlanForExecution } from "../src/approval.ts";
+import { getPlanState, preparePlanExecuteRetry } from "../src/state.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { ghInstalled, gitRemoteOrigin } from "../src/gh-status.ts";
 
-const HEARTBEAT_MS = 5 * 60 * 1000;
+export function schedulerIntervalMs(cfg: ServerConfig): number {
+  return (cfg.scheduler_interval_minutes ?? 2) * 60 * 1000;
+}
 
-export function startScheduler(cfg: ServerConfig): () => void {
-  if (!cfg.scheduler_enabled) return () => {};
-
-  const tick = () => {
-    for (const [alias, projectPath] of Object.entries(cfg.project_aliases)) {
-      const path = String(projectPath);
-      let dc;
-      try {
-        dc = loadConfig(path);
-      } catch {
-        continue;
-      }
-
-      if (
-        dc.discovery.auto_execute_after_approve !== false &&
-        !hasActiveExecuteJob(alias) &&
-        !hasProjectMutexInFlight(alias, "execute")
-      ) {
-        const next = pickNextApprovedPlanForExecution(path);
-        if (next) {
-          const gate =
-            ghInstalled() && gitRemoteOrigin(path)
-              ? checkPrWorkGate(path, dc)
-              : { blocked: false };
-          if (!gate.blocked) {
-            enqueueJob({
-              kind: "execute",
-              payload: { projectPath: path, planId: next.planId },
-              projectAlias: alias,
-            });
-            audit("scheduler.enqueued", {
-              alias,
-              kind: "execute",
-              planId: next.planId,
-            });
-            continue;
-          }
-          audit("scheduler.skipped", { alias, reason: "open_prs_block_execute" });
-        }
-      }
-
-      if (hasActiveJob(alias)) {
-        audit("scheduler.skipped", { alias, reason: "active_job" });
-        continue;
-      }
-      if (hasPendingDailyToday(alias)) {
-        audit("scheduler.skipped", { alias, reason: "daily_exists" });
-        continue;
-      }
-      if (
-        ghInstalled() &&
-        gitRemoteOrigin(path) &&
-        checkPrWorkGate(path, dc).blocked
-      ) {
-        audit("scheduler.skipped", { alias, reason: "open_prs_block" });
-        continue;
-      }
-      const planOnly = !dc.discovery.auto_execute_after_approve;
-      enqueueJob({
-        kind: "discover-daily",
-        payload: { projectPath: path, planOnly },
-        projectAlias: alias,
-      });
-      audit("scheduler.enqueued", { alias, kind: "discover-daily" });
+function runSchedulerTick(cfg: ServerConfig): void {
+  for (const [alias, projectPath] of Object.entries(cfg.project_aliases)) {
+    const path = String(projectPath);
+    let dc;
+    try {
+      dc = loadConfig(path);
+    } catch {
+      continue;
     }
-    detectReverts(cfg);
+
+    if (
+      dc.discovery.auto_execute_after_approve !== false &&
+      !hasActiveExecuteJob(alias) &&
+      !hasProjectMutexInFlight(alias, "execute")
+    ) {
+      const next = pickNextApprovedPlanForExecution(path, { projectAlias: alias });
+      if (next) {
+        const gate =
+          ghInstalled() && gitRemoteOrigin(path)
+            ? checkPrWorkGate(path, dc)
+            : { blocked: false };
+        if (!gate.blocked) {
+          const state = getPlanState(path, next.planId);
+          if (state?.status === "failed") {
+            preparePlanExecuteRetry(path, next.planId);
+          }
+          enqueueJob({
+            kind: "execute",
+            payload: { projectPath: path, planId: next.planId },
+            projectAlias: alias,
+          });
+          audit("scheduler.enqueued", {
+            alias,
+            kind: "execute",
+            planId: next.planId,
+          });
+          continue;
+        }
+        audit("scheduler.skipped", { alias, reason: "open_prs_block_execute" });
+      }
+    }
+
+    if (hasActiveJob(alias)) {
+      audit("scheduler.skipped", { alias, reason: "active_job" });
+      continue;
+    }
+    if (hasPendingDailyToday(alias)) {
+      audit("scheduler.skipped", { alias, reason: "daily_exists" });
+      continue;
+    }
+    if (
+      ghInstalled() &&
+      gitRemoteOrigin(path) &&
+      checkPrWorkGate(path, dc).blocked
+    ) {
+      audit("scheduler.skipped", { alias, reason: "open_prs_block" });
+      continue;
+    }
+    const planOnly = !dc.discovery.auto_execute_after_approve;
+    enqueueJob({
+      kind: "discover-daily",
+      payload: { projectPath: path, planOnly },
+      projectAlias: alias,
+    });
+    audit("scheduler.enqueued", { alias, kind: "discover-daily" });
+  }
+  detectReverts(cfg);
+}
+
+export function startScheduler(getCfg: () => ServerConfig): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+
+  const scheduleNext = () => {
+    if (stopped) return;
+    const cfg = getCfg();
+    if (!cfg.scheduler_enabled) {
+      timer = setTimeout(scheduleNext, schedulerIntervalMs(cfg));
+      return;
+    }
+    runSchedulerTick(cfg);
+    timer = setTimeout(scheduleNext, schedulerIntervalMs(cfg));
   };
 
-  tick();
-  const id = setInterval(tick, HEARTBEAT_MS);
-  return () => clearInterval(id);
+  runSchedulerTick(getCfg());
+  timer = setTimeout(scheduleNext, schedulerIntervalMs(getCfg()));
+
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 function detectReverts(cfg: ServerConfig): void {

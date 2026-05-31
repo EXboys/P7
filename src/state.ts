@@ -55,6 +55,18 @@ function rowToPlanState(row: Record<string, unknown>): PlanState {
   }
   if (accountResults?.length) state.accountResults = accountResults;
   if (row.error) state.error = String(row.error);
+  if (row.cost_usd != null && row.cost_usd !== "") {
+    const cost = Number(row.cost_usd);
+    if (Number.isFinite(cost)) state.costUsd = cost;
+  }
+  const tokenRaw = row.token_usage as string | null | undefined;
+  if (tokenRaw) {
+    try {
+      state.tokenUsage = JSON.parse(tokenRaw) as PlanState["tokenUsage"];
+    } catch {
+      /* ignore */
+    }
+  }
   return state;
 }
 
@@ -76,6 +88,8 @@ function planStateBinds(state: PlanState): Record<string, string | null> {
     $account_results: state.accountResults?.length
       ? JSON.stringify(state.accountResults)
       : null,
+    $cost_usd: state.costUsd != null ? String(state.costUsd) : null,
+    $token_usage: state.tokenUsage ? JSON.stringify(state.tokenUsage) : null,
     $error: state.error ?? null,
   };
 }
@@ -177,6 +191,16 @@ export function initDb(projectPath: string): Database {
   db.run(
     `CREATE INDEX IF NOT EXISTS idx_plan_states_updated ON plan_states(updated_at DESC)`,
   );
+  try {
+    db.run("ALTER TABLE plan_states ADD COLUMN cost_usd REAL");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE plan_states ADD COLUMN token_usage TEXT");
+  } catch {
+    /* exists */
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS sdk_costs (
@@ -237,11 +261,11 @@ export function upsertPlanState(
     INSERT INTO plan_states (
       plan_id, project_path, goal, title, status, created_at, updated_at,
       branch, commit_sha, review_url, pr_url, issue_url, merge_status,
-      account_results, error
+      account_results, cost_usd, token_usage, error
     ) VALUES (
       $plan_id, $project_path, $goal, $title, $status, $created_at, $updated_at,
       $branch, $commit_sha, $review_url, $pr_url, $issue_url, $merge_status,
-      $account_results, $error
+      $account_results, $cost_usd, $token_usage, $error
     )
     ON CONFLICT(plan_id) DO UPDATE SET
       project_path = excluded.project_path,
@@ -256,6 +280,8 @@ export function upsertPlanState(
       issue_url = excluded.issue_url,
       merge_status = excluded.merge_status,
       account_results = excluded.account_results,
+      cost_usd = COALESCE(excluded.cost_usd, plan_states.cost_usd),
+      token_usage = COALESCE(excluded.token_usage, plan_states.token_usage),
       error = excluded.error
   `);
 
