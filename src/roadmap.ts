@@ -146,6 +146,21 @@ export function listRoadmapBackups(projectPath: string, limit = 8): string[] {
     .slice(0, limit);
 }
 
+const BACKUP_FILENAME_RE = /^ROADMAP-\d+\.md$/;
+
+export function roadmapBackupPath(projectPath: string, filename: string): string | null {
+  if (!BACKUP_FILENAME_RE.test(filename)) return null;
+  const path = join(p7ProjectDir(projectPath), "roadmap-history", filename);
+  if (!existsSync(path)) return null;
+  return path;
+}
+
+export function readRoadmapBackup(projectPath: string, filename: string): string | null {
+  const path = roadmapBackupPath(projectPath, filename);
+  if (!path) return null;
+  return readFileSync(path, "utf-8");
+}
+
 export function latestRoadmapBackupPath(projectPath: string): string {
   const name = listRoadmapBackups(projectPath, 1)[0];
   if (!name) return "";

@@ -1,4 +1,5 @@
 import { hasLlmAuth, mergeLlmEnv } from "./llm-env.ts";
+import { loadCachedLlmProbeForEnv, saveLlmProbeCache } from "./llm-probe-cache.ts";
 
 export type LlmProbeResult = {
   ok: boolean;
@@ -51,13 +52,15 @@ export async function probeLlmConnection(
     const body = await res.text();
 
     if (res.ok) {
-      return {
+      const result: LlmProbeResult = {
         ok: true,
         detail: `模型 ${model} 请求成功（${latencyMs}ms）`,
         latencyMs,
         model,
         endpoint,
       };
+      saveLlmProbeCache(env, result);
+      return result;
     }
 
     let hint = body.slice(0, 240);

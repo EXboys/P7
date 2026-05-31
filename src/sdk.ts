@@ -4,6 +4,14 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { applyAllLlmEnv, buildSdkEnv } from "./llm-env.ts";
 import { renderTemplate } from "./prompt-template.ts";
 import { writeSdkCost } from "./state.ts";
+import { addSdkCost, emptySdkCost, parseUsage, type SdkCostSummary, type SdkTokenUsage } from "./sdk-cost.ts";
+import {
+  emptyToolTrace,
+  ingestSdkMessageForToolTrace,
+  type SdkToolTraceSummary,
+} from "./sdk-tool-log.ts";
+
+export type { SdkCostSummary, SdkTokenUsage, SdkToolTraceSummary };
 
 export type ModelRole = "default" | "planner" | "executor" | "selector";
 
@@ -76,7 +84,8 @@ export async function runSdkQuery(opts: {
   maxTurns?: number;
   planId?: string;
   projectPath?: string;
-}): Promise<{ text: string; costUsd?: number }> {
+  toolTrace?: SdkToolTraceSummary;
+}): Promise<{ text: string; costUsd?: number; usage?: SdkTokenUsage; toolTrace?: SdkToolTraceSummary }> {
   applyAllLlmEnv();
   const model = resolveModel(opts.role ?? "default");
   const options: Record<string, unknown> = {
@@ -94,10 +103,13 @@ export async function runSdkQuery(opts: {
 
   let text = "";
   let costUsd: number | undefined;
+  let usage = parseUsage(undefined);
+  const toolTrace = opts.toolTrace ?? emptyToolTrace();
 
   await withExponentialBackoff(async () => {
     text = "";
     for await (const message of query({ prompt: opts.prompt, options: options as never })) {
+      ingestSdkMessageForToolTrace(message, toolTrace);
       if ("type" in message && message.type === "assistant" && "message" in message) {
         const content = (message as { message: { content: unknown[] } }).message.content;
         for (const block of content) {
@@ -107,9 +119,30 @@ export async function runSdkQuery(opts: {
         }
       }
       if ("type" in message && message.type === "result" && "result" in message) {
-        const r = message as { result?: string; total_cost_usd?: number };
+        const r = message as {
+          result?: string;
+          total_cost_usd?: number;
+          usage?: unknown;
+          modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; costUSD?: number }>;
+        };
         if (r.result) text = r.result;
         if (typeof r.total_cost_usd === "number") costUsd = r.total_cost_usd;
+        if (r.usage) usage = parseUsage(r.usage);
+        else if (r.modelUsage) {
+          const merged = emptySdkCost();
+          for (const m of Object.values(r.modelUsage)) {
+            merged.usage = addSdkCost(merged, {
+              costUsd: m.costUSD,
+              usage: {
+                inputTokens: m.inputTokens ?? 0,
+                outputTokens: m.outputTokens ?? 0,
+                cacheReadInputTokens: m.cacheReadInputTokens ?? 0,
+                cacheCreationInputTokens: m.cacheCreationInputTokens ?? 0,
+              },
+            }).usage;
+          }
+          usage = merged.usage;
+        }
       }
     }
   });
@@ -123,7 +156,7 @@ export async function runSdkQuery(opts: {
     });
   }
 
-  return { text, costUsd };
+  return { text, costUsd, usage, toolTrace };
 }
 
 async function withExponentialBackoff<T>(fn: () => Promise<T>): Promise<T> {

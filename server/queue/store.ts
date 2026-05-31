@@ -31,6 +31,7 @@ export interface JobStore {
   getLastPrReviewJob(alias: string): JobRow | null;
   hasRecentPrReviewJob(alias: string, intervalMinutes: number): boolean;
   sumTodayJobCostUsd(alias: string): number;
+  sumMonthJobCostUsd(alias: string): { total: number; jobs: number };
 }
 
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
@@ -63,3 +64,5 @@ export const getLastPrReviewJob =
 export const hasRecentPrReviewJob =
   impl.hasRecentPrReviewJob ?? ((_alias: string, _intervalMinutes: number) => false);
 export const sumTodayJobCostUsd = impl.sumTodayJobCostUsd ?? (() => 0);
+export const sumMonthJobCostUsd =
+  impl.sumMonthJobCostUsd ?? ((_alias: string) => ({ total: 0, jobs: 0 }));

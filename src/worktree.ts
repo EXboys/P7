@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 import { p7ProjectDir } from "./p7-paths.ts";
 import type { DevAgentConfig } from "./config.ts";
@@ -8,6 +8,8 @@ export interface WorktreeInfo {
   branch: string;
   baseCommit: string;
 }
+
+const REUSED_WORKTREE_DIR = "active";
 
 function git(projectPath: string, args: string[]): { ok: boolean; out: string } {
   const proc = Bun.spawnSync(["git", "-C", projectPath, ...args], {
@@ -28,6 +30,12 @@ export function getHeadCommit(projectPath: string): string {
 /** PR 合并目标分支，默认 main */
 export function defaultBaseBranch(cfg: DevAgentConfig): string {
   return cfg.vcs.base_branch?.trim() || "main";
+}
+
+/** 固定工作分支；未配置则每次 Plan 新建 ephemeral 分支 */
+export function resolveWorkBranch(cfg: DevAgentConfig): string | null {
+  const b = cfg.vcs.work_branch?.trim();
+  return b || null;
 }
 
 /**
@@ -87,14 +95,65 @@ export function gitSyncWithOrigin(
   };
 }
 
+function branchCheckedOutInMainRepo(projectPath: string, branch: string): boolean {
+  const head = git(projectPath, ["symbolic-ref", "--short", "HEAD"]);
+  return head.ok && head.out === branch;
+}
+
+function removeWorktreeAtPath(projectPath: string, wtPath: string): void {
+  if (!existsSync(wtPath)) return;
+  git(projectPath, ["worktree", "remove", "--force", wtPath]);
+}
+
+/** 复用固定分支：每次执行前重置到基线 commit，worktree 目录固定为 .p7/worktrees/active */
+function createReusedWorktree(
+  projectPath: string,
+  baseCommit: string,
+  branch: string,
+): WorktreeInfo {
+  const wtRoot = join(p7ProjectDir(projectPath), "worktrees");
+  const wtPath = join(wtRoot, REUSED_WORKTREE_DIR);
+  if (!existsSync(wtRoot)) mkdirSync(wtRoot, { recursive: true });
+
+  git(projectPath, ["worktree", "prune"]);
+  removeWorktreeAtPath(projectPath, wtPath);
+
+  if (branchCheckedOutInMainRepo(projectPath, branch)) {
+    throw new Error(
+      `工作分支 ${branch} 正被主仓库 checkout，请先切换到 main 等其它分支再执行 Plan`,
+    );
+  }
+
+  const branchExists = git(projectPath, ["show-ref", "--verify", `refs/heads/${branch}`]).ok;
+
+  if (branchExists) {
+    const reset = git(projectPath, ["branch", "-f", branch, baseCommit]);
+    if (!reset.ok) {
+      throw new Error(`无法将工作分支 ${branch} 重置到基线: ${reset.out}`);
+    }
+    const add = git(projectPath, ["worktree", "add", "--force", wtPath, branch]);
+    if (!add.ok) throw new Error(`worktree add (复用分支) 失败: ${add.out}`);
+  } else {
+    const add = git(projectPath, ["worktree", "add", "-b", branch, wtPath, baseCommit]);
+    if (!add.ok) throw new Error(`worktree add 失败: ${add.out}`);
+  }
+
+  return { path: wtPath, branch, baseCommit };
+}
+
 export function createWorktree(
   projectPath: string,
   baseCommit: string,
-  branchPrefix = "p7",
+  cfg?: DevAgentConfig,
 ): WorktreeInfo {
+  const workBranch = cfg ? resolveWorkBranch(cfg) : null;
+  if (workBranch) {
+    return createReusedWorktree(projectPath, baseCommit, workBranch);
+  }
+
   const ts = Date.now();
   const rand = Math.random().toString(36).slice(2, 8);
-  const branch = `${branchPrefix}/${ts}-${rand}`;
+  const branch = `p7/${ts}-${rand}`;
   const wtRoot = join(p7ProjectDir(projectPath), "worktrees");
   if (!existsSync(wtRoot)) mkdirSync(wtRoot, { recursive: true });
   const wtPath = join(wtRoot, `${ts}-${rand}`);
@@ -105,12 +164,15 @@ export function createWorktree(
   return { path: wtPath, branch, baseCommit };
 }
 
-export function removeWorktree(projectPath: string, info: WorktreeInfo, force = false): void {
+export function removeWorktree(
+  projectPath: string,
+  info: WorktreeInfo,
+  force = false,
+  opts?: { keepBranch?: boolean },
+): void {
   git(projectPath, ["worktree", "remove", info.path, ...(force ? ["--force"] : [])]);
-  try {
+  if (!opts?.keepBranch) {
     git(projectPath, ["branch", "-D", info.branch]);
-  } catch {
-    /* branch may be checked out elsewhere */
   }
 }
 

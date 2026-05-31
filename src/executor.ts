@@ -8,6 +8,10 @@ import { markRoadmapStepDone } from "./roadmap.ts";
 import { refreshRoadmapIfExhausted } from "./roadmap-refresh.ts";
 import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { loadLatestPlanRecord, recordFailedPlan } from "./planner.ts";
+import {
+  formatExecuteRetryPromptBlock,
+  loadPreviousExecuteFailureContext,
+} from "./execute-retry-context.ts";
 import { transitionPlanState } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
@@ -20,11 +24,19 @@ import {
   removeWorktree,
   resetWorktree,
   resolveExecutionBaseCommit,
+  resolveWorkBranch,
   type WorktreeInfo,
 } from "./worktree.ts";
 import { withExponentialBackoff } from "./retry.ts";
 import type { StepState } from "../server/queue/types.ts";
 import { updateJobStepState } from "../server/queue/db.ts";
+import { addSdkCost, emptySdkCost } from "./sdk-cost.ts";
+import { scaffoldMissingPlanFiles } from "./executor-scaffold.ts";
+import {
+  appendExecuteToolLog,
+  emptyToolTrace,
+  formatToolTraceSummary,
+} from "./sdk-tool-log.ts";
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string } {
   const proc = Bun.spawnSync(["git", "-C", cwd, ...args], {
@@ -49,7 +61,22 @@ function scaleLimits(plan: Plan): { maxFiles: number; maxDiffLines: number } {
   return { maxFiles: 4, maxDiffLines: 300 };
 }
 
-function buildPreToolHook(allowedFiles: Set<string>) {
+function normalizeAllowedPath(path: string, cwd: string): string {
+  let normalized = path.replace(/^\.\//, "");
+  const cwdNorm = cwd.replace(/\/$/, "");
+  if (normalized.startsWith(`${cwdNorm}/`)) {
+    normalized = normalized.slice(cwdNorm.length + 1);
+  } else if (normalized === cwdNorm) {
+    normalized = "";
+  }
+  return normalized;
+}
+
+function buildPreToolHook(
+  allowedFiles: Set<string>,
+  cwd: string,
+  onDeny?: (reason: string) => void,
+) {
   const dangerousBash = /\b(git\s+(add|commit|push|reset|checkout|clean|merge|rebase)|rm\s+-|mv\s+|cp\s+|chmod\s+|chown\s+|sed\s+-i|perl\s+-pi|dd\s+|truncate\s+)/i;
   return {
     PreToolUse: [
@@ -81,24 +108,28 @@ function buildPreToolHook(allowedFiles: Set<string>) {
             }
             const path = input.tool_input?.file_path ?? input.tool_input?.path;
             if (!path) {
+              const reason = "Missing file path in tool input";
+              onDeny?.(`${input.tool_name}: ${reason}`);
               return {
                 hookSpecificOutput: {
                   hookEventName: "PreToolUse" as const,
                   permissionDecision: "deny" as const,
-                  permissionDecisionReason: "Missing file path in tool input",
+                  permissionDecisionReason: reason,
                 },
               };
             }
-            const normalized = path.replace(/^\.\//, "");
+            const normalized = normalizeAllowedPath(path, cwd);
             const allowed = [...allowedFiles].some(
-              (f) => normalized === f || normalized.endsWith(f),
+              (f) => normalized === f || normalized.endsWith(`/${f}`) || normalized.endsWith(f),
             );
             if (!allowed) {
+              const reason = `File not in plan: ${normalized}`;
+              onDeny?.(`${input.tool_name} ${path}: ${reason}`);
               return {
                 hookSpecificOutput: {
                   hookEventName: "PreToolUse" as const,
                   permissionDecision: "deny" as const,
-                  permissionDecisionReason: `File not in plan: ${normalized}`,
+                  permissionDecisionReason: reason,
                 },
               };
             }
@@ -241,6 +272,8 @@ export async function executePlan(
   };
   // ────────────────────────────────────────────────────────────────
 
+  let sdkCost = emptySdkCost();
+
   try {
     if (
       scanRemote?.includes("github.com") &&
@@ -255,13 +288,30 @@ export async function executePlan(
       projectPath,
       `execute:base ${base.source} @ ${baseCommit.slice(0, 7)}${base.synced ? "" : " (未同步远程)"}`,
     );
+    const workBranch = resolveWorkBranch(cfg);
     const wtStart = new Date().toISOString();
     writeStepState({ step_name: "worktree_create", status: "running", started_at: wtStart });
-    wt = createWorktree(projectPath, baseCommit);
+    wt = createWorktree(projectPath, baseCommit, cfg);
     writeStepState({ step_name: "worktree_create", status: "completed", started_at: wtStart, finished_at: new Date().toISOString() });
     const system = readPrompt("executor-system.md");
     const planText = JSON.stringify(plan, null, 2);
     const maxTurns = deriveMaxTurns(plan);
+    const priorFailure = planId
+      ? loadPreviousExecuteFailureContext(
+          projectPath,
+          planId,
+          plan.title,
+          process.env.P7_PROJECT_ALIAS,
+          process.env.P7_JOB_ID,
+        )
+      : "";
+    const priorFailureBlock = formatExecuteRetryPromptBlock(priorFailure);
+    if (priorFailure) {
+      await appendLesson(
+        projectPath,
+        `execute:retry-with-context plan=${planId} (${priorFailure.slice(0, 80)}…)`,
+      );
+    }
 
     const maxAgentPasses = 2;
     let stats = { files: 0, lines: 0 };
@@ -269,26 +319,43 @@ export async function executePlan(
 
     const sdkStart = new Date().toISOString();
     writeStepState({ step_name: "sdk_execution", status: "running", started_at: sdkStart });
+    let lastToolSummary = "";
 
     for (let pass = 0; pass < maxAgentPasses; pass++) {
+      if (pass > 0) {
+        const scaffolded = scaffoldMissingPlanFiles(wt.path, plan);
+        if (scaffolded.length > 0) {
+          await appendLesson(
+            projectPath,
+            `execute:scaffold pass${pass + 1} ${scaffolded.join(", ")}`,
+          );
+          appendExecuteToolLog(`scaffold created: ${scaffolded.join(", ")}`);
+        }
+      }
+
       const retryHint =
         pass > 0
-          ? "\n\n【重要】上一轮未产生任何文件变更。你必须用 Edit/Write 修改计划中列出的每个文件，禁止空跑。"
+          ? "\n\n【重要】上一轮未产生任何文件变更。占位文件已创建（若有）。你必须用 Edit/Write 修改计划中列出的每个文件，禁止空跑。"
           : "";
+
+      const toolTrace = emptyToolTrace();
+      const onDeny = (reason: string) => appendExecuteToolLog(`hook deny ${reason}`);
 
       const runOnce = async () => {
         const result = await runSdkQuery({
-          prompt: `在 worktree 中执行以下计划：\n\`\`\`json\n${planText}\n\`\`\`${retryHint}`,
+          prompt: `在 worktree 中执行以下计划：\n\`\`\`json\n${planText}\n\`\`\`${priorFailureBlock}${retryHint}`,
           cwd: wt!.path,
           systemPrompt: system,
           role: "executor",
           allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
-          hooks: buildPreToolHook(allowedFiles) as never,
+          hooks: buildPreToolHook(allowedFiles, wt!.path, onDeny) as never,
           maxTurns,
+          toolTrace,
         });
-        if (typeof result.costUsd === "number" && result.costUsd > cfg.execution_cost_limit) {
+        sdkCost = addSdkCost(sdkCost, result);
+        if (sdkCost.costUsd > cfg.execution_cost_limit) {
           throw new Error(
-            `execution cost exceeded limit: ${result.costUsd} > ${cfg.execution_cost_limit}`,
+            `execution cost exceeded limit: ${sdkCost.costUsd} > ${cfg.execution_cost_limit}`,
           );
         }
       };
@@ -301,6 +368,11 @@ export async function executePlan(
           throw e;
         }
       });
+
+      const toolSummary = formatToolTraceSummary(toolTrace, pass);
+      lastToolSummary = toolSummary;
+      appendExecuteToolLog(toolSummary);
+      await appendLesson(projectPath, `execute:tools ${toolSummary}`);
 
       const diffStat = git(wt.path, ["diff", baseCommit, "--stat"]);
       if (!diffStat.ok) throw new Error(`git diff failed: ${diffStat.out}`);
@@ -318,7 +390,7 @@ export async function executePlan(
 
     if (stats.files === 0) {
       throw new Error(
-        "executor produced no file changes after 2 attempts; use console「重试执行」or fix plan scope",
+        `executor produced no file changes after 2 attempts; ${lastToolSummary || "no tool summary"}; use console「重试执行」or fix plan scope`,
       );
     }
 
@@ -365,6 +437,7 @@ export async function executePlan(
     const criticStart = new Date().toISOString();
     writeStepState({ step_name: "diff_critic", status: "running", started_at: criticStart });
     const critic = await reviewDiff(wt.path, diffStatOut, plan.title);
+    if (critic.cost) sdkCost = addSdkCost(sdkCost, critic.cost);
     if (!critic.ok) {
       throw new Error(`diff-critic blocked: ${critic.findings.slice(0, 300)}`);
     }
@@ -374,7 +447,10 @@ export async function executePlan(
     writeStepState({ step_name: "git_commit_push", status: "running", started_at: gitStart });
     const { sha } = commitWorktreeChanges(wt, baseCommit, plan.title);
 
-    const push = git(wt.path, ["push", "-u", "origin", wt.branch]);
+    const pushArgs = workBranch
+      ? ["push", "--force-with-lease", "-u", "origin", wt.branch]
+      : ["push", "-u", "origin", wt.branch];
+    const push = git(wt.path, pushArgs);
     if (!push.ok) {
       const fallback = git(wt.path, ["push", "origin", `HEAD:${wt.branch}`]);
       if (!fallback.ok) throw new Error(`push failed: ${push.out}; fallback: ${fallback.out}`);
@@ -427,12 +503,14 @@ export async function executePlan(
         issueUrl: vcs.issueUrl,
         mergeStatus,
         accountResults: vcs.accountResults,
+        costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
+        tokenUsage: sdkCost.usage,
         error: mergeStatus === "failed" ? lifecycleDetail : undefined,
       });
     }
     writeStepState({ step_name: "vcs_publish", status: "completed", started_at: vcsStart, finished_at: new Date().toISOString() });
     await markRoadmapStepDone(projectPath, plan.title, sha);
-    await refreshRoadmapIfExhausted(projectPath, cfg, { force: true });
+    await refreshRoadmapIfExhausted(projectPath, cfg, { force: true, autoPlan: true });
 
     const durationSec = Math.round((Date.now() - start) / 1000);
     await appendLesson(
@@ -440,7 +518,7 @@ export async function executePlan(
       `execute:ok "${plan.title}" -> ${branch} / ${durationSec}s${vcs.prUrl ? ` / ${vcs.prUrl}` : ""}`,
     );
 
-    removeWorktree(projectPath, wt, true);
+    removeWorktree(projectPath, wt, true, { keepBranch: Boolean(workBranch) });
     wt = null;
 
     return {
@@ -452,12 +530,18 @@ export async function executePlan(
       issueUrl: vcs.issueUrl,
       mergeStatus,
       accountResults: vcs.accountResults,
+      costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
+      tokenUsage: sdkCost.usage,
       durationSec,
     };
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     recordFailedPlan(projectPath, plan, err);
-    if (planId) transitionPlanState(projectPath, planId, "failed", { error: err });
+    if (planId) transitionPlanState(projectPath, planId, "failed", {
+      error: err,
+      costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
+      tokenUsage: sdkCost.usage,
+    });
     await appendLesson(projectPath, `execute:failed "${plan.title}" x ${err.slice(0, 120)}`);
     // Mark any running steps as failed so no step stays in "running" forever
     if (jobId) {
@@ -476,12 +560,16 @@ export async function executePlan(
       ok: false,
       error: err,
       worktreePath: wt?.path,
+      costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
+      tokenUsage: sdkCost.usage,
       durationSec: Math.round((Date.now() - start) / 1000),
     };
   } finally {
     if (wt) {
       try {
-        removeWorktree(projectPath, wt, false);
+        removeWorktree(projectPath, wt, false, {
+          keepBranch: Boolean(resolveWorkBranch(cfg)),
+        });
       } catch {
         /* best-effort cleanup */
       }

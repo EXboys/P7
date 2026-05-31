@@ -5,6 +5,7 @@ import { gitSyncWithOrigin } from "./worktree.ts";
 import { homePathForRead } from "./p7-paths.ts";
 import { loadSnapshot } from "./tech-discovery.ts";
 import { hasLlmAuth, mergeLlmEnv } from "./llm-env.ts";
+import { loadCachedLlmProbeForEnv } from "./llm-probe-cache.ts";
 import type { LlmProbeResult } from "./llm-probe.ts";
 
 export interface PipelineCheckItem {
@@ -15,7 +16,16 @@ export interface PipelineCheckItem {
   fix?: string;
 }
 
-export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
+export type PipelineCheckOptions = {
+  /** 是否执行 git fetch / gh auth 等网络或慢速检查；页面刷新默认 false，执行任务或显式刷新时为 true */
+  remote?: boolean;
+};
+
+export function runPipelineCheck(
+  projectPath: string,
+  opts: PipelineCheckOptions = {},
+): PipelineCheckItem[] {
+  const checkRemote = opts.remote !== false;
   const items: PipelineCheckItem[] = [];
   const cfg = existsSync(configPath(projectPath)) ? loadConfig(projectPath) : null;
 
@@ -47,7 +57,7 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
     fix: "git remote add origin https://github.com/org/repo.git",
   });
 
-  if (cfg && existsSync(gitDir) && remote) {
+  if (cfg && existsSync(gitDir) && checkRemote) {
     const sync = gitSyncWithOrigin(projectPath, cfg);
     items.push({
       id: "git_sync",
@@ -55,6 +65,13 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
       label: "与 PR 基线分支同步",
       detail: sync.detail,
       fix: `git fetch origin && git checkout ${cfg.vcs.base_branch || "main"} && git pull origin ${cfg.vcs.base_branch || "main"}`,
+    });
+  } else if (cfg && existsSync(gitDir) && !checkRemote) {
+    items.push({
+      id: "git_sync",
+      ok: true,
+      label: "与 PR 基线分支同步",
+      detail: "打开页面时跳过；执行任务前会自动 fetch 远程基线",
     });
   }
 
@@ -68,7 +85,7 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
     fix: "brew install gh && gh auth login",
   });
 
-  if (ghOk) {
+  if (ghOk && checkRemote) {
     const auth = Bun.spawnSync(["gh", "auth", "status"], { cwd: projectPath, stdout: "pipe" });
     items.push({
       id: "gh_auth",
@@ -76,6 +93,13 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
       label: "gh 已登录",
       detail: auth.exitCode === 0 ? "OK" : new TextDecoder().decode(auth.stderr).slice(0, 120),
       fix: "gh auth login",
+    });
+  } else if (ghOk) {
+    items.push({
+      id: "gh_auth",
+      ok: true,
+      label: "gh 已登录",
+      detail: "打开页面时跳过；执行任务前会自动验证",
     });
   }
 
@@ -102,11 +126,19 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
 
   items.push({
     id: "llm_ping",
-    ok: false,
+    ok: hasLlmAuth(merged) && Boolean(modelName),
     label: "模型连通性（实测）",
-    detail: "尚未检测 — 在工作台点「检测模型请求」",
-    fix: "工作台 → 环境检查 → 检测模型请求",
+    detail:
+      hasLlmAuth(merged) && modelName
+        ? "配置就绪；点「检测模型请求」验证，通过后按 Key 缓存"
+        : "请先配置鉴权与模型名",
+    fix: hasLlmAuth(merged) ? "工作台 → 环境检查 → 检测模型请求" : undefined,
   });
+
+  const cachedProbe = loadCachedLlmProbeForEnv(merged);
+  if (cachedProbe) {
+    return applyLlmProbeResult(items, cachedProbe);
+  }
 
   const snap = loadSnapshot(projectPath);
   items.push({
@@ -197,6 +229,9 @@ export function pipelineReady(items: PipelineCheckItem[]): boolean {
   const required = ["git", "remote", "llm_auth", "llm_model"];
   const core = required.every((id) => items.find((i) => i.id === id)?.ok);
   const ping = items.find((i) => i.id === "llm_ping");
-  if (ping && ping.detail.includes("尚未检测")) return core;
-  return core && (ping?.ok !== false);
+  if (!ping) return core;
+  if (/尚未检测|配置就绪|Key\/模型未变/.test(ping.detail)) {
+    return core && ping.ok !== false;
+  }
+  return core && ping.ok !== false;
 }

@@ -93,6 +93,25 @@ function branchForAccount(baseBranch: string, account: GitHubAccount, multiAccou
   return `${baseBranch}-${safeId || "account"}`;
 }
 
+function findOpenPrUrl(
+  projectPath: string,
+  branch: string,
+  env?: Record<string, string>,
+): string | undefined {
+  const r = run(
+    projectPath,
+    ["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url", "--limit", "1"],
+    env,
+  );
+  if (!r.ok) return undefined;
+  try {
+    const rows = JSON.parse(r.out) as Array<{ url: string }>;
+    return rows[0]?.url;
+  } catch {
+    return undefined;
+  }
+}
+
 export class GitHubProvider implements VcsProvider {
   canHandle(remoteUrl: string | null): boolean {
     return Boolean(remoteUrl?.includes("github.com"));
@@ -210,6 +229,18 @@ export class GitHubProvider implements VcsProvider {
         branch,
         issueUrl,
         mergeStatus: "skipped",
+      };
+    }
+
+    const existingPr = findOpenPrUrl(input.projectPath, branch, env);
+    if (existingPr) {
+      return {
+        accountId: account.id,
+        ok: true,
+        branch,
+        prUrl: existingPr,
+        issueUrl,
+        mergeStatus: "not_requested",
       };
     }
 

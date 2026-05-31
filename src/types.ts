@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SdkTokenUsage } from "./sdk-cost.ts";
 
 export const PlanSchema = z.object({
   title: z.string().min(1).max(120),
@@ -76,6 +77,7 @@ export interface ExecutionResult {
   mergeStatus?: "not_requested" | "queued" | "merged" | "failed" | "skipped";
   accountResults?: VcsAccountPublishResult[];
   costUsd?: number;
+  tokenUsage?: SdkTokenUsage;
   durationSec?: number;
   error?: string;
   worktreePath?: string;
@@ -126,6 +128,8 @@ export interface PlanState {
   issueUrl?: string;
   mergeStatus?: ExecutionResult["mergeStatus"];
   accountResults?: VcsAccountPublishResult[];
+  costUsd?: number;
+  tokenUsage?: SdkTokenUsage;
   error?: string;
 }
 

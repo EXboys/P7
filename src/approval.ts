@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from "path";
 import { projectSubpathForRead, projectSubpathForWrite } from "./p7-paths.ts";
 import type { DevAgentConfig } from "./config.ts";
-import { getPlanState, transitionPlanState, upsertPlanState } from "./state.ts";
+import { getPlanState, preparePlanExecuteRetry, transitionPlanState, upsertPlanState } from "./state.ts";
 import { recommendRoadmapGoal } from "./roadmap.ts";
-import type { ApprovalRecord, Plan, PlanRecord } from "./types.ts";
+import { listJobsForProject } from "../server/queue/store.ts";
+import type { ApprovalRecord, Plan, PlanRecord, PlanState } from "./types.ts";
 
 export function approvalsDir(projectPath: string): string {
   return projectSubpathForRead(projectPath, "approvals");
@@ -157,8 +158,44 @@ const EXECUTE_SKIP_STATES = new Set([
   "pushed",
   "pr_opened",
   "merged",
-  "failed",
 ]);
+
+export const FAILED_RETRY_COOLDOWN_MS = 2 * 60 * 1000;
+export const MAX_FAILED_EXECUTE_PER_PLAN = 3;
+
+function countFailedExecuteJobsForPlan(projectAlias: string, planId: string): number {
+  return listJobsForProject(projectAlias, 100).filter((j) => {
+    if (j.kind !== "execute" || j.status !== "failed") return false;
+    try {
+      return (JSON.parse(j.payload) as { planId?: string }).planId === planId;
+    } catch {
+      return false;
+    }
+  }).length;
+}
+
+/** 调度器是否可自动重试 failed 且仍 approved 的 Plan */
+export function canSchedulerRetryFailedPlan(
+  projectAlias: string | undefined,
+  planId: string,
+  state: PlanState,
+): boolean {
+  if (state.status !== "failed") return false;
+  if (Date.now() - new Date(state.updatedAt).getTime() < FAILED_RETRY_COOLDOWN_MS) return false;
+  if (!projectAlias) return true;
+  return countFailedExecuteJobsForPlan(projectAlias, planId) < MAX_FAILED_EXECUTE_PER_PLAN;
+}
+
+function isEligibleForExecute(
+  state: PlanState | null | undefined,
+  projectAlias: string | undefined,
+  planId: string,
+): boolean {
+  if (!state) return true;
+  if (EXECUTE_SKIP_STATES.has(state.status)) return false;
+  if (state.status === "failed") return canSchedulerRetryFailedPlan(projectAlias, planId, state);
+  return true;
+}
 
 function titleMatchesRoadmapGoal(title: string, goal: string): boolean {
   const t = title.toLowerCase();
@@ -171,11 +208,12 @@ function titleMatchesRoadmapGoal(title: string, goal: string): boolean {
 /** 下一个应入队 execute 的已批准 Plan（跳过已结束；优先对齐当前 Roadmap 步骤） */
 export function pickNextApprovedPlanForExecution(
   projectPath: string,
+  opts?: { projectAlias?: string },
 ): ApprovalRecord | null {
   const candidates: ApprovalRecord[] = [];
   for (const rec of listApprovedForExecution(projectPath)) {
     const state = getPlanState(projectPath, rec.planId);
-    if (state && EXECUTE_SKIP_STATES.has(state.status)) continue;
+    if (!isEligibleForExecute(state, opts?.projectAlias, rec.planId)) continue;
     candidates.push(rec);
   }
   if (candidates.length === 0) return null;
