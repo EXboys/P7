@@ -24,7 +24,7 @@ import {
 } from "./worktree.ts";
 import { withExponentialBackoff } from "./retry.ts";
 import type { StepState } from "../server/queue/types.ts";
-import { updateJobStepStates } from "../server/queue/db.ts";
+import { updateJobStepState } from "../server/queue/db.ts";
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string } {
   const proc = Bun.spawnSync(["git", "-C", cwd, ...args], {
@@ -223,30 +223,21 @@ export async function executePlan(
 
   // ── Step state tracking (persisted to jobs.db for resumability) ──
   const jobId = process.env.P7_JOB_ID;
-  const steps: StepState[] = [];
+  const stepStartTimes = new Map<string, string>();
 
-  const recordStepStart = (stepName: string) => {
+  /**
+   * 写入单步状态快照到 jobs.db 的 step_states 列。
+   * 无 jobId 时静默跳过 —— 用户直接 CLI 运行 executor 时 P7_JOB_ID 未设置，
+   * 这是设计妥协而非 bug。
+   */
+  const writeStepState = (step: StepState) => {
     if (!jobId) return;
-    const step: StepState = {
-      step_name: stepName,
-      status: "running",
-      started_at: new Date().toISOString(),
-    };
-    steps.push(step);
-    updateJobStepStates(jobId, [...steps]).catch(() => {});
-  };
-
-  const recordStepEnd = (stepName: string, error?: string) => {
-    if (!jobId) return;
-    const step = steps.find(
-      (s) => s.step_name === stepName && s.status === "running",
-    );
-    if (step) {
-      step.status = error ? "failed" : "completed";
-      step.finished_at = new Date().toISOString();
-      if (error) step.error = error;
+    if (step.status === "running") {
+      stepStartTimes.set(step.step_name, step.started_at);
+    } else if (!step.started_at) {
+      step.started_at = stepStartTimes.get(step.step_name) ?? "";
     }
-    updateJobStepStates(jobId, [...steps]).catch(() => {});
+    updateJobStepState(jobId, step).catch(() => {});
   };
   // ────────────────────────────────────────────────────────────────
 
@@ -264,9 +255,10 @@ export async function executePlan(
       projectPath,
       `execute:base ${base.source} @ ${baseCommit.slice(0, 7)}${base.synced ? "" : " (未同步远程)"}`,
     );
-    recordStepStart("worktree.create");
+    const wtStart = new Date().toISOString();
+    writeStepState({ step_name: "worktree_create", status: "running", started_at: wtStart });
     wt = createWorktree(projectPath, baseCommit);
-    recordStepEnd("worktree.create");
+    writeStepState({ step_name: "worktree_create", status: "completed", started_at: wtStart, finished_at: new Date().toISOString() });
     const system = readPrompt("executor-system.md");
     const planText = JSON.stringify(plan, null, 2);
     const maxTurns = deriveMaxTurns(plan);
@@ -274,6 +266,9 @@ export async function executePlan(
     const maxAgentPasses = 2;
     let stats = { files: 0, lines: 0 };
     let diffStatOut = "";
+
+    const sdkStart = new Date().toISOString();
+    writeStepState({ step_name: "sdk_execution", status: "running", started_at: sdkStart });
 
     for (let pass = 0; pass < maxAgentPasses; pass++) {
       const retryHint =
@@ -327,7 +322,10 @@ export async function executePlan(
       );
     }
 
-    recordStepStart("validate.diff");
+    writeStepState({ step_name: "sdk_execution", status: "completed", started_at: sdkStart, finished_at: new Date().toISOString() });
+
+    const diffStart = new Date().toISOString();
+    writeStepState({ step_name: "diff_check", status: "running", started_at: diffStart });
     const maxFiles = Math.min(limits.maxFiles, cfg.diff_critic.max_files_ceiling);
     const maxDiffLines = Math.min(
       Math.max(
@@ -342,14 +340,16 @@ export async function executePlan(
     if (stats.lines > maxDiffLines) {
       throw new Error(`Diff too large: ${stats.lines} lines > ${maxDiffLines}`);
     }
-    recordStepEnd("validate.diff");
+    writeStepState({ step_name: "diff_check", status: "completed", started_at: diffStart, finished_at: new Date().toISOString() });
 
-    recordStepStart("validate.typecheck");
+    const tcStart = new Date().toISOString();
+    writeStepState({ step_name: "typecheck", status: "running", started_at: tcStart });
     const tc = await runTypecheck(wt.path);
     if (!tc.ok) throw new Error(`typecheck failed: ${tc.out.slice(0, 500)}`);
-    recordStepEnd("validate.typecheck");
+    writeStepState({ step_name: "typecheck", status: "completed", started_at: tcStart, finished_at: new Date().toISOString() });
 
-    recordStepStart("validate.test");
+    const testStart = new Date().toISOString();
+    writeStepState({ step_name: "test", status: "running", started_at: testStart });
     if (cfg.test_command) {
       const testProc = Bun.spawnSync(["sh", "-c", cfg.test_command], {
         cwd: wt.path,
@@ -360,26 +360,26 @@ export async function executePlan(
         throw new Error(`test failed: ${new TextDecoder().decode(testProc.stderr).slice(0, 500)}`);
       }
     }
-    recordStepEnd("validate.test");
+    writeStepState({ step_name: "test", status: "completed", started_at: testStart, finished_at: new Date().toISOString() });
 
-    recordStepStart("review.diff");
+    const criticStart = new Date().toISOString();
+    writeStepState({ step_name: "diff_critic", status: "running", started_at: criticStart });
     const critic = await reviewDiff(wt.path, diffStatOut, plan.title);
     if (!critic.ok) {
       throw new Error(`diff-critic blocked: ${critic.findings.slice(0, 300)}`);
     }
-    recordStepEnd("review.diff");
+    writeStepState({ step_name: "diff_critic", status: "completed", started_at: criticStart, finished_at: new Date().toISOString() });
 
-    recordStepStart("git.commit");
+    const gitStart = new Date().toISOString();
+    writeStepState({ step_name: "git_commit_push", status: "running", started_at: gitStart });
     const { sha } = commitWorktreeChanges(wt, baseCommit, plan.title);
-    recordStepEnd("git.commit");
 
-    recordStepStart("git.push");
     const push = git(wt.path, ["push", "-u", "origin", wt.branch]);
     if (!push.ok) {
       const fallback = git(wt.path, ["push", "origin", `HEAD:${wt.branch}`]);
       if (!fallback.ok) throw new Error(`push failed: ${push.out}; fallback: ${fallback.out}`);
     }
-    recordStepEnd("git.push");
+    writeStepState({ step_name: "git_commit_push", status: "completed", started_at: gitStart, finished_at: new Date().toISOString() });
 
     const branch = wt.branch;
     if (planId) {
@@ -388,7 +388,8 @@ export async function executePlan(
         commitSha: sha,
       });
     }
-    recordStepStart("vcs.publish");
+    const vcsStart = new Date().toISOString();
+    writeStepState({ step_name: "vcs_publish", status: "running", started_at: vcsStart });
     const vcs = await publishToVcs({
       projectPath: wt.path,
       remoteUrl: scanRemote,
@@ -429,7 +430,7 @@ export async function executePlan(
         error: mergeStatus === "failed" ? lifecycleDetail : undefined,
       });
     }
-    recordStepEnd("vcs.publish");
+    writeStepState({ step_name: "vcs_publish", status: "completed", started_at: vcsStart, finished_at: new Date().toISOString() });
     await markRoadmapStepDone(projectPath, plan.title, sha);
     await refreshRoadmapIfExhausted(projectPath, cfg, { force: true });
 
@@ -459,14 +460,18 @@ export async function executePlan(
     if (planId) transitionPlanState(projectPath, planId, "failed", { error: err });
     await appendLesson(projectPath, `execute:failed "${plan.title}" x ${err.slice(0, 120)}`);
     // Mark any running steps as failed so no step stays in "running" forever
-    for (const step of steps) {
-      if (step.status === "running") {
-        step.status = "failed";
-        step.finished_at = new Date().toISOString();
-        step.error = step.error ?? err.slice(0, 500);
+    if (jobId) {
+      const now = new Date().toISOString();
+      for (const [stepName, startedAt] of stepStartTimes) {
+        writeStepState({
+          step_name: stepName,
+          status: "failed",
+          started_at: startedAt,
+          finished_at: now,
+          error: err.slice(0, 500),
+        });
       }
     }
-    if (jobId) updateJobStepStates(jobId, [...steps]).catch(() => {});
     return {
       ok: false,
       error: err,
