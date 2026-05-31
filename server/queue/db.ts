@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import type { JobKind, JobRow, JobStatus } from "./types.ts";
+import type { JobKind, JobRow, JobStatus, StepState } from "./types.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 
 function dbPath(): string {
@@ -27,8 +27,17 @@ function getDb(): Database {
       finished_at TEXT,
       progress TEXT,
       result_json TEXT,
-      error TEXT
+      error TEXT,
+      step_states TEXT
     )`);
+    // Enable WAL mode for concurrent read/write access
+    db.run("PRAGMA journal_mode=WAL");
+    // Migration: add step_states column to existing databases
+    try {
+      db.run("ALTER TABLE jobs ADD COLUMN step_states TEXT");
+    } catch {
+      // column already exists, ignore
+    }
   }
   return db;
 }
@@ -180,4 +189,23 @@ export function hasActiveJob(alias: string): boolean {
     )
     .get(alias) as { c: number };
   return row.c > 0;
+}
+
+export async function updateJobStepStates(id: string, steps: StepState[]): Promise<void> {
+  const json = JSON.stringify(steps);
+  const d = getDb();
+  // Retry up to 3 times on SQLITE_BUSY (WAL mode concurrent write contention)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      d.run("UPDATE jobs SET step_states = ? WHERE id = ?", [json, id]);
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("SQLITE_BUSY") && attempt < 2) {
+        await Bun.sleep(10 + Math.random() * 20);
+        continue;
+      }
+      throw e;
+    }
+  }
 }
