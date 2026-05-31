@@ -18,6 +18,7 @@ import { decideApproval, getApprovalRecord, listPendingApprovals } from "./appro
 import { extractLastJsonBlock, repairJson } from "./json-utils.ts";
 import { listPlanStates } from "./state.ts";
 import { runPipelineCheck, pipelineReady } from "./pipeline-check.ts";
+import { runPrReviewSweep } from "./vcs/pr-reviewer.ts";
 
 const [, , cmd, projectArg, ...rest] = process.argv;
 
@@ -101,6 +102,14 @@ async function main(): Promise<void> {
         skipDiscovery: rest.includes("--skip-fetch"),
       });
       console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+    case "pr-review": {
+      const p = projectPath();
+      const cfg = loadConfig(p);
+      const result = await runPrReviewSweep(p, cfg);
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(result.ok ? 0 : 1);
       break;
     }
     case "pipeline": {
@@ -223,6 +232,7 @@ Commands:
   daily run <project> [--goal "..."] [--plan-only] [--skip-discovery]
   discover <project> [--no-llm]
   discover-daily <project> [--plan-only] [--skip-fetch]
+  pr-review <project>   # 扫描 OPEN PR，自动 review / 合并 / 修冲突
   pipeline check <project>
   roadmap fix-template <project>
   radar <project> [--date YYYY-MM-DD]

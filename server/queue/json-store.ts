@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { JobKind, JobRow, JobStatus } from "./types.ts";
+import { PROJECT_MUTEX_KINDS } from "./project-mutex.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 
 /**
@@ -91,7 +92,29 @@ export function finishJob(
   job.finished_at = new Date().toISOString();
   job.result_json = result ? JSON.stringify(result) : null;
   job.error = error ?? null;
+  job.progress = null;
   saveAll(rows);
+}
+
+export function updateJobProgress(id: string, progress: string): void {
+  const rows = loadAll();
+  const job = rows.find((r) => r.id === id);
+  if (!job) return;
+  job.progress = progress.slice(0, 200);
+  saveAll(rows);
+}
+
+export function reclaimOrphanedRunningJobs(): JobRow[] {
+  const rows = loadAll();
+  const orphans = rows.filter((r) => r.status === "running");
+  for (const job of orphans) {
+    job.status = "failed";
+    job.finished_at = new Date().toISOString();
+    job.error = "服务重启或 Worker 中断，请重新入队";
+    job.progress = null;
+  }
+  if (orphans.length) saveAll(rows);
+  return orphans;
 }
 
 export function reclaimStaleJobs(maxRunMs: number): JobRow[] {
@@ -174,6 +197,60 @@ export function hasActiveJob(alias: string): boolean {
   return loadAll().some(
     (r) => r.project_alias === alias && (r.status === "pending" || r.status === "running"),
   );
+}
+
+export function hasActiveExecuteJob(alias: string): boolean {
+  return loadAll().some(
+    (r) =>
+      r.project_alias === alias &&
+      r.kind === "execute" &&
+      (r.status === "pending" || r.status === "running"),
+  );
+}
+
+export function hasProjectMutexInFlight(alias: string, exceptKind?: JobKind): boolean {
+  const kinds = exceptKind
+    ? PROJECT_MUTEX_KINDS.filter((k) => k !== exceptKind)
+    : [...PROJECT_MUTEX_KINDS];
+  return loadAll().some(
+    (r) =>
+      r.project_alias === alias &&
+      kinds.includes(r.kind) &&
+      (r.status === "pending" || r.status === "running"),
+  );
+}
+
+export function hasPrReviewInFlight(alias: string): boolean {
+  return loadAll().some(
+    (r) =>
+      r.project_alias === alias &&
+      r.kind === "pr-review" &&
+      (r.status === "pending" || r.status === "running"),
+  );
+}
+
+export function getLastPrReviewJob(alias: string): JobRow | null {
+  const rows = loadAll()
+    .filter((r) => r.project_alias === alias && r.kind === "pr-review")
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return rows[0] ?? null;
+}
+
+export function hasRecentPrReviewJob(alias: string, intervalMinutes: number): boolean {
+  const since = Date.now() - intervalMinutes * 60 * 1000;
+  const prReview = (r: JobRow) => r.project_alias === alias && r.kind === "pr-review";
+  if (
+    loadAll().some(
+      (r) => prReview(r) && (r.status === "pending" || r.status === "running"),
+    )
+  ) {
+    return true;
+  }
+  return loadAll().some((r) => {
+    if (!prReview(r) || r.status !== "done") return false;
+    const t = Date.parse(r.created_at);
+    return Number.isFinite(t) && t >= since;
+  });
 }
 
 export type { JobKind, JobRow, JobStatus };

@@ -256,11 +256,8 @@ export class GitHubProvider implements VcsProvider {
     }
 
     const prUrl = firstUrl(pr.out) ?? pr.out;
-    let mergeStatus: VcsPublishResult["mergeStatus"] = "not_requested";
-    if (accountEnabled(account, "auto_merge", cfg)) {
-      const merge = run(input.projectPath, ["gh", "pr", "merge", prUrl, "--squash", "--auto"], env);
-      mergeStatus = merge.ok ? "queued" : "failed";
-    }
+    // 合并与 review 由 executor 内 runPrReviewAndMerge 统一处理（含冲突修复）
+    const mergeStatus: VcsPublishResult["mergeStatus"] = "not_requested";
 
     return {
       accountId: account.id,

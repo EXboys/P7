@@ -73,12 +73,69 @@ export function decideApproval(
   return record;
 }
 
+function autoApproveLimits(cfg: DevAgentConfig): {
+  filesMax: number;
+  linesMax: number;
+  risksMax: number;
+} {
+  return {
+    filesMax: Math.max(cfg.auto_approve.files_max, cfg.diff_critic.max_files_ceiling),
+    linesMax: Math.max(cfg.auto_approve.diff_lines_max, cfg.diff_critic.max_diff_ceiling),
+    risksMax: cfg.auto_approve.risks_max,
+  };
+}
+
+/** 不符合自动审批时返回原因；符合则返回 null */
+export function autoApproveBlockReason(plan: Plan, cfg: DevAgentConfig): string | null {
+  if (!cfg.auto_approve.enabled) return "自动审批已关闭";
+  const { filesMax, linesMax, risksMax } = autoApproveLimits(cfg);
+  if (plan.changes.length > filesMax) {
+    return `文件 ${plan.changes.length} 个，超过上限 ${filesMax}`;
+  }
+  if (plan.estimated_diff_lines > linesMax) {
+    return `约 ${plan.estimated_diff_lines} 行，超过上限 ${linesMax}`;
+  }
+  if (plan.risks.length > risksMax) {
+    return `风险 ${plan.risks.length} 条，超过上限 ${risksMax}`;
+  }
+  return null;
+}
+
 export function shouldAutoApprove(plan: Plan, cfg: DevAgentConfig): boolean {
-  if (!cfg.auto_approve.enabled) return false;
-  if (plan.changes.length > cfg.auto_approve.files_max) return false;
-  if (plan.estimated_diff_lines > cfg.auto_approve.diff_lines_max) return false;
-  if (plan.risks.length > cfg.auto_approve.risks_max) return false;
-  return true;
+  return autoApproveBlockReason(plan, cfg) === null;
+}
+
+export type AutoApproveBatchResult = {
+  approved: string[];
+  skipped: { planId: string; reason: string }[];
+};
+
+/** 批量自动批准待审批 Plan；可选对每个批准的 plan 入队 execute */
+export function processAutoApprovals(
+  projectPath: string,
+  cfg: DevAgentConfig,
+  opts?: {
+    planIds?: string[];
+    enqueueExecute?: (planId: string) => void;
+  },
+): AutoApproveBatchResult {
+  const approved: string[] = [];
+  const skipped: { planId: string; reason: string }[] = [];
+  const pending = listPendingApprovals(projectPath).filter((p) =>
+    opts?.planIds ? opts.planIds.includes(p.planId) : true,
+  );
+
+  for (const rec of pending) {
+    const reason = autoApproveBlockReason(rec.plan, cfg);
+    if (reason) {
+      skipped.push({ planId: rec.planId, reason });
+      continue;
+    }
+    decideApproval(projectPath, rec.planId, "approved", "auto");
+    approved.push(rec.planId);
+    opts?.enqueueExecute?.(rec.planId);
+  }
+  return { approved, skipped };
 }
 
 export function countPendingPlans(projectPath: string): number {

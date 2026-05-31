@@ -2,3 +2,4 @@ node_modules/
 .p7/
 .dev-agent/
 *.log
+.claude/worktrees/

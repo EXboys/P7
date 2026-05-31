@@ -9,6 +9,7 @@ export interface StepState {
 export type JobKind =
   | "daily"
   | "discover-daily"
+  | "pr-review"
   | "plan"
   | "execute"
   | "quickfix"
@@ -43,4 +44,8 @@ export interface ExecuteJobPayload {
   planId: string;
 }
 
-export type JobPayload = DailyJobPayload | ExecuteJobPayload;
+export interface PrReviewJobPayload {
+  projectPath: string;
+}
+
+export type JobPayload = DailyJobPayload | ExecuteJobPayload | PrReviewJobPayload;

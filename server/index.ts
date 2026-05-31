@@ -3,6 +3,7 @@ import "../src/llm-env.ts";
 import { loadServerConfig, saveServerConfig } from "./config.ts";
 import { createDashboard } from "./dashboard.ts";
 import { startScheduler } from "./scheduler.ts";
+import { startPrReviewScheduler } from "./pr-review-scheduler.ts";
 import { startWorker } from "./queue/worker.ts";
 import { audit } from "./audit.ts";
 
@@ -16,6 +17,7 @@ const app = createDashboard(
 );
 
 const stopScheduler = startScheduler(cfg);
+const stopPrReviewScheduler = startPrReviewScheduler(cfg);
 const stopWorker = startWorker(cfg);
 
 audit("server.started", { port: cfg.port, host: cfg.bind_host });
@@ -33,6 +35,7 @@ console.log(`P7 server http://${cfg.bind_host}:${server.port}`);
 
 process.on("SIGINT", () => {
   stopScheduler();
+  stopPrReviewScheduler();
   stopWorker();
   process.exit(0);
 });

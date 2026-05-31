@@ -2,6 +2,9 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import type { JobKind, JobRow, JobStatus, StepState } from "./types.ts";
+import { jobBlockedByRunning, PROJECT_MUTEX_KINDS } from "./project-mutex.ts";
+
+export { jobBlockedByRunning } from "./project-mutex.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 
 function dbPath(): string {
@@ -64,19 +67,40 @@ export function getJob(id: string): JobRow | null {
   return row ?? null;
 }
 
+function runningKindsByAlias(d: Database): Map<string, Set<JobKind>> {
+  const rows = d
+    .query("SELECT project_alias, kind FROM jobs WHERE status = 'running'")
+    .all() as { project_alias: string; kind: JobKind }[];
+  const map = new Map<string, Set<JobKind>>();
+  for (const r of rows) {
+    let s = map.get(r.project_alias);
+    if (!s) {
+      s = new Set();
+      map.set(r.project_alias, s);
+    }
+    s.add(r.kind);
+  }
+  return map;
+}
+
 export function claimNextJob(excludeAliases: string[] = []): JobRow | null {
   const d = getDb();
-  const running = d
-    .query("SELECT project_alias FROM jobs WHERE status = 'running'")
-    .all() as { project_alias: string }[];
-  const busy = new Set([...running.map((r) => r.project_alias), ...excludeAliases]);
+  const running = runningKindsByAlias(d);
+  for (const a of excludeAliases) {
+    let s = running.get(a);
+    if (!s) {
+      s = new Set();
+      running.set(a, s);
+    }
+    s.add("execute");
+  }
 
   const pending = d
     .query("SELECT * FROM jobs WHERE status = 'pending' ORDER BY created_at ASC")
     .all() as JobRow[];
 
   for (const job of pending) {
-    if (busy.has(job.project_alias)) continue;
+    if (jobBlockedByRunning(job.project_alias, job.kind, running)) continue;
     d.run(
       `UPDATE jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'`,
       [new Date().toISOString(), job.id],
@@ -93,9 +117,23 @@ export function finishJob(
   error?: string,
 ): void {
   getDb().run(
-    `UPDATE jobs SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ?`,
+    `UPDATE jobs SET status = ?, finished_at = ?, result_json = ?, error = ?, progress = NULL WHERE id = ?`,
     [status, new Date().toISOString(), result ? JSON.stringify(result) : null, error ?? null, id],
   );
+}
+
+export function updateJobProgress(id: string, progress: string): void {
+  getDb().run(`UPDATE jobs SET progress = ? WHERE id = ?`, [progress.slice(0, 200), id]);
+}
+
+/** 服务重启后：所有仍为 running 的任务不可能还在跑，一律标失败 */
+export function reclaimOrphanedRunningJobs(): JobRow[] {
+  const d = getDb();
+  const orphans = d.query("SELECT * FROM jobs WHERE status = 'running'").all() as JobRow[];
+  for (const job of orphans) {
+    finishJob(job.id, "failed", null, "服务重启或 Worker 中断，请重新入队");
+  }
+  return orphans;
 }
 
 export function reclaimStaleJobs(maxRunMs: number): JobRow[] {
@@ -208,4 +246,67 @@ export async function updateJobStepStates(id: string, steps: StepState[]): Promi
       throw e;
     }
   }
+}
+
+export function hasActiveExecuteJob(alias: string): boolean {
+  const row = getDb()
+    .query(
+      `SELECT COUNT(*) as c FROM jobs WHERE project_alias = ? AND kind = 'execute' AND status IN ('pending', 'running')`,
+    )
+    .get(alias) as { c: number };
+  return row.c > 0;
+}
+
+/** 同项目是否有其它互斥任务（不含 pr-review 自身时可传 excludeKind） */
+export function hasProjectMutexInFlight(
+  alias: string,
+  exceptKind?: JobKind,
+): boolean {
+  const kinds = exceptKind
+    ? PROJECT_MUTEX_KINDS.filter((k) => k !== exceptKind)
+    : [...PROJECT_MUTEX_KINDS];
+  if (kinds.length === 0) return false;
+  const inList = kinds.map(() => "?").join(", ");
+  const row = getDb()
+    .query(
+      `SELECT COUNT(*) as c FROM jobs WHERE project_alias = ? AND kind IN (${inList}) AND status IN ('pending', 'running')`,
+    )
+    .get(alias, ...kinds) as { c: number };
+  return row.c > 0;
+}
+
+export function hasPrReviewInFlight(alias: string): boolean {
+  const row = getDb()
+    .query(
+      `SELECT COUNT(*) as c FROM jobs WHERE project_alias = ? AND kind = 'pr-review' AND status IN ('pending', 'running')`,
+    )
+    .get(alias) as { c: number };
+  return row.c > 0;
+}
+
+export function getLastPrReviewJob(alias: string): JobRow | null {
+  return (
+    (getDb()
+      .query(
+        `SELECT * FROM jobs WHERE project_alias = ? AND kind = 'pr-review' ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(alias) as JobRow | null) ?? null
+  );
+}
+
+/** @deprecated 使用 shouldSchedulePrReview */
+export function hasRecentPrReviewJob(alias: string, intervalMinutes: number): boolean {
+  const since = new Date(Date.now() - intervalMinutes * 60 * 1000).toISOString();
+  const active = getDb()
+    .query(
+      `SELECT COUNT(*) as c FROM jobs WHERE project_alias = ? AND kind = 'pr-review' AND status IN ('pending', 'running')`,
+    )
+    .get(alias) as { c: number };
+  if (active.c > 0) return true;
+  const done = getDb()
+    .query(
+      `SELECT COUNT(*) as c FROM jobs WHERE project_alias = ? AND kind = 'pr-review' AND status = 'done' AND created_at >= ?`,
+    )
+    .get(alias, since) as { c: number };
+  return done.c > 0;
 }

@@ -2,6 +2,8 @@ import type { ServerConfig } from "./config.ts";
 import { lastConsecutiveFailures, sumTodayJobCostUsd } from "./queue/store.ts";
 import { countPendingPlans } from "../src/approval.ts";
 import { loadConfig } from "../src/config.ts";
+import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
+import { ghInstalled, gitRemoteOrigin } from "../src/gh-status.ts";
 
 const COOLDOWN_MS = 30 * 60 * 1000;
 const lastStopAt = new Map<string, number>();
@@ -26,6 +28,14 @@ export function maybeContinueLoop(
 
   if (!dc.loop_planning) {
     return { continue: false, reason: "loop_planning_off" };
+  }
+
+  if (
+    ghInstalled() &&
+    gitRemoteOrigin(projectPath) &&
+    checkPrWorkGate(projectPath, dc).blocked
+  ) {
+    return { continue: false, reason: "open_prs_block" };
   }
 
   const maxFailures = dc.max_consecutive_failures;

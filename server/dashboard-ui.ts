@@ -243,11 +243,20 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius
 }
 `;
 
-export type ProjectTab = "overview" | "trends" | "plan" | "run" | "settings";
+export type ProjectTab = "overview" | "trends" | "plan" | "run" | "review" | "settings";
 
 export type SystemPage = "/jobs" | "/settings" | "/logs";
 
-type NavIcon = "overview" | "trends" | "plan" | "run" | "settings" | "bind" | "jobs" | "logs";
+type NavIcon =
+  | "overview"
+  | "trends"
+  | "plan"
+  | "run"
+  | "review"
+  | "settings"
+  | "bind"
+  | "jobs"
+  | "logs";
 
 const NAV_SVG: Record<NavIcon, string> = {
   overview:
@@ -255,6 +264,8 @@ const NAV_SVG: Record<NavIcon, string> = {
   trends: '<svg viewBox="0 0 24 24"><path d="M4 19h16"/><path d="M7 17l3-6 3 4 4-9"/></svg>',
   plan: '<svg viewBox="0 0 24 24"><path d="M9 6h12M9 12h12M9 18h12"/><path d="M5 6h.01M5 12h.01M5 18h.01"/></svg>',
   run: '<svg viewBox="0 0 24 24"><polygon points="9,7 18,12 9,17" fill="currentColor" stroke="none"/></svg>',
+  review:
+    '<svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>',
   settings:
     '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/><path d="M12 3v2M12 19v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M3 12h2M19 12h2M5.6 18.4l1.4-1.4M17 7l1.4-1.4"/></svg>',
   bind: '<svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>',
@@ -289,6 +300,7 @@ const PIPELINE: {
     ],
   },
   { tab: "run", label: "运行", icon: "run" },
+  { tab: "review", label: "Review", icon: "review" },
   {
     tab: "settings",
     label: "设置",
@@ -306,6 +318,29 @@ export function esc(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/** 系统设置页可见的模型下拉（原先 datalist 在部分浏览器里几乎看不到选项） */
+export const MODEL_PRESET_OPTIONS: { value: string; label: string }[] = [
+  { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro（质量，适合 Executor）" },
+  { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash（省钱，适合 Planner/Selector）" },
+  { value: "claude-sonnet-4", label: "Claude Sonnet 4" },
+  { value: "claude-haiku-4", label: "Claude Haiku 4" },
+];
+
+export function renderModelSelect(name: string, current?: string, emptyLabel = "— 同默认 —"): string {
+  const cur = current ?? "";
+  const inList = MODEL_PRESET_OPTIONS.some((o) => o.value === cur);
+  const presetOpts = MODEL_PRESET_OPTIONS.map(
+    (o) =>
+      `<option value="${esc(o.value)}"${cur === o.value ? " selected" : ""}>${esc(o.label)}</option>`,
+  ).join("");
+  const extra =
+    cur && !inList
+      ? `<option value="${esc(cur)}" selected>${esc(cur)}（当前自定义）</option>`
+      : "";
+  const emptySelected = !cur ? " selected" : "";
+  return `<select name="${esc(name)}"><option value=""${emptySelected}>${esc(emptyLabel)}</option>${extra}${presetOpts}</select>`;
 }
 
 export function renderPipelineChecksPanel(
@@ -379,6 +414,74 @@ export function statusBadge(status: string): string {
   return `<span class="badge ${cls}">${esc(status)}</span>`;
 }
 
+export const JOB_KIND_LABELS: Record<string, string> = {
+  "discover-daily": "趋势 → Roadmap",
+  daily: "每日流水线",
+  execute: "执行 Plan",
+  "pr-review": "PR 复查",
+  plan: "生成 Plan",
+  quickfix: "快速修复",
+  initialize: "初始化",
+};
+
+export function jobKindLabel(kind: string): string {
+  return JOB_KIND_LABELS[kind] ?? kind;
+}
+
+const JOB_STATUS_LABELS: Record<string, { label: string; cls: string }> = {
+  pending: { label: "排队中", cls: "warn" },
+  running: { label: "运行中", cls: "run" },
+  done: { label: "已完成", cls: "ok" },
+  failed: { label: "失败", cls: "fail" },
+};
+
+export function jobStatusBadge(status: string): string {
+  const m = JOB_STATUS_LABELS[status];
+  if (m) return `<span class="badge ${m.cls}">${esc(m.label)}</span>`;
+  return statusBadge(status);
+}
+
+export function renderJobLogPage(
+  job: {
+    id: string;
+    kind: string;
+    status: string;
+    project_alias: string;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+    error: string | null;
+    progress: string | null;
+  } | null,
+  logTail: string,
+): string {
+  if (!job) {
+    return `<p class="muted">未知任务</p><pre>${esc(logTail)}</pre>`;
+  }
+  const active = job.status === "pending" || job.status === "running";
+  const progressLine = job.progress
+    ? `<p style="margin:8px 0 0"><strong>进度</strong> — ${esc(job.progress)}</p>`
+    : "";
+  const times = [
+    job.created_at ? `创建 ${esc(new Date(job.created_at).toLocaleString("zh-CN"))}` : "",
+    job.started_at ? `开始 ${esc(new Date(job.started_at).toLocaleString("zh-CN"))}` : "",
+    job.finished_at ? `结束 ${esc(new Date(job.finished_at).toLocaleString("zh-CN"))}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const hint = active
+    ? `<div class="flash" style="margin-bottom:14px">任务<strong>${job.status === "pending" ? "排队中" : "运行中"}</strong>：下方日志会<strong>实时追加</strong>（每 5 秒自动刷新本页）。若超过 2 分钟仍无任何新行，可能已僵死，请重启控制台后重新入队。</div>`
+    : job.error
+      ? `<div class="flash">${esc(job.error)}</div>`
+      : "";
+  const refresh = active ? `<meta http-equiv="refresh" content="5"/>` : "";
+  return `${refresh}<div class="panel" style="margin-bottom:14px">
+<p style="margin:0 0 8px"><strong>${esc(job.kind)}</strong> · 项目 <strong>${esc(job.project_alias)}</strong> · ${jobStatusBadge(job.status)}</p>
+<p class="muted" style="margin:0;font-size:12px">${times || "—"}</p>
+${progressLine}
+</div>${hint}<pre>${esc(logTail || "(尚无输出，刚启动或仍在排队)")}</pre>`;
+}
+
 const PLAN_STATUS_LABELS: Record<string, { label: string; cls: string }> = {
   pending: { label: "待审批", cls: "warn" },
   pending_approval: { label: "待审批", cls: "warn" },
@@ -398,7 +501,7 @@ export function planStatusBadge(status: string): string {
   return statusBadge(status);
 }
 
-function formatPlanTime(iso?: string): string {
+export function formatDateTime(iso?: string | null): string {
   if (!iso) return "—";
   try {
     return new Date(iso).toLocaleString("zh-CN", {
@@ -407,10 +510,41 @@ function formatPlanTime(iso?: string): string {
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+      second: "2-digit",
     });
   } catch {
     return iso;
   }
+}
+
+/** 开始 → 结束（运行中则用当前时间） */
+export function formatJobDuration(
+  startedAt: string | null | undefined,
+  finishedAt: string | null | undefined,
+  active: boolean,
+): string {
+  if (!startedAt) return "—";
+  const start = new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return "—";
+  const end = finishedAt
+    ? new Date(finishedAt).getTime()
+    : active
+      ? Date.now()
+      : start;
+  const sec = Math.max(0, Math.round((end - start) / 1000));
+  if (sec < 60) return `${sec} 秒`;
+  if (sec < 3600) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s > 0 ? `${m} 分 ${s} 秒` : `${m} 分`;
+  }
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`;
+}
+
+function formatPlanTime(iso?: string): string {
+  return formatDateTime(iso);
 }
 
 function complexityLabel(c?: string): string {
@@ -420,13 +554,150 @@ function complexityLabel(c?: string): string {
   return "—";
 }
 
-function mergeStatusLabel(s?: string): string {
+export function mergeStatusLabel(s?: string): string {
   if (s === "merged") return "已合并";
   if (s === "queued") return "排队中";
   if (s === "failed") return "失败";
   if (s === "skipped") return "已跳过";
   if (s === "not_requested") return "未请求";
   return s ? s : "—";
+}
+
+export function prMergeableBadge(mergeable: string, mergeStateStatus: string): string {
+  if (mergeable === "MERGEABLE" && mergeStateStatus === "CLEAN") {
+    return `<span class="badge ok">可合并</span>`;
+  }
+  if (mergeable === "CONFLICTING" || mergeStateStatus === "DIRTY") {
+    return `<span class="badge fail">冲突</span>`;
+  }
+  if (mergeStateStatus === "BEHIND") {
+    return `<span class="badge warn">落后 base</span>`;
+  }
+  return `<span class="badge idle">${esc(mergeable || mergeStateStatus || "—")}</span>`;
+}
+
+export function renderReviewPage(opts: {
+  alias: string;
+  dc: {
+    vcs: {
+      review_open_prs?: boolean;
+      pr_review_interval_minutes?: number;
+      pr_review_fast_interval_minutes?: number;
+      pr_review_only_p7_label?: boolean;
+      auto_review?: boolean;
+      auto_merge?: boolean;
+      merge_resolve_conflicts?: boolean;
+      labels: string[];
+    };
+  };
+  openPrs: Array<{
+    number: number;
+    url: string;
+    title: string;
+    headRefName: string;
+    labels: string[];
+    mergeable: string;
+    mergeStateStatus: string;
+  }>;
+  planPrRows: Array<{
+    planId: string;
+    title: string;
+    status: string;
+    prUrl?: string;
+    mergeStatus?: string;
+    branch?: string;
+    error?: string;
+  }>;
+  reviewJobs: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    created_at: string;
+    started_at: string | null;
+    finished_at: string | null;
+    progress: string | null;
+    error: string | null;
+  }>;
+  ghReady: boolean;
+  workGate?: { blocked: boolean; reason: string };
+}): string {
+  const v = opts.dc.vcs;
+  const schedOn = v.review_open_prs !== false;
+  const base = `/project/${encodeURIComponent(opts.alias)}`;
+  const configLine = [
+    schedOn
+      ? `自动复查：有 OPEN PR 每 ${v.pr_review_fast_interval_minutes ?? 8} 分钟，否则每 ${v.pr_review_interval_minutes ?? 15} 分钟`
+      : "定时复查：关闭",
+    v.auto_review !== false ? "自动 comment/approve" : "仅手动 review",
+    v.auto_merge ? "自动合并" : "不自动合并",
+    v.merge_resolve_conflicts !== false ? "冲突自动修复" : "冲突不自动修",
+    v.pr_review_only_p7_label !== false ? `仅标签 ${v.labels[0] ?? "p7"}` : "全部 OPEN PR",
+  ].join(" · ");
+
+  const openRows = opts.openPrs
+    .map(
+      (pr) =>
+        `<tr>
+<td><a href="${esc(pr.url)}" target="_blank">#${pr.number}</a></td>
+<td>${esc(pr.title)}</td>
+<td><code>${esc(pr.headRefName)}</code></td>
+<td class="muted">${esc(pr.labels.join(", ") || "—")}</td>
+<td>${prMergeableBadge(pr.mergeable, pr.mergeStateStatus)}</td>
+<td><a class="btn ghost sm" href="${esc(pr.url)}" target="_blank">GitHub</a></td>
+</tr>`,
+    )
+    .join("");
+
+  const planRows = opts.planPrRows
+    .map(
+      (s) =>
+        `<tr>
+<td><a href="${base}/plans/${encodeURIComponent(s.planId)}">${esc(s.planId)}</a></td>
+<td>${statusBadge(s.status)}</td>
+<td>${esc(s.title)}</td>
+<td>${s.prUrl ? `<a href="${esc(s.prUrl)}" target="_blank">PR</a>` : "—"}</td>
+<td>${esc(mergeStatusLabel(s.mergeStatus))}</td>
+<td class="muted">${esc((s.error ?? "").slice(0, 48))}</td>
+</tr>`,
+    )
+    .join("");
+
+  const jobRows = opts.reviewJobs
+    .map(
+      (j) =>
+        `<tr>
+<td><a href="/jobs/${encodeURIComponent(j.id)}/log">${esc(j.id.slice(0, 12))}…</a></td>
+<td>${esc(jobKindLabel(j.kind))}</td>
+<td>${jobStatusBadge(j.status)}</td>
+<td class="muted">${esc(j.progress ?? "—")}</td>
+<td class="muted">${esc(new Date(j.created_at).toLocaleString("zh-CN"))}</td>
+</tr>`,
+    )
+    .join("");
+
+  const ghWarn = opts.ghReady
+    ? ""
+    : `<div class="flash warn-banner">未检测到可用的 <code>gh</code> 登录，Review 无法执行。请先在 <a href="${base}/settings?section=github">GitHub 设置</a> 完成配置。</div>`;
+
+  const gateBanner =
+    opts.workGate?.blocked
+      ? `<div class="flash warn-banner"><strong>新任务已暂停</strong> — ${esc(opts.workGate.reason)}。请先点「立即复查 OPEN PR」或到 GitHub 合并/解决冲突，再开 Roadmap / 执行。</div>`
+      : "";
+
+  return `${ghWarn}${gateBanner}
+<div class="health-banner ${schedOn ? "ok" : "fail"}"><span class="health-icon">${schedOn ? "✓" : "!"}</span><div><strong>历史 PR 复查</strong><span>${esc(configLine)}</span></div></div>
+<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:16px 0">
+<form class="inline p7-busy-form" data-busy-msg="已入队 PR 复查…" method="post" action="/trigger/pr-review"><input type="hidden" name="alias" value="${esc(opts.alias)}"/><button type="submit" class="btn" ${opts.ghReady ? "" : "disabled"}>立即复查 OPEN PR</button></form>
+<a class="btn ghost" href="${base}/settings?section=github">调整 Review / 合并策略</a>
+</div>
+<div class="panel"><h2>GitHub 上的 OPEN PR</h2>
+<p class="muted">来自 <code>gh pr list</code>；复查任务会对每个 PR 自动 review，并在开启自动合并时尝试合并、修复冲突。</p>
+<div class="tbl-wrap"><table><thead><tr><th>PR</th><th>标题</th><th>分支</th><th>标签</th><th>合并状态</th><th></th></tr></thead><tbody>${openRows || `<tr><td colspan="6" class="empty">暂无 OPEN PR</td></tr>`}</tbody></table></div></div>
+<div class="panel"><h2>Plan 关联的 PR</h2>
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>链接</th><th>合并</th><th>备注</th></tr></thead><tbody>${planRows || `<tr><td colspan="6" class="empty">尚无关联 PR</td></tr>`}</tbody></table></div></div>
+<div class="panel"><h2>Review 任务</h2>
+<p class="muted"><code>pr-review</code> 运行期间，同项目的 Roadmap（discover-daily）与 Plan 执行会排队等待，避免与修冲突抢仓库。</p>
+<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>进度</th><th>创建</th></tr></thead><tbody>${jobRows || `<tr><td colspan="5" class="empty">暂无 Review 任务</td></tr>`}</tbody></table></div></div>`;
 }
 
 function shortLinkLabel(url: string, kind: "pr" | "issue" | "review"): string {
@@ -476,7 +747,7 @@ ${metricCard(p.validation, "验证方式")}
     changesBlock = `<div class="panel"><h2>变更清单</h2>
 <div class="plan-empty-state">
 <p>该 Plan 未保留详细变更列表（常见于示例数据或早期记录）。</p>
-<a class="btn ghost sm" href="${base}/run">在「运行与交付」查看分支与 PR</a>
+<a class="btn ghost sm" href="${base}/review">Review / PR</a>
 </div></div>`;
   }
 
@@ -600,7 +871,7 @@ ${timelinePanel}
 ${actions}
 <span class="actions-spacer"></span>
 <a class="btn ghost sm" href="${base}/plan?section=plans">返回列表</a>
-<a class="btn ghost sm" href="${base}/run">运行与交付</a>
+<a class="btn ghost sm" href="${base}/review">Review</a>
 </div>
 </div>`;
 }

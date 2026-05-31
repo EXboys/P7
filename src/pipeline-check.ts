@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, configPath } from "./config.ts";
+import { gitSyncWithOrigin } from "./worktree.ts";
 import { homePathForRead } from "./p7-paths.ts";
 import { loadSnapshot } from "./tech-discovery.ts";
 import { hasLlmAuth, mergeLlmEnv } from "./llm-env.ts";
@@ -45,6 +46,17 @@ export function runPipelineCheck(projectPath: string): PipelineCheckItem[] {
     detail: remote || "未配置 origin",
     fix: "git remote add origin https://github.com/org/repo.git",
   });
+
+  if (cfg && existsSync(gitDir) && remote) {
+    const sync = gitSyncWithOrigin(projectPath, cfg);
+    items.push({
+      id: "git_sync",
+      ok: sync.ok,
+      label: "与 PR 基线分支同步",
+      detail: sync.detail,
+      fix: `git fetch origin && git checkout ${cfg.vcs.base_branch || "main"} && git pull origin ${cfg.vcs.base_branch || "main"}`,
+    });
+  }
 
   const gh = Bun.spawnSync(["sh", "-c", "command -v gh"], { stdout: "pipe" });
   const ghOk = gh.exitCode === 0;

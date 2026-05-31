@@ -6,6 +6,8 @@ import {
   hasPendingDailyToday,
 } from "./queue/store.ts";
 import { loadConfig } from "../src/config.ts";
+import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
+import { ghInstalled, gitRemoteOrigin } from "../src/gh-status.ts";
 
 const HEARTBEAT_MS = 5 * 60 * 1000;
 
@@ -21,6 +23,19 @@ export function startScheduler(cfg: ServerConfig): () => void {
       if (hasPendingDailyToday(alias)) {
         audit("scheduler.skipped", { alias, reason: "daily_exists" });
         continue;
+      }
+      try {
+        const dc = loadConfig(String(projectPath));
+        if (
+          ghInstalled() &&
+          gitRemoteOrigin(String(projectPath)) &&
+          checkPrWorkGate(String(projectPath), dc).blocked
+        ) {
+          audit("scheduler.skipped", { alias, reason: "open_prs_block" });
+          continue;
+        }
+      } catch {
+        /* no gate */
       }
       let planOnly = true;
       try {

@@ -8,7 +8,13 @@ import { listJobsForProject, listAllJobs, enqueueJob } from "./queue/store.ts";
 import { audit } from "./audit.ts";
 import { listPlanStates, preparePlanExecuteRetry } from "../src/state.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
-import { listPendingApprovals, decideApproval } from "../src/approval.ts";
+import {
+  autoApproveBlockReason,
+  listPendingApprovals,
+  decideApproval,
+  processAutoApprovals,
+  shouldAutoApprove,
+} from "../src/approval.ts";
 import { getPlanDetailView } from "../src/plan-detail.ts";
 import { loadConfig, saveConfig } from "../src/config.ts";
 import { scanProject } from "../src/scanner.ts";
@@ -23,6 +29,8 @@ import { applyLlmProbeResult, pipelineReady, runPipelineCheck } from "../src/pip
 import { probeLlmConnection } from "../src/llm-probe.ts";
 import { applyAllLlmEnv, hasLlmAuth, mergeLlmEnv } from "../src/llm-env.ts";
 import { loadRoadmap } from "../src/roadmap.ts";
+import { listOpenPullRequests } from "../src/vcs/open-prs.ts";
+import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
 import type { DevAgentConfig } from "../src/config.ts";
 import {
@@ -42,12 +50,19 @@ import {
   renderPlanGenerateForm,
   renderPlanDetailPage,
   renderPipelineChecksPanel,
+  renderJobLogPage,
+  jobStatusBadge,
+  jobKindLabel,
+  formatDateTime,
+  formatJobDuration,
+  renderReviewPage,
   projectShell,
   discoverToolbar,
   renderTrendsPage,
   resolveProject,
   statusBadge,
   workbenchToolbar,
+  renderModelSelect,
   type ProjectTab,
 } from "./dashboard-ui.ts";
 
@@ -92,6 +107,32 @@ function applyVcsConfigFromBody(
       .filter(Boolean);
   }
   if (body.vcs_auto_merge !== undefined) dc.vcs.auto_merge = body.vcs_auto_merge === "1";
+  if (body.vcs_auto_review !== undefined) dc.vcs.auto_review = body.vcs_auto_review === "1";
+  if (body.vcs_merge_resolve_conflicts !== undefined) {
+    dc.vcs.merge_resolve_conflicts = body.vcs_merge_resolve_conflicts === "1";
+  }
+  if (body.vcs_review_open_prs !== undefined) {
+    dc.vcs.review_open_prs = body.vcs_review_open_prs === "1";
+  }
+  const waitMin = Number(body.vcs_merge_wait_minutes);
+  if (Number.isFinite(waitMin) && waitMin > 0) dc.vcs.merge_wait_minutes = Math.floor(waitMin);
+  const reviewInterval = Number(body.vcs_pr_review_interval_minutes);
+  if (Number.isFinite(reviewInterval) && reviewInterval >= 5) {
+    dc.vcs.pr_review_interval_minutes = Math.floor(reviewInterval);
+  }
+  const fastInterval = Number(body.vcs_pr_review_fast_interval_minutes);
+  if (Number.isFinite(fastInterval) && fastInterval >= 3) {
+    dc.vcs.pr_review_fast_interval_minutes = Math.floor(fastInterval);
+  }
+  if (body.vcs_pr_review_only_p7_label !== undefined) {
+    dc.vcs.pr_review_only_p7_label = body.vcs_pr_review_only_p7_label === "1";
+  }
+  if (body.vcs_block_new_work_until_prs_clear !== undefined) {
+    dc.vcs.block_new_work_until_prs_clear = body.vcs_block_new_work_until_prs_clear === "1";
+  }
+  if (body.vcs_block_new_work_only_conflicting !== undefined) {
+    dc.vcs.block_new_work_only_conflicting = body.vcs_block_new_work_only_conflicting === "1";
+  }
   if (body.vcs_create_pr !== undefined) dc.vcs.create_pr = body.vcs_create_pr === "1";
   if (body.vcs_create_issue !== undefined) dc.vcs.create_issue = body.vcs_create_issue === "1";
   return null;
@@ -173,8 +214,27 @@ ${accountRows ? `<div class="tbl-wrap" style="margin-bottom:14px"><table><thead>
 <div class="toggle-grid">
 <div class="toggle-item"><span>创建 Pull Request</span><select name="vcs_create_pr">${yesNo(dc.vcs.create_pr)}</select></div>
 <div class="toggle-item"><span>创建 Issue</span><select name="vcs_create_issue">${yesNo(dc.vcs.create_issue)}</select></div>
+<div class="toggle-item"><span>自动 Review</span><select name="vcs_auto_review">${yesNo(dc.vcs.auto_review !== false)}</select></div>
 <div class="toggle-item"><span>自动合并 PR</span><select name="vcs_auto_merge">${yesNo(dc.vcs.auto_merge)}</select></div>
+<div class="toggle-item"><span>冲突时自动修复</span><select name="vcs_merge_resolve_conflicts">${yesNo(dc.vcs.merge_resolve_conflicts !== false)}</select></div>
+<div class="toggle-item"><span>合并等待（分钟）</span><input type="number" name="vcs_merge_wait_minutes" min="5" max="120" value="${dc.vcs.merge_wait_minutes ?? 20}" style="width:72px"/></div>
 </div>
+<div class="gh-section" style="margin-top:16px">
+<h3>历史 PR 定时复查</h3>
+<p class="section-hint">服务每 5 分钟检查；仍有 OPEN PR 时每 <strong>${dc.vcs.pr_review_fast_interval_minutes ?? 8}</strong> 分钟入队 <code>pr-review</code>。运行期间会与 Roadmap / 执行 Plan 互斥（同项目）。</p>
+<div class="toggle-grid">
+<div class="toggle-item"><span>定时复查 OPEN PR</span><select name="vcs_review_open_prs">${yesNo(dc.vcs.review_open_prs !== false)}</select></div>
+<div class="toggle-item"><span>仅带 P7 标签的 PR</span><select name="vcs_pr_review_only_p7_label">${yesNo(dc.vcs.pr_review_only_p7_label !== false)}</select></div>
+<div class="toggle-item"><span>无 OPEN 时间隔（分）</span><input type="number" name="vcs_pr_review_interval_minutes" min="5" max="360" value="${dc.vcs.pr_review_interval_minutes ?? 15}" style="width:72px"/></div>
+<div class="toggle-item"><span>有 OPEN 时间隔（分）</span><input type="number" name="vcs_pr_review_fast_interval_minutes" min="3" max="120" value="${dc.vcs.pr_review_fast_interval_minutes ?? 8}" style="width:72px"/></div>
+</div>
+<div class="toggle-grid" style="margin-top:12px">
+<div class="toggle-item"><span>有未结 PR 时暂停 Roadmap/执行</span><select name="vcs_block_new_work_until_prs_clear">${yesNo(dc.vcs.block_new_work_until_prs_clear !== false)}</select></div>
+<div class="toggle-item"><span>仅冲突/落后 PR 才暂停</span><select name="vcs_block_new_work_only_conflicting">${yesNo(dc.vcs.block_new_work_only_conflicting !== false)}</select></div>
+</div>
+<p class="section-hint muted" style="margin-top:8px">开启后：存在冲突或落后 base 的 OPEN PR 时，不跑新的 discover/execute；<code>pr-review</code> 仍会入队修 PR。</p>
+</div>
+<p class="section-hint muted" style="margin-top:10px">新执行创建的 PR 与历史 OPEN PR 共用 review/merge 逻辑；冲突时 update-branch 或 Agent 本地解决后 squash 合并。</p>
 </div>
 
 <div class="gh-footer">
@@ -206,6 +266,17 @@ export function createDashboard(
 ): Hono {
   const app = new Hono();
 
+  function prGateBlockedMessage(projectPath: string): string | null {
+    try {
+      const dc = loadConfig(projectPath);
+      if (!ghInstalled() || !gitRemoteOrigin(projectPath)) return null;
+      const g = checkPrWorkGate(projectPath, dc);
+      return g.blocked ? g.reason : null;
+    } catch {
+      return null;
+    }
+  }
+
   function legacyRedirectUrl(alias: string, legacy: string, flash?: string): string {
     const sectionMap: Record<string, string> = {
       roadmap: "roadmap",
@@ -213,8 +284,11 @@ export function createDashboard(
       github: "github",
       config: "project",
     };
-    if (legacy === "runs" || legacy === "delivery") {
+    if (legacy === "runs") {
       return `/project/${encodeURIComponent(alias)}/run${flash ? `?flash=${encodeURIComponent(flash)}` : ""}`;
+    }
+    if (legacy === "delivery") {
+      return `/project/${encodeURIComponent(alias)}/review${flash ? `?flash=${encodeURIComponent(flash)}` : ""}`;
     }
     const section = sectionMap[legacy] ?? "roadmap";
     const base = `/project/${encodeURIComponent(alias)}/${legacy === "github" || legacy === "config" ? "settings" : "plan"}`;
@@ -389,17 +463,30 @@ ${themes}
         (existsSync(proj.path) ? recommendRoadmapGoal(proj.path) : null) ?? dc.initial_goal;
       const pending = existsSync(proj.path) ? listPendingApprovals(proj.path) : [];
       const states = existsSync(proj.path) ? listPlanStates(proj.path, 30) : [];
+      const eligible = pending.filter((a) => shouldAutoApprove(a.plan, dc)).length;
+      const autoApproveBanner =
+        pending.length > 0 && dc.auto_approve.enabled
+          ? `<div class="panel" style="margin-bottom:14px;padding:14px 16px">
+<p style="margin:0 0 10px;font-size:13px">自动审批<strong>${dc.auto_approve.enabled ? "已开启" : "已关闭"}</strong>：≤${Math.max(dc.auto_approve.files_max, dc.diff_critic.max_files_ceiling)} 文件、≤${Math.max(dc.auto_approve.diff_lines_max, dc.diff_critic.max_diff_ceiling)} 行、≤${dc.auto_approve.risks_max} 条风险。当前 <strong>${eligible}</strong> / ${pending.length} 个可自动批准。</p>
+<form class="inline" method="post" action="/trigger/auto-approve-pending"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn ok">一键自动批准符合条件的 Plan</button></form>
+${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-size:12px">其余需人工或调大项目设置中的自动审批上限</span>` : ""}
+</div>`
+          : "";
       const approvalRows = pending
-        .map(
-          (a) => `<tr>
+        .map((a) => {
+          const block = autoApproveBlockReason(a.plan, dc);
+          const hint = block
+            ? `<div class="muted" style="font-size:11px;margin-top:4px">未自动：${esc(block)}</div>`
+            : `<div class="muted" style="font-size:11px;margin-top:4px;color:var(--ok)">符合自动审批</div>`;
+          return `<tr>
 <td><a href="/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(a.planId)}">${esc(a.planId)}</a></td>
-<td>${esc(a.plan.title)}</td>
+<td>${esc(a.plan.title)}${hint}</td>
 <td>${esc(String(a.plan.estimated_diff_lines))} 行</td>
 <td>
 <form class="inline" method="post" action="/approve"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(a.planId)}"/><button class="btn ok sm">批准并执行</button></form>
 <form class="inline" method="post" action="/reject"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(a.planId)}"/><button class="btn err sm">拒绝</button></form>
-</td></tr>`,
-        )
+</td></tr>`;
+        })
         .join("");
       const planned = states
         .filter((s) => !pending.some((p) => p.planId === s.planId))
@@ -409,7 +496,7 @@ ${themes}
             `<tr><td><a href="/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(s.planId)}">${esc(s.planId)}</a></td><td>${statusBadge(s.status)}</td><td>${esc(s.title)}</td></tr>`,
         )
         .join("");
-      body = `${renderPlanGenerateForm(alias, suggestedGoal)}<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>标题</th><th>规模</th><th></th></tr></thead><tbody>${approvalRows || `<tr><td colspan="4" class="empty">暂无待审批</td></tr>`}</tbody></table></div>
+      body = `${renderPlanGenerateForm(alias, suggestedGoal)}${autoApproveBanner}<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>标题</th><th>规模</th><th></th></tr></thead><tbody>${approvalRows || `<tr><td colspan="4" class="empty">暂无待审批</td></tr>`}</tbody></table></div>
 <h2 style="margin-top:24px">历史 Plan</h2>
 <div class="tbl-wrap"><table><thead><tr><th>ID</th><th>状态</th><th>标题</th></tr></thead><tbody>${planned || `<tr><td colspan="3" class="empty">无</td></tr>`}</tbody></table></div>`;
     }
@@ -432,15 +519,32 @@ ${themes}
     if (!proj) return c.text("not found", 404);
     const flash = c.req.query("flash");
     const states = existsSync(proj.path) ? listPlanStates(proj.path, 40) : [];
+    const jobs = listJobsForProject(alias, 30);
+    const jobByPlanId = new Map<string, (typeof jobs)[0]>();
+    for (const j of jobs) {
+      if (j.kind !== "execute") continue;
+      try {
+        const planId = (JSON.parse(j.payload) as { planId?: string }).planId;
+        if (planId && !jobByPlanId.has(planId)) jobByPlanId.set(planId, j);
+      } catch {
+        /* ignore */
+      }
+    }
     const runRows = states
       .filter((s) => ["executing", "pushed", "failed", "approved", "pr_opened", "merged"].includes(s.status))
-      .map(
-        (s) => `<tr>
+      .map((s) => {
+        const job = jobByPlanId.get(s.planId);
+        const startAt = job?.started_at ?? (s.status === "executing" ? s.updatedAt : s.createdAt);
+        const active = s.status === "executing" || job?.status === "running";
+        const duration = formatJobDuration(startAt, job?.finished_at, active);
+        return `<tr>
 <td><a href="/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(s.planId)}">${esc(s.planId)}</a></td>
 <td>${statusBadge(s.status)}</td><td>${esc(s.title)}</td>
+<td class="muted">${esc(formatDateTime(startAt))}</td>
+<td class="muted">${esc(duration)}${active ? " <span class=\"badge run\">进行中</span>" : ""}</td>
 <td>${s.branch ? `<code>${esc(s.branch)}</code>` : "—"}</td>
-<td class="muted">${esc((s.error ?? "").slice(0, 60))}</td></tr>`,
-      )
+<td class="muted">${esc((s.error ?? "").slice(0, 60))}</td></tr>`;
+      })
       .join("");
     const delivered = states.filter((s) => s.prUrl || s.issueUrl);
     const prRows = delivered
@@ -449,25 +553,91 @@ ${themes}
         return `<tr><td>${esc(s.planId)}</td><td>${statusBadge(s.status)}</td><td>${links || "—"}</td><td>${esc(s.mergeStatus ?? "—")}</td></tr>`;
       })
       .join("");
-    const jobs = listJobsForProject(alias, 15)
-      .map(
-        (j) =>
-          `<tr><td><a href="/jobs/${encodeURIComponent(j.id)}/log">${esc(j.id.slice(0, 12))}…</a></td><td>${esc(j.kind)}</td><td>${statusBadge(j.status)}</td></tr>`,
-      )
+    const jobRows = jobs
+      .map((j) => {
+        const startAt = j.started_at ?? j.created_at;
+        const duration =
+          j.status === "pending"
+            ? "排队中"
+            : formatJobDuration(startAt, j.finished_at, j.status === "running");
+        const progress = j.progress ? `<div class="muted" style="font-size:11px">${esc(j.progress)}</div>` : "";
+        return `<tr>
+<td><a href="/jobs/${encodeURIComponent(j.id)}/log">${esc(j.id.slice(0, 12))}…</a></td>
+<td>${esc(jobKindLabel(j.kind))}</td>
+<td>${jobStatusBadge(j.status)}${progress}</td>
+<td class="muted">${esc(formatDateTime(startAt))}</td>
+<td class="muted">${esc(duration)}${j.status === "running" ? " <span class=\"badge run\">进行中</span>" : ""}</td>
+<td class="muted">${esc((j.error ?? "").slice(0, 50))}</td></tr>`;
+      })
       .join("");
     const body = `
+<p class="muted" style="margin-bottom:14px">PR 复查与自动合并请前往侧栏 <a href="/project/${encodeURIComponent(alias)}/review"><strong>Review</strong></a>。</p>
 <div class="panel"><h2>执行记录</h2>
-<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="5" class="empty">暂无</td></tr>`}</tbody></table></div></div>
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="7" class="empty">暂无</td></tr>`}</tbody></table></div></div>
 <div class="panel"><h2>PR / 交付</h2>
 <div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>链接</th><th>合并</th></tr></thead><tbody>${prRows || `<tr><td colspan="4" class="empty">尚无 PR</td></tr>`}</tbody></table></div></div>
-<div class="panel"><h2>后台任务</h2><p class="muted">需 <code>bun run server/index.ts</code> 才有 Worker 消费队列。</p>
-<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th></tr></thead><tbody>${jobs || `<tr><td colspan="3" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
+<div class="panel"><h2>后台任务</h2><p class="muted">队列任务；运行中时长随页面刷新更新。</p>
+<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>开始时间</th><th>执行时长</th><th>错误</th></tr></thead><tbody>${jobRows || `<tr><td colspan="6" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
     const html = projectShell(cfg, alias, "run", {
       title: "运行与交付",
       description: "执行进度、队列任务、已创建的 PR。",
       body,
       flash,
       pipelineDone: 4,
+    });
+    return c.html(html ?? "not found", html ? 200 : 404);
+  });
+
+  app.get("/project/:alias/review", (c) => {
+    const cfg = getCfg();
+    const alias = c.req.param("alias");
+    const proj = resolveProject(cfg, alias);
+    if (!proj) return c.text("not found", 404);
+    const flash = c.req.query("flash");
+    const dc = loadConfig(proj.path);
+    const vcs = dc.vcs;
+    const label =
+      vcs.pr_review_only_p7_label !== false && vcs.labels.length > 0
+        ? vcs.labels[0]
+        : undefined;
+    const ghReady = ghInstalled() && collectGhAuthChecks(proj.path, dc.vcs.accounts).every((x) => x.ok);
+    const openPrs = ghReady && gitRemoteOrigin(proj.path)
+      ? listOpenPullRequests(proj.path, { label, limit: 25 })
+      : [];
+    const states = existsSync(proj.path) ? listPlanStates(proj.path, 60) : [];
+    const planPrRows = states
+      .filter((s) => s.prUrl)
+      .map((s) => ({
+        planId: s.planId,
+        title: s.title,
+        status: s.status,
+        prUrl: s.prUrl,
+        mergeStatus: s.mergeStatus,
+        branch: s.branch,
+        error: s.error,
+      }));
+    const reviewJobs = listJobsForProject(alias, 30).filter((j) => j.kind === "pr-review");
+    const workGate =
+      ghReady && gitRemoteOrigin(proj.path)
+        ? checkPrWorkGate(proj.path, dc)
+        : { blocked: false, prs: [], reason: "" };
+    const body = renderReviewPage({
+      alias,
+      dc,
+      openPrs,
+      planPrRows,
+      reviewJobs,
+      ghReady,
+      workGate: workGate.blocked
+        ? { blocked: true, reason: workGate.reason }
+        : undefined,
+    });
+    const html = projectShell(cfg, alias, "review", {
+      title: "Review",
+      description: "历史 OPEN PR 定时复查、自动 approve、合并与冲突修复。",
+      body,
+      flash,
+      pipelineDone: 6,
     });
     return c.html(html ?? "not found", html ? 200 : 404);
   });
@@ -512,7 +682,7 @@ ${themes}
           : "北极星、自动审批与发现链路开关。",
       body,
       flash,
-      pipelineDone: 5,
+      pipelineDone: 6,
       section,
     });
     return c.html(html ?? "not found", html ? 200 : 404);
@@ -637,7 +807,7 @@ ${themes}
     return c.html(
       layout({
         title: `任务日志 ${id}`,
-        body: `<p class="muted">${job ? `${esc(job.kind)} · ${esc(job.project_alias)} · ${statusBadge(job.status)}` : "未知任务"}</p><pre>${esc(tail)}</pre><p><a href="/jobs">← 任务列表</a></p>`,
+        body: `${renderJobLogPage(job, tail)}<p style="margin-top:14px"><a href="/jobs">← 任务列表</a> · <a href="/project/${encodeURIComponent(job?.project_alias ?? "p7")}/review">Review</a> · <a href="/project/${encodeURIComponent(job?.project_alias ?? "p7")}/run">运行</a></p>`,
         systemPage: "/jobs",
         activeProject: job?.project_alias,
         cfg,
@@ -650,7 +820,7 @@ ${themes}
     const rows = listAllJobs(200)
       .map(
         (j) =>
-          `<tr><td><a href="/jobs/${encodeURIComponent(j.id)}/log">${esc(j.id)}</a></td><td><a href="/project/${encodeURIComponent(j.project_alias)}/run">${esc(j.project_alias)}</a></td><td>${esc(j.kind)}</td><td>${statusBadge(j.status)}</td><td class="muted">${esc(j.created_at)}</td><td class="muted">${esc((j.error ?? "").slice(0, 80))}</td></tr>`,
+          `<tr><td><a href="/jobs/${encodeURIComponent(j.id)}/log">${esc(j.id)}</a></td><td><a href="/project/${encodeURIComponent(j.project_alias)}/run">${esc(j.project_alias)}</a></td><td>${esc(jobKindLabel(j.kind))}</td><td>${jobStatusBadge(j.status)}</td><td class="muted">${esc(j.created_at)}</td><td class="muted">${esc((j.error ?? "").slice(0, 80))}</td></tr>`,
       )
       .join("");
     return c.html(
@@ -669,6 +839,12 @@ ${themes}
     const cfg = getCfg();
     const path = cfg.project_aliases[alias];
     if (!path) return c.text("unknown alias", 400);
+    const gateMsg = prGateBlockedMessage(String(path));
+    if (gateMsg) {
+      return c.redirect(
+        `/project/${encodeURIComponent(alias)}/review?flash=${encodeURIComponent(`已暂停新任务：${gateMsg}`)}`,
+      );
+    }
     enqueueJob({
       kind: "discover-daily",
       payload: { projectPath: path, planOnly: true },
@@ -680,12 +856,35 @@ ${themes}
     );
   });
 
+  app.post("/trigger/pr-review", async (c) => {
+    const body = (await c.req.parseBody()) as Record<string, string>;
+    const alias = String(body.alias ?? "");
+    const cfg = getCfg();
+    const path = cfg.project_aliases[alias];
+    if (!path) return c.text("unknown alias", 400);
+    enqueueJob({
+      kind: "pr-review",
+      payload: { projectPath: path },
+      projectAlias: alias,
+    });
+    audit("dashboard.trigger", { alias, kind: "pr-review" });
+    return c.redirect(
+      `/project/${encodeURIComponent(alias)}/review?flash=${encodeURIComponent("已入队：历史 PR 复查")}`,
+    );
+  });
+
   app.post("/trigger/daily", async (c) => {
     const body = (await c.req.parseBody()) as Record<string, string>;
     const alias = String(body.alias ?? "");
     const cfg = getCfg();
     const path = cfg.project_aliases[alias];
     if (!path) return c.text("unknown alias", 400);
+    const gateMsg = prGateBlockedMessage(String(path));
+    if (gateMsg) {
+      return c.redirect(
+        `/project/${encodeURIComponent(alias)}/review?flash=${encodeURIComponent(`已暂停新任务：${gateMsg}`)}`,
+      );
+    }
     enqueueJob({
       kind: "daily",
       payload: { projectPath: path, planOnly: Boolean(body.plan_only) },
@@ -784,17 +983,68 @@ ${themes}
       const goal = notes ? `${goalBase}\n\n补充说明：${notes}` : goalBase;
       const scan = await scanProject(proj.path);
       const planRecord = await generatePlan(proj.path, scan, goal);
-      if (!getApprovalRecord(proj.path, planRecord.planId)) {
-        savePendingApproval(proj.path, planRecord);
-      }
-      audit("dashboard.plan_generate", { alias, planId: planRecord.planId });
+      const batch = processAutoApprovals(proj.path, dc, {
+        planIds: [planRecord.planId],
+        enqueueExecute: dc.discovery.auto_execute_after_approve
+          ? (planId) => {
+              enqueueJob({
+                kind: "execute",
+                payload: { projectPath: proj.path, planId },
+                projectAlias: alias,
+              });
+            }
+          : undefined,
+      });
+      audit("dashboard.plan_generate", { alias, planId: planRecord.planId, autoApproved: batch.approved.length });
       return c.redirect(
-        `${plansUrl}&flash=${encodeURIComponent(`已生成 Plan ${planRecord.planId}，请审批`)}`,
+        `${plansUrl}&flash=${encodeURIComponent(
+          batch.approved.includes(planRecord.planId)
+            ? `Plan ${planRecord.planId} 已自动批准${dc.discovery.auto_execute_after_approve ? "并入队执行" : ""}`
+            : `已生成 Plan ${planRecord.planId}，未达自动审批条件，请查看列表`,
+        )}`,
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return c.redirect(`${plansUrl}&flash=${encodeURIComponent(msg.slice(0, 200))}`);
     }
+  });
+
+  app.post("/trigger/auto-approve-pending", async (c) => {
+    const body = (await c.req.parseBody()) as Record<string, string>;
+    const alias = String(body.alias ?? "");
+    const proj = resolveProject(getCfg(), alias);
+    if (!proj) return c.text("unknown alias", 400);
+    const dc = loadConfig(proj.path);
+    const batch = processAutoApprovals(proj.path, dc, {
+      enqueueExecute: dc.discovery.auto_execute_after_approve
+        ? (planId) => {
+            const gateMsg = prGateBlockedMessage(proj.path);
+            if (gateMsg) {
+              audit("dashboard.execute_skipped", { alias, planId, reason: "open_prs_block" });
+              return;
+            }
+            enqueueJob({
+              kind: "execute",
+              payload: { projectPath: proj.path, planId },
+              projectAlias: alias,
+            });
+          }
+        : undefined,
+    });
+    audit("dashboard.auto_approve_batch", {
+      alias,
+      approved: batch.approved.length,
+      skipped: batch.skipped.length,
+    });
+    const msg =
+      batch.approved.length > 0
+        ? `已自动批准 ${batch.approved.length} 个${dc.discovery.auto_execute_after_approve ? "，并入队执行" : ""}`
+        : "没有符合自动审批条件的 Plan";
+    const extra =
+      batch.skipped.length > 0 ? `；${batch.skipped.length} 个未达标` : "";
+    return c.redirect(
+      `/project/${encodeURIComponent(alias)}/plan?section=plans&flash=${encodeURIComponent(msg + extra)}`,
+    );
   });
 
   app.post("/approve", async (c) => {
@@ -804,6 +1054,12 @@ ${themes}
     const path = String(cfg.project_aliases[alias] ?? "");
     if (!path) return c.text("unknown alias", 400);
     decideApproval(path, String(body.planId), "approved", "dashboard");
+    const gateMsg = prGateBlockedMessage(path);
+    if (gateMsg) {
+      return c.redirect(
+        `/project/${encodeURIComponent(alias)}/review?flash=${encodeURIComponent(`已批准但未入队执行：${gateMsg}`)}`,
+      );
+    }
     enqueueJob({
       kind: "execute",
       payload: { projectPath: path, planId: String(body.planId) },
@@ -825,6 +1081,12 @@ ${themes}
     if (!prepared) {
       return c.redirect(
         `${detailUrl}?flash=${encodeURIComponent("无法重试：需为执行失败且尚无 PR")}`,
+      );
+    }
+    const gateMsg = prGateBlockedMessage(proj.path);
+    if (gateMsg) {
+      return c.redirect(
+        `/project/${encodeURIComponent(alias)}/review?flash=${encodeURIComponent(`无法重试执行：${gateMsg}`)}`,
       );
     }
     enqueueJob({
@@ -865,12 +1127,7 @@ ${themes}
 <h2 style="margin-top:0">模型 / 网关 (全局)</h2>
 <p class="muted" style="margin-top:0">Anthropic 兼容网关，作用于所有项目的 Agent 调用。保存 Key 只更新本节，<strong>不会</strong>添加项目。</p>
 <form id="settings-models" method="post" action="/settings/models">
-<datalist id="model-list">
-<option value="deepseek-v4-pro"></option>
-<option value="deepseek-v4-flash"></option>
-<option value="claude-sonnet-4"></option>
-<option value="claude-haiku-4"></option>
-</datalist>
+<p class="muted" style="margin:0 0 12px;font-size:12px">省钱建议：<strong>Planner / Selector</strong> 选 <code>deepseek-v4-flash</code>，<strong>Executor</strong> 保持 <code>deepseek-v4-pro</code>。</p>
 <div class="row">
 <div><label>供应商预设</label><select name="model_gateway_preset">
 <option value="deepseek" ${cfg.model_gateway_preset === "deepseek" ? "selected" : ""}>DeepSeek</option>
@@ -878,15 +1135,15 @@ ${themes}
 <option value="evotown" ${cfg.model_gateway_preset === "evotown" ? "selected" : ""}>Evotown</option>
 <option value="custom" ${cfg.model_gateway_preset === "custom" ? "selected" : ""}>自定义</option>
 </select></div>
-<div><label>默认模型</label><input list="model-list" name="default" value="${esc(m.default ?? "")}"/></div>
+<div><label>默认模型</label>${renderModelSelect("default", m.default, "— 未设置 —")}</div>
 </div>
 <div class="row">
-<div><label>Planner</label><input list="model-list" name="planner" value="${esc(m.planner ?? "")}"/></div>
-<div><label>Executor</label><input list="model-list" name="executor" value="${esc(m.executor ?? "")}"/></div>
+<div><label>Planner</label>${renderModelSelect("planner", m.planner)}</div>
+<div><label>Executor</label>${renderModelSelect("executor", m.executor)}</div>
 </div>
 <div class="row">
-<div><label>Selector</label><input list="model-list" name="selector" value="${esc(m.selector ?? "")}"/></div>
-<div><label>Subagent</label><input list="model-list" name="subagent" value="${esc(m.subagent ?? "")}"/></div>
+<div><label>Selector</label>${renderModelSelect("selector", m.selector)}</div>
+<div><label>Subagent</label>${renderModelSelect("subagent", m.subagent)}</div>
 </div>
 <label>Base URL</label><input name="anthropic_base_url" value="${esc(cfg.anthropic_base_url ?? "")}"/>
 <div class="row">

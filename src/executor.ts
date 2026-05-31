@@ -10,11 +10,15 @@ import { loadLatestPlanRecord, recordFailedPlan } from "./planner.ts";
 import { transitionPlanState } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
+import { runPrReviewAndMerge } from "./vcs/pr-lifecycle.ts";
+import { checkPrWorkGate } from "./vcs/pr-work-gate.ts";
+import { ghInstalled, gitRemoteOrigin } from "./gh-status.ts";
 import {
   createWorktree,
   getHeadCommit,
   removeWorktree,
   resetWorktree,
+  resolveExecutionBaseCommit,
   type WorktreeInfo,
 } from "./worktree.ts";
 import { withExponentialBackoff } from "./retry.ts";
@@ -208,7 +212,8 @@ export async function executePlan(
   cfg: DevAgentConfig,
   scanRemote: string | null,
 ): Promise<ExecutionResult> {
-  const baseCommit = plan.baseCommit ?? getHeadCommit(projectPath);
+  const base = resolveExecutionBaseCommit(projectPath, cfg, plan.baseCommit);
+  const baseCommit = base.commit;
   const planId = plan.planId;
   const allowedFiles = new Set(plan.changes.map((c) => c.file));
   const limits = scaleLimits(plan);
@@ -245,7 +250,19 @@ export async function executePlan(
   // ────────────────────────────────────────────────────────────────
 
   try {
+    if (
+      scanRemote?.includes("github.com") &&
+      ghInstalled() &&
+      gitRemoteOrigin(projectPath) &&
+      checkPrWorkGate(projectPath, cfg).blocked
+    ) {
+      throw new Error(checkPrWorkGate(projectPath, cfg).reason);
+    }
     if (planId) transitionPlanState(projectPath, planId, "executing");
+    await appendLesson(
+      projectPath,
+      `execute:base ${base.source} @ ${baseCommit.slice(0, 7)}${base.synced ? "" : " (未同步远程)"}`,
+    );
     recordStepStart("worktree.create");
     wt = createWorktree(projectPath, baseCommit);
     recordStepEnd("worktree.create");
@@ -379,16 +396,36 @@ export async function executePlan(
       plan,
       config: cfg,
     });
+
+    let mergeStatus = vcs.mergeStatus;
+    let lifecycleDetail: string | undefined;
+    if (
+      vcs.prUrl &&
+      (cfg.vcs.auto_merge || cfg.vcs.auto_review !== false) &&
+      scanRemote?.includes("github.com")
+    ) {
+      const lifecycle = await runPrReviewAndMerge({
+        projectPath,
+        prUrl: vcs.prUrl,
+        branch,
+        plan,
+        config: cfg,
+      });
+      mergeStatus = lifecycle.mergeStatus;
+      lifecycleDetail = lifecycle.detail;
+    }
+
     if (planId) {
-      const status = vcs.mergeStatus === "merged" ? "merged" : vcs.prUrl ? "pr_opened" : "pushed";
+      const status = mergeStatus === "merged" ? "merged" : vcs.prUrl ? "pr_opened" : "pushed";
       transitionPlanState(projectPath, planId, status, {
         branch,
         commitSha: sha,
         reviewUrl: vcs.reviewUrl,
         prUrl: vcs.prUrl,
         issueUrl: vcs.issueUrl,
-        mergeStatus: vcs.mergeStatus,
+        mergeStatus,
         accountResults: vcs.accountResults,
+        error: mergeStatus === "failed" ? lifecycleDetail : undefined,
       });
     }
     recordStepEnd("vcs.publish");
@@ -410,7 +447,7 @@ export async function executePlan(
       reviewUrl: vcs.reviewUrl,
       prUrl: vcs.prUrl,
       issueUrl: vcs.issueUrl,
-      mergeStatus: vcs.mergeStatus,
+      mergeStatus,
       accountResults: vcs.accountResults,
       durationSec,
     };

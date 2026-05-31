@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, appendFileSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 import type { ServerConfig } from "../config.ts";
@@ -9,14 +9,20 @@ import {
   claimNextJob,
   enqueueJob,
   finishJob,
+  hasPrReviewInFlight,
+  updateJobProgress,
+  reclaimOrphanedRunningJobs,
   reclaimStaleJobs,
 } from "./store.ts";
-import type { DailyJobPayload, ExecuteJobPayload, JobPayload } from "./types.ts";
+import type { DailyJobPayload, ExecuteJobPayload, JobKind, JobPayload } from "./types.ts";
 import { loadClaudeSettingsEnv } from "../../src/sdk.ts";
 import { loadConfig } from "../../src/config.ts";
 import { getApprovalRecord } from "../../src/approval.ts";
+import { checkPrWorkGate } from "../../src/vcs/pr-work-gate.ts";
+import { ghInstalled, gitRemoteOrigin } from "../../src/gh-status.ts";
 
 const MAX_RUN_MS = 40 * 60 * 1000;
+const STALE_RECLAIM_MS = 20 * 60 * 1000;
 
 function jobLogPath(id: string): string {
   const dir = join(resolveP7HomeDir(), "job-logs");
@@ -50,6 +56,45 @@ function jobTimeoutMs(projectPath: string, cfg: ServerConfig): number {
   }
 }
 
+function logLine(logPath: string, msg: string): void {
+  appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
+}
+
+async function pumpStream(
+  stream: ReadableStream<Uint8Array> | null,
+  logPath: string,
+  jobId: string,
+): Promise<string> {
+  if (!stream) return "";
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let all = "";
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = dec.decode(value, { stream: true });
+    all += chunk;
+    appendFileSync(logPath, chunk);
+    buf += chunk;
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      if (t.includes('"phase"')) {
+        try {
+          const j = JSON.parse(t) as { phase?: string };
+          if (j.phase) updateJobProgress(jobId, j.phase);
+        } catch {
+          updateJobProgress(jobId, t.slice(0, 120));
+        }
+      }
+    }
+  }
+  return all;
+}
+
 async function runJob(
   cfg: ServerConfig,
   jobId: string,
@@ -68,12 +113,21 @@ async function runJob(
     args.push("discover-daily", projectPath);
     const d = payload as DailyJobPayload;
     if (d.planOnly) args.push("--plan-only");
+  } else if (kind === "pr-review") {
+    args.push("pr-review", projectPath);
   } else {
     args.push("daily", "run", projectPath);
     const d = payload as DailyJobPayload;
     if (d.goal) args.push("--goal", d.goal);
     if (d.planOnly) args.push("--plan-only");
   }
+
+  const logPath = jobLogPath(jobId);
+  writeFileSync(
+    logPath,
+    `[${new Date().toISOString()}] 开始 ${kind}\n命令: ${args.join(" ")}\n项目: ${projectPath}\n\n`,
+  );
+  updateJobProgress(jobId, "已启动子进程");
 
   const proc = Bun.spawn(args, {
     cwd: join(import.meta.dir, "../.."),
@@ -82,18 +136,37 @@ async function runJob(
     stderr: "pipe",
   });
 
-  const logPath = jobLogPath(jobId);
   const timeoutMs = jobTimeoutMs(projectPath, cfg);
-  const timeout = setTimeout(() => proc.kill(), timeoutMs);
+  const started = Date.now();
+  const timeout = setTimeout(() => {
+    logLine(logPath, `超时 ${Math.round(timeoutMs / 60000)} 分钟，终止进程`);
+    proc.kill();
+  }, timeoutMs);
 
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  clearTimeout(timeout);
+  const progressIv = setInterval(() => {
+    const sec = Math.round((Date.now() - started) / 1000);
+    updateJobProgress(jobId, `运行中 ${sec}s…`);
+  }, 5000);
 
-  appendFileSync(logPath, stdout + "\n" + stderr);
+  const heartbeatIv = setInterval(() => {
+    logLine(logPath, `仍在执行（已 ${Math.round((Date.now() - started) / 1000)}s）…`);
+  }, 15000);
+
+  let stdout = "";
+  let stderr = "";
+  let code = 1;
+  try {
+    [stdout, stderr, code] = await Promise.all([
+      pumpStream(proc.stdout, logPath, jobId),
+      pumpStream(proc.stderr, logPath, jobId),
+      proc.exited,
+    ]);
+    logLine(logPath, `进程结束 exit=${code}`);
+  } finally {
+    clearTimeout(timeout);
+    clearInterval(progressIv);
+    clearInterval(heartbeatIv);
+  }
 
   if (code !== 0) throw new Error(stderr.slice(0, 800) || `exit ${code}`);
   try {
@@ -117,6 +190,19 @@ function maybeEnqueueExecuteAfterDiscover(
   const approval = getApprovalRecord(projectPath, r.planId);
   if (approval?.status !== "approved") return;
   if (r.phase !== "approved" && r.phase !== "planned") return;
+  try {
+    const dc = loadConfig(projectPath);
+    if (
+      ghInstalled() &&
+      gitRemoteOrigin(projectPath) &&
+      checkPrWorkGate(projectPath, dc).blocked
+    ) {
+      audit("job.auto_execute_skipped", { alias, planId: r.planId, reason: "open_prs_block" });
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
   enqueueJob({
     kind: "execute",
     payload: { projectPath, planId: r.planId },
@@ -126,7 +212,10 @@ function maybeEnqueueExecuteAfterDiscover(
 }
 
 export function startWorker(cfg: ServerConfig): () => void {
-  const reclaimed = reclaimStaleJobs(MAX_RUN_MS);
+  for (const job of reclaimOrphanedRunningJobs()) {
+    audit("job.reclaimed_orphan", { id: job.id, alias: job.project_alias });
+  }
+  const reclaimed = reclaimStaleJobs(STALE_RECLAIM_MS);
   for (const job of reclaimed) {
     const payload = JSON.parse(job.payload) as JobPayload;
     const path = String(cfg.project_aliases[job.project_alias] ?? (payload as DailyJobPayload).projectPath);
@@ -150,24 +239,46 @@ export function startWorker(cfg: ServerConfig): () => void {
     audit("job.reclaimed", { id: job.id, alias: job.project_alias });
   }
 
-  const running = new Set<string>();
+  const runningKinds = new Map<string, Set<JobKind>>();
   let stopped = false;
 
+  function trackStart(alias: string, kind: JobKind): void {
+    let s = runningKinds.get(alias);
+    if (!s) {
+      s = new Set();
+      runningKinds.set(alias, s);
+    }
+    s.add(kind);
+  }
+
+  function trackEnd(alias: string, kind: JobKind): void {
+    const s = runningKinds.get(alias);
+    if (!s) return;
+    s.delete(kind);
+    if (s.size === 0) runningKinds.delete(alias);
+  }
+
+  let tick = 0;
   const loop = async () => {
     while (!stopped) {
-      const busy = [...running];
-      if (busy.length >= cfg.max_concurrent_projects) {
+      tick++;
+      if (tick % 30 === 0) {
+        for (const job of reclaimStaleJobs(STALE_RECLAIM_MS)) {
+          audit("job.reclaimed_stale", { id: job.id, alias: job.project_alias });
+        }
+      }
+      if (runningKinds.size >= cfg.max_concurrent_projects) {
         await Bun.sleep(2000);
         continue;
       }
 
-      const job = claimNextJob(busy);
+      const job = claimNextJob();
       if (!job) {
         await Bun.sleep(2000);
         continue;
       }
 
-      running.add(job.project_alias);
+      trackStart(job.project_alias, job.kind);
       audit("job.started", { id: job.id, alias: job.project_alias, kind: job.kind });
 
       try {
@@ -180,6 +291,26 @@ export function startWorker(cfg: ServerConfig): () => void {
         const result = await runJob(cfg, job.id, job.kind, projectPath, payload, job.project_alias);
         finishJob(job.id, "done", result);
         audit("job.done", { id: job.id, kind: job.kind });
+
+        if (job.kind === "execute") {
+          try {
+            const dc = loadConfig(projectPath);
+            if (
+              dc.vcs.enabled &&
+              dc.vcs.review_open_prs !== false &&
+              !hasPrReviewInFlight(job.project_alias)
+            ) {
+              enqueueJob({
+                kind: "pr-review",
+                payload: { projectPath },
+                projectAlias: job.project_alias,
+              });
+              audit("pr_review.enqueued_after_execute", { alias: job.project_alias });
+            }
+          } catch {
+            /* ignore */
+          }
+        }
 
         if (job.kind === "discover-daily") {
           maybeEnqueueExecuteAfterDiscover(
@@ -213,7 +344,7 @@ export function startWorker(cfg: ServerConfig): () => void {
         finishJob(job.id, "failed", null, err);
         audit("job.failed", { id: job.id, error: err });
       } finally {
-        running.delete(job.project_alias);
+        trackEnd(job.project_alias, job.kind);
       }
     }
   };

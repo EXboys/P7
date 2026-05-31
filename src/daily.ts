@@ -4,8 +4,8 @@ import { selectGoal } from "./goal-selector.ts";
 import { generatePlan } from "./planner.ts";
 import { executePlan } from "./executor.ts";
 import {
+  processAutoApprovals,
   savePendingApproval,
-  shouldAutoApprove,
   decideApproval,
   getApprovalRecord,
 } from "./approval.ts";
@@ -90,13 +90,11 @@ export async function runDaily(
     await notifyPlanReady(notify, plan, goal, planId);
   }
 
-  const auto = shouldAutoApprove(plan, cfg);
-  if (!auto) {
+  const batch = processAutoApprovals(projectPath, cfg, { planIds: [planId] });
+  if (!batch.approved.includes(planId)) {
     await appendLesson(projectPath, `plan:pending "${plan.title}" awaiting approval`);
     return { phase: "awaiting_approval", goal, planId };
   }
-
-  decideApproval(projectPath, planId, "approved", "auto");
 
   if (opts.skipExecute) {
     return { phase: "planned", goal, planId };

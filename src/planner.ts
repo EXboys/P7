@@ -6,7 +6,8 @@ import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
 import { shouldDegrade, splitPlan } from "./degrade.ts";
 import { upsertPlanState } from "./state.ts";
-import { savePendingApproval } from "./approval.ts";
+import { processAutoApprovals, savePendingApproval } from "./approval.ts";
+import { loadConfig } from "./config.ts";
 import { PlanSchema, type Plan, type PlanRecord, type ProjectScan } from "./types.ts";
 import { getHeadCommit } from "./worktree.ts";
 
@@ -109,6 +110,7 @@ export async function generatePlan(
   const plansToSave = shouldDegrade(plan) ? splitPlan(plan) : [plan];
   const createdAt = new Date().toISOString();
   let first: PlanRecord | null = null;
+  const savedIds: string[] = [];
 
   for (let i = 0; i < plansToSave.length; i++) {
     const p = plansToSave[i];
@@ -128,9 +130,13 @@ export async function generatePlan(
       status: "planned",
       createdAt: record.createdAt,
     });
-    if (plansToSave.length > 1) savePendingApproval(projectPath, record);
+    savePendingApproval(projectPath, record);
+    savedIds.push(record.planId);
     if (!first) first = record;
   }
+
+  const cfg = loadConfig(projectPath);
+  processAutoApprovals(projectPath, cfg, { planIds: savedIds });
 
   return first!;
 }

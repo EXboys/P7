@@ -5,9 +5,8 @@ import { refreshRoadmapFromRadar } from "./roadmap-refresh.ts";
 import { writeFallbackRoadmap } from "./roadmap-template.ts";
 import { assertLlmAuth, hasLlmAuth } from "./llm-env.ts";
 import {
+  processAutoApprovals,
   savePendingApproval,
-  shouldAutoApprove,
-  decideApproval,
   getApprovalRecord,
 } from "./approval.ts";
 import { appendLesson } from "./agent-memory.ts";
@@ -21,12 +20,30 @@ import {
 import type { DiscoveryDailyResult } from "./types.ts";
 import { notifyPlanReady } from "./notify/sender.ts";
 import { resolveNotifyConfig } from "./notify/env.ts";
+import { checkPrWorkGate } from "./vcs/pr-work-gate.ts";
+import { ghInstalled, gitRemoteOrigin } from "./gh-status.ts";
 
 export async function runDiscoveryDaily(
   projectPath: string,
   opts: { planOnly?: boolean; skipDiscovery?: boolean; projectAlias?: string } = {},
 ): Promise<DiscoveryDailyResult> {
   const cfg = loadConfig(projectPath);
+  const gate =
+    ghInstalled() && gitRemoteOrigin(projectPath)
+      ? checkPrWorkGate(projectPath, cfg)
+      : { blocked: false, prs: [], reason: "no_gh" };
+  if (gate.blocked) {
+    return {
+      date: new Date().toISOString().slice(0, 10),
+      snapshotPath: "",
+      signalCount: 0,
+      themes: [],
+      roadmapRefreshed: false,
+      phase: "blocked_open_prs",
+      goal: gate.reason,
+    };
+  }
+
   const date = new Date().toISOString().slice(0, 10);
   let snapPath = "";
   let signalCount = 0;
@@ -102,8 +119,8 @@ export async function runDiscoveryDaily(
       savePendingApproval(projectPath, planRecord);
     }
     const notify = resolveNotifyConfig(opts.projectAlias);
-    if (shouldAutoApprove(planRecord.plan, cfg)) {
-      decideApproval(projectPath, planId, "approved", "radar-daily");
+    const batch = processAutoApprovals(projectPath, cfg, { planIds: [planId] });
+    if (batch.approved.includes(planId)) {
       phase = "approved";
     } else {
       phase = "awaiting_approval";
