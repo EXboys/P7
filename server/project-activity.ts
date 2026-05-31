@@ -5,6 +5,8 @@ import {
   MAX_FAILED_EXECUTE_PER_PLAN,
 } from "../src/approval.ts";
 import { getPlanState } from "../src/state.ts";
+import { detectPipelineStall } from "../src/pipeline-stall.ts";
+import { loadConfig } from "../src/config.ts";
 import { listJobsForProject } from "./queue/store.ts";
 import type { JobRow } from "./queue/types.ts";
 
@@ -23,6 +25,11 @@ export type ProjectActivity = {
   } | null;
   schedulerEnabled: boolean;
   schedulerIntervalMinutes: number;
+  /** Roadmap 有未完成步骤但无待执行 Plan（调度器可自动恢复） */
+  pipelineStall: {
+    unfinishedSteps: number;
+    suggestedGoal: string | null;
+  } | null;
 };
 
 export const FAILED_EXECUTE_MAX_ATTEMPTS = MAX_FAILED_EXECUTE_PER_PLAN;
@@ -75,5 +82,11 @@ export function getProjectActivity(
     break;
   }
 
-  return { activeJob, failedPlan, schedulerEnabled, schedulerIntervalMinutes };
+  return {
+    activeJob,
+    failedPlan,
+    schedulerEnabled,
+    schedulerIntervalMinutes,
+    pipelineStall: detectPipelineStall(projectPath, loadConfig(projectPath)),
+  };
 }

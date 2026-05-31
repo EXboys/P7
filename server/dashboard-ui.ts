@@ -57,6 +57,7 @@ body{margin:0;font-family:"DM Sans",-apple-system,system-ui,sans-serif;backgroun
 .sidebar-activity.running{border-color:rgba(107,159,255,.4);color:var(--accent)}
 .sidebar-activity.failed{border-color:rgba(240,113,120,.35);color:var(--err)}
 .sidebar-activity.idle{color:var(--mut)}
+.sidebar-activity.idle-warn{border-color:rgba(229,181,103,.35);color:var(--warn)}
 .sidebar-activity strong{font-weight:600;display:block;margin-bottom:2px;font-size:11px}
 .activity-strip{display:flex;align-items:center;gap:12px;padding:10px 14px;margin-bottom:16px;border-radius:var(--radius);border:1px solid var(--line);background:var(--surface2);font-size:13px}
 .activity-strip.running{border-color:rgba(107,159,255,.45);background:rgba(107,159,255,.08)}
@@ -681,6 +682,9 @@ export function renderSidebarActivity(activity: ProjectActivity | null): string 
   if (!activity.schedulerEnabled) {
     return `<div class="sidebar-activity idle">调度器已关闭</div>`;
   }
+  if (activity.pipelineStall) {
+    return `<div class="sidebar-activity idle-warn"><strong>管道停滞</strong>将自动从 Roadmap 生成 Plan</div>`;
+  }
   return `<div class="sidebar-activity idle">系统空闲</div>`;
 }
 
@@ -733,6 +737,11 @@ export function renderActivityStrip(alias: string, activity: ProjectActivity | n
 
   if (!schedulerEnabled) {
     return `<div class="activity-strip idle-warn"><span class="activity-dot warn"></span><div class="activity-main"><strong>调度器已关闭</strong><span class="muted">不会自动 discover / execute</span></div></div>`;
+  }
+
+  if (activity.pipelineStall) {
+    const goal = activity.pipelineStall.suggestedGoal?.slice(0, 72) ?? "下一 Roadmap 步骤";
+    return `<div class="activity-strip idle-warn"><span class="activity-dot warn"></span><div class="activity-main"><strong>管道停滞 · 将自动恢复</strong><span class="muted">Roadmap 尚有 ${activity.pipelineStall.unfinishedSteps} 项未完成；调度器会从「${esc(goal)}」生成 Plan（约 ${esc(intervalLabel)} 内）</span></div><a class="btn sm ghost" href="/project/${encodeURIComponent(alias)}/plan">规划</a></div>`;
   }
 
   return `<div class="activity-strip idle"><span class="activity-dot ok"></span><div class="activity-main"><strong>系统空闲</strong><span class="muted">调度器每 ${esc(intervalLabel)} 巡检；无 OPEN PR 阻塞且无运行中任务时自动启动</span></div><a class="btn sm ghost" href="/jobs">任务队列</a></div>`;

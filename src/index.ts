@@ -100,6 +100,7 @@ async function main(): Promise<void> {
       const result = await runDiscoveryDaily(projectPath(), {
         planOnly: rest.includes("--plan-only"),
         skipDiscovery: rest.includes("--skip-fetch"),
+        recoverStall: rest.includes("--recover-stall"),
       });
       console.log(JSON.stringify(result, null, 2));
       break;

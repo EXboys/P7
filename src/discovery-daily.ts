@@ -25,7 +25,7 @@ import { ghInstalled, gitRemoteOrigin } from "./gh-status.ts";
 
 export async function runDiscoveryDaily(
   projectPath: string,
-  opts: { planOnly?: boolean; skipDiscovery?: boolean; projectAlias?: string } = {},
+  opts: { planOnly?: boolean; skipDiscovery?: boolean; projectAlias?: string; recoverStall?: boolean } = {},
 ): Promise<DiscoveryDailyResult> {
   const cfg = loadConfig(projectPath);
   const gate =
@@ -45,6 +45,38 @@ export async function runDiscoveryDaily(
   }
 
   const date = new Date().toISOString().slice(0, 10);
+
+  if (opts.recoverStall) {
+    assertLlmAuth();
+    const scan = await scanProject(projectPath);
+    const goal = recommendRoadmapGoal(projectPath) ?? cfg.initial_goal;
+    const planRecord = await generatePlan(projectPath, scan, goal);
+    const planId = planRecord.planId;
+    if (!getApprovalRecord(projectPath, planId)) {
+      savePendingApproval(projectPath, planRecord);
+    }
+    const batch = processAutoApprovals(projectPath, cfg, { planIds: [planId] });
+    let phase = batch.approved.includes(planId) ? "approved" : "awaiting_approval";
+    if (phase === "awaiting_approval") {
+      const notify = resolveNotifyConfig(opts.projectAlias);
+      if (notify) await notifyPlanReady(notify, planRecord.plan, goal, planId);
+    }
+    await appendLesson(
+      projectPath,
+      `pipeline:recover-stall plan=${planId} goal="${goal.slice(0, 60)}" phase=${phase}`,
+    );
+    return {
+      date,
+      snapshotPath: "",
+      signalCount: 0,
+      themes: [],
+      roadmapRefreshed: false,
+      planId,
+      goal,
+      phase: phase === "approved" ? "recovery_approved" : "recovery_awaiting_approval",
+    };
+  }
+
   let snapPath = "";
   let signalCount = 0;
   let themes: string[] = [];
