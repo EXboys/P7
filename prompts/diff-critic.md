@@ -158,6 +158,7 @@ AI 生成代码中的 import/API/类型引用具有**完全相同的问题模式
 FINDINGS:
 - [blocker] 幻觉引用: 导入 'fastify' 不在 package.json 依赖中——项目使用 hono 作为 HTTP 框架，fastify 未在任何依赖列表中声明
 - [warning] 边界条件: httpClient.get() 未处理 response.status >= 400，错误响应可能被静默消费
+- [warning] AI 生成代码特征-模板重复: try-catch 块在 2 个 handler 中逐字重复 8 行（仅变量名不同），建议抽取 safeQuery() wrapper
 - [info] 逻辑: 第 42 行 `a > 0 && a < 0` 恒为 false——疑似笔误但无足够上下文确认
 OK: true|false
 ```
