@@ -109,6 +109,8 @@ async function runJob(
   if (kind === "execute") {
     const p = payload as ExecuteJobPayload;
     args.push("execute", projectPath, "--plan-id", p.planId);
+    // P7_JOB_ID 由 mergeEnv 注入子进程 env，使 executor.ts 能通过
+    // process.env.P7_JOB_ID 关联队列 job 记录，写入 step_states 执行轨迹
   } else if (kind === "discover-daily") {
     args.push("discover-daily", projectPath);
     const d = payload as DailyJobPayload;
