@@ -18,6 +18,8 @@ import {
   type WorktreeInfo,
 } from "./worktree.ts";
 import { withExponentialBackoff } from "./retry.ts";
+import { updateJobStepStates } from "../server/queue/db.ts";
+import type { StepState } from "../server/queue/types.ts";
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string } {
   const proc = Bun.spawnSync(["git", "-C", cwd, ...args], {
@@ -167,6 +169,30 @@ export async function executePlan(
 ): Promise<ExecutionResult> {
   const baseCommit = plan.baseCommit ?? getHeadCommit(projectPath);
   const planId = plan.planId;
+  const stepStates: StepState[] = [];
+
+  function recordStepStart(name: string) {
+    const step: StepState = {
+      step_name: name,
+      status: "running",
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      error: null,
+    };
+    stepStates.push(step);
+    if (planId) updateJobStepStates(planId, stepStates);
+  }
+
+  function recordStepEnd(name: string, error?: string) {
+    const step = stepStates.find((s) => s.step_name === name);
+    if (step) {
+      step.status = error ? "failed" : "done";
+      step.finished_at = new Date().toISOString();
+      step.error = error ?? null;
+    }
+    if (planId) updateJobStepStates(planId, stepStates);
+  }
+
   const allowedFiles = new Set(plan.changes.map((c) => c.file));
   const limits = scaleLimits(plan);
   const start = Date.now();
@@ -174,7 +200,9 @@ export async function executePlan(
 
   try {
     if (planId) transitionPlanState(projectPath, planId, "executing");
+    recordStepStart("worktree_create");
     wt = createWorktree(projectPath, baseCommit);
+    recordStepEnd("worktree_create");
     const system = readPrompt("executor-system.md");
     const planText = JSON.stringify(plan, null, 2);
     const maxTurns = deriveMaxTurns(plan);
@@ -196,6 +224,7 @@ export async function executePlan(
       }
     };
 
+    recordStepStart("sdk_execute");
     await withExponentialBackoff(async () => {
       try {
         await runOnce();
@@ -204,7 +233,9 @@ export async function executePlan(
         throw e;
       }
     });
+    recordStepEnd("sdk_execute");
 
+    recordStepStart("diff_validate");
     const diffStat = git(wt.path, ["diff", "--stat"]);
     if (!diffStat.ok) throw new Error(`git diff failed: ${diffStat.out}`);
 
@@ -223,11 +254,15 @@ export async function executePlan(
     if (stats.lines > maxDiffLines) {
       throw new Error(`Diff too large: ${stats.lines} lines > ${maxDiffLines}`);
     }
+    recordStepEnd("diff_validate");
 
+    recordStepStart("typecheck");
     const tc = await runTypecheck(wt.path);
     if (!tc.ok) throw new Error(`typecheck failed: ${tc.out.slice(0, 500)}`);
+    recordStepEnd("typecheck");
 
     if (cfg.test_command) {
+      recordStepStart("test");
       const testProc = Bun.spawnSync(["sh", "-c", cfg.test_command], {
         cwd: wt.path,
         stdout: "pipe",
@@ -236,23 +271,30 @@ export async function executePlan(
       if (testProc.exitCode !== 0) {
         throw new Error(`test failed: ${new TextDecoder().decode(testProc.stderr).slice(0, 500)}`);
       }
+      recordStepEnd("test");
     }
 
+    recordStepStart("diff_critic");
     const critic = await reviewDiff(wt.path, diffStat.out, plan.title);
     if (!critic.ok) {
       throw new Error(`diff-critic blocked: ${critic.findings.slice(0, 300)}`);
     }
+    recordStepEnd("diff_critic");
 
+    recordStepStart("git_commit");
     git(wt.path, ["add", "-A"]);
     const commit = git(wt.path, ["commit", "-m", plan.title]);
     if (!commit.ok) throw new Error(`commit failed: ${commit.out}`);
     const sha = git(wt.path, ["rev-parse", "HEAD"]).out.slice(0, 7);
+    recordStepEnd("git_commit");
 
+    recordStepStart("git_push");
     const push = git(wt.path, ["push", "-u", "origin", wt.branch]);
     if (!push.ok) {
       const fallback = git(wt.path, ["push", "origin", `HEAD:${wt.branch}`]);
       if (!fallback.ok) throw new Error(`push failed: ${push.out}; fallback: ${fallback.out}`);
     }
+    recordStepEnd("git_push");
 
     const branch = wt.branch;
     if (planId) {
@@ -261,6 +303,7 @@ export async function executePlan(
         commitSha: sha,
       });
     }
+    recordStepStart("vcs_publish");
     const vcs = await publishToVcs({
       projectPath: wt.path,
       remoteUrl: scanRemote,
@@ -269,6 +312,7 @@ export async function executePlan(
       plan,
       config: cfg,
     });
+    recordStepEnd("vcs_publish");
     if (planId) {
       const status = vcs.mergeStatus === "merged" ? "merged" : vcs.prUrl ? "pr_opened" : "pushed";
       transitionPlanState(projectPath, planId, status, {

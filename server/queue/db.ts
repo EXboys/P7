@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import type { JobKind, JobRow, JobStatus } from "./types.ts";
+import type { JobKind, JobRow, JobStatus, StepState } from "./types.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 
 function dbPath(): string {
@@ -27,7 +27,8 @@ function getDb(): Database {
       finished_at TEXT,
       progress TEXT,
       result_json TEXT,
-      error TEXT
+      error TEXT,
+      step_states TEXT
     )`);
   }
   return db;
@@ -86,6 +87,13 @@ export function finishJob(
   getDb().run(
     `UPDATE jobs SET status = ?, finished_at = ?, result_json = ?, error = ? WHERE id = ?`,
     [status, new Date().toISOString(), result ? JSON.stringify(result) : null, error ?? null, id],
+  );
+}
+
+export function updateJobStepStates(planId: string, stepStates: StepState[]): void {
+  getDb().run(
+    `UPDATE jobs SET step_states = ? WHERE status = 'running' AND json_extract(payload, '$.planId') = ?`,
+    [JSON.stringify(stepStates), planId],
   );
 }
 

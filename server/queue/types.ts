@@ -8,6 +8,14 @@ export type JobKind =
 
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
+export interface StepState {
+  step_name: string;
+  status: "running" | "done" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+}
+
 export interface JobRow {
   id: string;
   kind: JobKind;
@@ -21,6 +29,7 @@ export interface JobRow {
   progress: string | null;
   result_json: string | null;
   error: string | null;
+  step_states?: StepState[];
 }
 
 export interface DailyJobPayload {
