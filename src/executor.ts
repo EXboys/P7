@@ -525,6 +525,7 @@ export async function executePlan(
         branch,
         plan,
         config: cfg,
+        planId: planId ?? undefined,
       });
       mergeStatus = lifecycle.mergeStatus;
       lifecycleDetail = lifecycle.detail;
