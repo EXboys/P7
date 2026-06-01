@@ -2,7 +2,7 @@
 ## Active
 Feature: AI 代码审查幻觉防御收尾与验证 (started 2026-05-31)
 - [ ] 构造覆盖虚构 npm 包导入、不存在 API 调用、错误类型签名的 diff fixture 测试集
-- [ ] 在 diff-critic 中新增幻觉检测专用维度并接入 PlanState review 阻断逻辑
+- [x] 在 diff-critic 中新增幻觉检测专用维度并接入 PlanState review 阻断逻辑 (commit: 6596771)
 - [ ] 运行 fixture 测试集验证幻觉捕获率 ≥80%，未达标则迭代 prompt 并重测
 - [ ] 将阻断结果写入 diff-critic findings，阻止幻觉类 PR 自动合并
 

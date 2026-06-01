@@ -21,6 +21,7 @@ export interface JobStore {
   reclaimStaleJobs(maxRunMs: number): JobRow[];
   listJobsForProject(alias: string, limit?: number): JobRow[];
   listAllJobs(limit?: number): JobRow[];
+  listAllJobsUnbounded?(): JobRow[];
   countTodayJobs(): number;
   lastConsecutiveFailures(alias: string, n: number): number;
   hasPendingDailyToday(alias: string): boolean;
@@ -49,6 +50,7 @@ export const reclaimOrphanedRunningJobs = impl.reclaimOrphanedRunningJobs;
 export const reclaimStaleJobs = impl.reclaimStaleJobs;
 export const listJobsForProject = impl.listJobsForProject;
 export const listAllJobs = impl.listAllJobs ?? (() => []);
+export const listAllJobsUnbounded = impl.listAllJobsUnbounded ?? (() => listAllJobs(10_000));
 export const countTodayJobs = impl.countTodayJobs;
 export const lastConsecutiveFailures = impl.lastConsecutiveFailures;
 export const hasPendingDailyToday = impl.hasPendingDailyToday;

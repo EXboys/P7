@@ -4,6 +4,7 @@ import { appendLesson } from "../agent-memory.ts";
 import { readPrompt, runSdkQuery } from "../sdk.ts";
 import type { Plan } from "../types.ts";
 import { defaultBaseBranch } from "../worktree.ts";
+import { reviewMergeGhEnv, reviewMergeTokenMissing } from "./gh-env.ts";
 import type { VcsPublishResult } from "./types.ts";
 
 function ghRun(
@@ -43,7 +44,11 @@ type PrView = {
   state?: string;
 };
 
-function viewPr(projectPath: string, prUrl: string): PrView | null {
+function viewPr(
+  projectPath: string,
+  prUrl: string,
+  env?: Record<string, string>,
+): PrView | null {
   const r = ghRun(projectPath, [
     "gh",
     "pr",
@@ -51,7 +56,7 @@ function viewPr(projectPath: string, prUrl: string): PrView | null {
     prUrl,
     "--json",
     "mergeable,mergeStateStatus,state",
-  ]);
+  ], env);
   if (!r.ok) return null;
   try {
     return JSON.parse(r.out) as PrView;
@@ -64,6 +69,7 @@ async function autoReviewPr(
   projectPath: string,
   prUrl: string,
   plan: Plan,
+  env?: Record<string, string>,
 ): Promise<string> {
   const summary = [
     "## P7 自动 Review",
@@ -73,21 +79,33 @@ async function autoReviewPr(
     "",
     "diff-critic 已在合并前通过；此为流程自动备注。",
   ].join("\n");
-  ghRun(projectPath, ["gh", "pr", "comment", prUrl, "--body", summary]);
-  const approve = ghRun(projectPath, ["gh", "pr", "review", prUrl, "--approve", "--comment", "P7 auto-review"]);
-  if (approve.ok) return "已提交 approve review";
+  ghRun(projectPath, ["gh", "pr", "comment", prUrl, "--body", summary], env);
+  const approve = ghRun(
+    projectPath,
+    ["gh", "pr", "review", prUrl, "--approve", "--comment", "P7 auto-review"],
+    env,
+  );
+  if (approve.ok) return "主账号已 approve";
   return `review 备注已发（approve 跳过：${approve.out.slice(0, 120)}）`;
 }
 
-async function tryGhMerge(projectPath: string, prUrl: string): Promise<boolean> {
-  const m = ghRun(projectPath, ["gh", "pr", "merge", prUrl, "--squash", "--delete-branch"]);
+async function tryGhMerge(
+  projectPath: string,
+  prUrl: string,
+  env?: Record<string, string>,
+): Promise<boolean> {
+  const m = ghRun(projectPath, ["gh", "pr", "merge", prUrl, "--squash", "--delete-branch"], env);
   return m.ok;
 }
 
-async function updatePrBranch(projectPath: string, prUrl: string): Promise<boolean> {
-  const u = ghRun(projectPath, ["gh", "pr", "update-branch", prUrl, "--rebase"]);
+async function updatePrBranch(
+  projectPath: string,
+  prUrl: string,
+  env?: Record<string, string>,
+): Promise<boolean> {
+  const u = ghRun(projectPath, ["gh", "pr", "update-branch", prUrl, "--rebase"], env);
   if (u.ok) return true;
-  const m = ghRun(projectPath, ["gh", "pr", "update-branch", prUrl]);
+  const m = ghRun(projectPath, ["gh", "pr", "update-branch", prUrl], env);
   return m.ok;
 }
 
@@ -184,10 +202,16 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
     return { mergeStatus: "skipped", detail: "未安装 gh" };
   }
 
+  const mergeEnv = reviewMergeGhEnv(vcs);
+  const tokenErr = reviewMergeTokenMissing(vcs);
+  if (tokenErr) {
+    return { mergeStatus: "failed", detail: tokenErr };
+  }
+
   const parts: string[] = [];
 
   if (vcs.auto_review !== false) {
-    const review = await autoReviewPr(projectPath, prUrl, plan);
+    const review = await autoReviewPr(projectPath, prUrl, plan, mergeEnv);
     parts.push(review);
     await appendLesson(projectPath, `pr:review ${prUrl} — ${review}`);
   }
@@ -201,15 +225,15 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
   const baseBranch = defaultBaseBranch(config);
 
   while (Date.now() < deadline) {
-    const pr = viewPr(projectPath, prUrl);
+    const pr = viewPr(projectPath, prUrl, mergeEnv);
     if (!pr) {
       await sleep(6_000);
       continue;
     }
 
     if (pr.mergeable === "MERGEABLE" && pr.mergeStateStatus === "CLEAN") {
-      if (await tryGhMerge(projectPath, prUrl)) {
-        const msg = `已合并 PR（${parts.join("；")}）`;
+      if (await tryGhMerge(projectPath, prUrl, mergeEnv)) {
+        const msg = `主账号已合并 PR（${parts.join("；")}）`;
         await appendLesson(projectPath, `pr:merged ${prUrl}`);
         return { mergeStatus: "merged", detail: msg };
       }
@@ -221,19 +245,19 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
       pr.mergeStateStatus === "BEHIND"
     ) {
       if (vcs.merge_resolve_conflicts !== false) {
-        await updatePrBranch(projectPath, prUrl);
+        await updatePrBranch(projectPath, prUrl, mergeEnv);
         await sleep(8_000);
-        const pr2 = viewPr(projectPath, prUrl);
+        const pr2 = viewPr(projectPath, prUrl, mergeEnv);
         if (pr2?.mergeable === "MERGEABLE" && pr2.mergeStateStatus === "CLEAN") {
-          if (await tryGhMerge(projectPath, prUrl)) {
-            return { mergeStatus: "merged", detail: "update-branch 后可合并" };
+          if (await tryGhMerge(projectPath, prUrl, mergeEnv)) {
+            return { mergeStatus: "merged", detail: "主账号 update-branch 后已合并" };
           }
         }
         const fixed = await resolveConflictsLocally(projectPath, branch, baseBranch, plan);
         parts.push(fixed.detail);
         if (fixed.ok) {
           await sleep(6_000);
-          if (await tryGhMerge(projectPath, prUrl)) {
+          if (await tryGhMerge(projectPath, prUrl, mergeEnv)) {
             await appendLesson(projectPath, `pr:merged after conflict fix ${prUrl}`);
             return { mergeStatus: "merged", detail: parts.join("；") };
           }

@@ -6,6 +6,7 @@ import {
   advanceAccountRotation,
   orderedAccountsRoundRobin,
 } from "./account-rotation.ts";
+import { ghEnvForAuth } from "./gh-env.ts";
 
 type GitHubAccount = DevAgentConfig["vcs"]["accounts"][number];
 
@@ -65,14 +66,11 @@ function firstUrl(text: string): string | undefined {
 }
 
 function envForAccount(account: GitHubAccount): Record<string, string> | undefined {
-  if (account.auth_type !== "token_env") return undefined;
-  if (!account.token_env) return undefined;
-  const token = process.env[account.token_env];
-  if (!token) return undefined;
-  return {
-    GH_TOKEN: token,
-    GH_HOST: account.gh_host,
-  };
+  return ghEnvForAuth({
+    auth_type: account.auth_type,
+    token_env: account.token_env,
+    gh_host: account.gh_host,
+  });
 }
 
 function accountEnabled(

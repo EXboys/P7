@@ -56,6 +56,7 @@ function rowToPlanState(row: Record<string, unknown>): PlanState {
   if (accountResults?.length) state.accountResults = accountResults;
   if (row.error) state.error = String(row.error);
   if (row.findings) state.findings = String(row.findings);
+  if (row.diff_critic_findings) state.diffCriticFindings = String(row.diff_critic_findings);
   if (row.cost_usd != null && row.cost_usd !== "") {
     const cost = Number(row.cost_usd);
     if (Number.isFinite(cost)) state.costUsd = cost;
@@ -92,6 +93,7 @@ function planStateBinds(state: PlanState): Record<string, string | null> {
     $cost_usd: state.costUsd != null ? String(state.costUsd) : null,
     $token_usage: state.tokenUsage ? JSON.stringify(state.tokenUsage) : null,
     $findings: state.findings ?? null,
+    $diff_critic_findings: state.diffCriticFindings ?? null,
     $error: state.error ?? null,
   };
 }
@@ -208,6 +210,11 @@ export function initDb(projectPath: string): Database {
   } catch {
     /* exists */
   }
+  try {
+    db.run("ALTER TABLE plan_states ADD COLUMN diff_critic_findings TEXT");
+  } catch {
+    /* exists */
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS sdk_costs (
@@ -268,11 +275,11 @@ export function upsertPlanState(
     INSERT INTO plan_states (
       plan_id, project_path, goal, title, status, created_at, updated_at,
       branch, commit_sha, review_url, pr_url, issue_url, merge_status,
-      account_results, cost_usd, token_usage, findings, error
+      account_results, cost_usd, token_usage, findings, diff_critic_findings, error
     ) VALUES (
       $plan_id, $project_path, $goal, $title, $status, $created_at, $updated_at,
       $branch, $commit_sha, $review_url, $pr_url, $issue_url, $merge_status,
-      $account_results, $cost_usd, $token_usage, $findings, $error
+      $account_results, $cost_usd, $token_usage, $findings, $diff_critic_findings, $error
     )
     ON CONFLICT(plan_id) DO UPDATE SET
       project_path = excluded.project_path,
@@ -290,6 +297,7 @@ export function upsertPlanState(
       cost_usd = COALESCE(excluded.cost_usd, plan_states.cost_usd),
       token_usage = COALESCE(excluded.token_usage, plan_states.token_usage),
       findings = COALESCE(excluded.findings, plan_states.findings),
+      diff_critic_findings = COALESCE(excluded.diff_critic_findings, plan_states.diff_critic_findings),
       error = excluded.error
   `);
 
@@ -343,6 +351,7 @@ export function transitionPlanState(
         merge_status = $merge_status,
         account_results = $account_results,
         findings = $findings,
+        diff_critic_findings = $diff_critic_findings,
         error = $error
       WHERE plan_id = $plan_id
     `);
@@ -390,7 +399,7 @@ export function writeSdkCost(
   });
 }
 
-/** 写入 diff-critic 检测结果（findings JSON）到 plan_states 表 */
+/** 写入 diff-critic 检测结果到 plan_states.diff_critic_findings */
 export function updatePlanDiffCriticFindings(
   projectPath: string,
   planId: string,
@@ -398,9 +407,13 @@ export function updatePlanDiffCriticFindings(
 ): void {
   const db = initDb(projectPath);
   const stmt = db.prepare(
-    `UPDATE plan_states SET findings = $findings WHERE plan_id = $plan_id`,
+    `UPDATE plan_states SET diff_critic_findings = $diff_critic_findings, updated_at = $updated_at WHERE plan_id = $plan_id`,
   );
   withBusyRetry(() => {
-    stmt.run({ $plan_id: planId, $findings: findings });
+    stmt.run({
+      $plan_id: planId,
+      $diff_critic_findings: findings,
+      $updated_at: new Date().toISOString(),
+    });
   });
 }

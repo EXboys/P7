@@ -6,6 +6,7 @@ import { loadPlanRecord } from "../planner.ts";
 import { listPlanStates, transitionPlanState } from "../state.ts";
 import type { Plan } from "../types.ts";
 import { listOpenPullRequests, type OpenPr } from "./open-prs.ts";
+import { reviewMergeGhEnv } from "./gh-env.ts";
 import { runPrReviewAndMerge } from "./pr-lifecycle.ts";
 
 export function stubPlanForPrReview(title: string): Plan {
@@ -78,9 +79,10 @@ export async function runPrReviewSweep(
     vcs.pr_review_only_p7_label !== false && vcs.labels.length > 0
       ? vcs.labels[0]
       : undefined;
-  let prs = listOpenPullRequests(projectPath, { label, limit: 20 });
+  const ghEnv = reviewMergeGhEnv(vcs);
+  let prs = listOpenPullRequests(projectPath, { label, limit: 20, ghEnv });
   if (prs.length === 0 && label) {
-    prs = listOpenPullRequests(projectPath, { limit: 20 });
+    prs = listOpenPullRequests(projectPath, { limit: 20, ghEnv });
   }
   const results: PrReviewItemResult[] = [];
 

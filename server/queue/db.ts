@@ -160,6 +160,12 @@ export function listAllJobs(limit = 200): JobRow[] {
     .all(limit) as JobRow[];
 }
 
+export function listAllJobsUnbounded(): JobRow[] {
+  return getDb()
+    .query("SELECT * FROM jobs ORDER BY created_at DESC")
+    .all() as JobRow[];
+}
+
 export function countTodayJobs(): number {
   const day = new Date().toISOString().slice(0, 10);
   const row = getDb()
