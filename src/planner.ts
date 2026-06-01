@@ -6,7 +6,7 @@ import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
 import { shouldDegrade, splitPlan } from "./degrade.ts";
 import { appendLesson } from "./agent-memory.ts";
-import { countQueuedPlans, upsertPlanState } from "./state.ts";
+import { countQueuedPlans, recordBackpressureEvent, upsertPlanState } from "./state.ts";
 import { processAutoApprovals, savePendingApproval } from "./approval.ts";
 import { loadConfig } from "./config.ts";
 import { PlanSchema, type Plan, type PlanRecord, type ProjectScan } from "./types.ts";
@@ -125,7 +125,8 @@ export async function generatePlan(
 
   if (!plan) throw new Error("Failed to generate plan");
 
-  const plansToSave = shouldDegrade(plan) ? splitPlan(plan) : [plan];
+  const degraded = shouldDegrade(plan);
+  const plansToSave = degraded ? splitPlan(plan) : [plan];
   const createdAt = new Date().toISOString();
   let first: PlanRecord | null = null;
   const savedIds: string[] = [];
@@ -133,6 +134,12 @@ export async function generatePlan(
   for (let i = 0; i < plansToSave.length; i++) {
     const p = plansToSave[i];
     const id = `${Date.now()}${i > 0 ? `-${i}` : ""}`;
+    if (degraded) {
+      recordBackpressureEvent(projectPath, id, {
+        type: "degradation",
+        detail: `Sub-plan ${i + 1}/${plansToSave.length} from "${plan.title}": ${p.changes.length} files (original ${plan.changes.length})`,
+      });
+    }
     const record = savePlanRecord(projectPath, {
       planId: id,
       projectPath,

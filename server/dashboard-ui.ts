@@ -1073,6 +1073,30 @@ ${planStatChip(p.validation, "验证")}
     ? `<section class="plan-section error-panel"><h2>错误</h2><pre>${esc(st.error)}</pre></section>`
     : "";
 
+  const bpEvents = (st as unknown as Record<string, unknown>)?.backpressureEvents as
+    | Array<{ type: string; timestamp: string; detail: string }>
+    | undefined;
+  let backpressurePanel: string;
+  if (bpEvents && bpEvents.length > 0) {
+    const cards = bpEvents
+      .map(
+        (ev) =>
+          `<div class="blocker" style="margin-bottom:8px">
+<div style="display:flex;align-items:flex-start;gap:10px;width:100%">
+<span class="badge ${ev.type === "cost_limit_hit" ? "fail" : ev.type === "degradation" ? "warn" : "run"}" style="flex-shrink:0;margin-top:2px">${esc(ev.type)}</span>
+<div style="flex:1;min-width:0">
+<div style="font-size:12px;color:var(--mut);margin-bottom:2px">${esc(formatDateTime(ev.timestamp))}</div>
+<div style="font-size:13px;line-height:1.45">${esc(ev.detail.slice(0, 280))}</div>
+</div>
+</div>
+</div>`,
+      )
+      .join("");
+    backpressurePanel = `<section class="plan-section"><h2>背压事件 <span class="muted" style="font-weight:500;font-size:12px">${bpEvents.length} 条</span></h2>${cards}</section>`;
+  } else {
+    backpressurePanel = `<section class="plan-section"><h2>背压事件</h2><p class="muted" style="margin:0;font-size:13px">该 Plan 尚无背压事件记录。</p></section>`;
+  }
+
   const pendingBanner = detail.canApprove
     ? `<div class="plan-pending-banner">待确认范围与风险后再批准</div>`
     : "";
@@ -1112,6 +1136,7 @@ ${changesBlock}
 ${risksBlock}
 ${critiqueBlock}
 ${errorPanel}
+${backpressurePanel}
 </div>
 <aside class="plan-aside">
 ${deliveryPanel}
