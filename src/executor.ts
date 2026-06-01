@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, realpathSync } from "fs";
+import { dirname, join } from "path";
 import { devAgentDir } from "./config.ts";
 import type { DevAgentConfig } from "./config.ts";
 import { reviewDiff } from "./diff-critic.ts";
@@ -74,6 +74,57 @@ function normalizeAllowedPath(path: string, cwd: string): string {
   return normalized;
 }
 
+/**
+ * Check if a file path resolves within the worktree boundary.
+ * For non-existent paths (e.g., new files to write), resolves the parent
+ * directory instead to determine boundary membership.
+ */
+function isPathWithinWorktree(filePath: string, worktreeRoot: string): boolean {
+  const absPath = join(worktreeRoot, filePath);
+  let resolved: string;
+  try {
+    resolved = realpathSync(absPath);
+  } catch {
+    // Path doesn't exist yet — resolve from parent directory
+    try {
+      resolved = realpathSync(dirname(absPath));
+    } catch {
+      // Can't resolve parent either — deny to be safe
+      return false;
+    }
+  }
+  const root = worktreeRoot.endsWith("/") ? worktreeRoot : worktreeRoot + "/";
+  return resolved === worktreeRoot || resolved.startsWith(root);
+}
+
+/**
+ * Detect path traversal attempts in Bash commands —
+ * blocks access to parent directories, home dir, and sensitive system paths.
+ */
+function hasBashPathTraversal(command: string, worktreeRoot: string): boolean {
+  // Directory traversal above worktree via ..
+  if (/(?:^|\s+)(\.\.\/)/.test(command)) return true;
+
+  // Home directory reference
+  if (/(?:^|\s+)(~)(?:\/|\s+|$)/.test(command)) return true;
+  if (/\$HOME\b/.test(command)) return true;
+
+  // Sensitive absolute system paths not within worktree
+  const sensitivePrefixes = [
+    "/etc/", "/usr/", "/bin/", "/sbin/", "/var/", "/dev/",
+    "/proc/", "/sys/", "/boot/", "/opt/", "/root/", "/tmp/",
+  ];
+  const absPaths = command.match(/(?:\s|^)(\/[^\s;"'|&$()`]+)/g);
+  if (absPaths) {
+    for (const ap of absPaths) {
+      const p = ap.trim();
+      if (p.length < 2 || p === "/" || p.startsWith(worktreeRoot)) continue;
+      if (sensitivePrefixes.some((prefix) => p.startsWith(prefix))) return true;
+    }
+  }
+  return false;
+}
+
 function buildPreToolHook(
   allowedFiles: Set<string>,
   cwd: string,
@@ -83,34 +134,13 @@ function buildPreToolHook(
   return {
     PreToolUse: [
       {
-        matcher: "Write|Edit|Bash",
+        matcher: "Read|Write|Edit|Bash",
         hooks: [
           async (input: {
             tool_name: string;
             tool_input: { file_path?: string; path?: string; command?: string };
           }) => {
-            if (input.tool_name === "Bash") {
-              const command = input.tool_input?.command ?? "";
-              if (dangerousBash.test(command)) {
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: "PreToolUse" as const,
-                    permissionDecision: "deny" as const,
-                    permissionDecisionReason:
-                      "Executor Bash may run inspection/tests only; host handles file mutation and git operations",
-                  },
-                };
-              }
-              return {
-                hookSpecificOutput: {
-                  hookEventName: "PreToolUse" as const,
-                  permissionDecision: "allow" as const,
-                },
-              };
-            }
-            const path = input.tool_input?.file_path ?? input.tool_input?.path;
-            if (!path) {
-              const reason = "Missing file path in tool input";
+            const deny = (reason: string) => {
               onDeny?.(`${input.tool_name}: ${reason}`);
               return {
                 hookSpecificOutput: {
@@ -119,28 +149,51 @@ function buildPreToolHook(
                   permissionDecisionReason: reason,
                 },
               };
+            };
+            const allow = () => ({
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse" as const,
+                permissionDecision: "allow" as const,
+              },
+            });
+
+            if (input.tool_name === "Bash") {
+              const command = input.tool_input?.command ?? "";
+              if (dangerousBash.test(command)) {
+                return deny(
+                  "Executor Bash may run inspection/tests only; host handles file mutation and git operations",
+                );
+              }
+              if (hasBashPathTraversal(command, cwd)) {
+                return deny("Path traversal detected in Bash command — filesystem boundary enforced");
+              }
+              return allow();
             }
+
+            const path = input.tool_input?.file_path ?? input.tool_input?.path;
+            if (!path) {
+              return deny("Missing file path in tool input");
+            }
+
+            // Filesystem boundary check (Read/Write/Edit)
+            if (!isPathWithinWorktree(path, cwd)) {
+              return deny(`File path outside worktree boundary: ${path}`);
+            }
+
+            // Read is allowed for any project file (no plan-file restriction)
+            if (input.tool_name === "Read") {
+              return allow();
+            }
+
+            // Write/Edit: restrict to plan-allowed files
             const normalized = normalizeAllowedPath(path, cwd);
             const allowed = [...allowedFiles].some(
               (f) => normalized === f || normalized.endsWith(`/${f}`) || normalized.endsWith(f),
             );
             if (!allowed) {
-              const reason = `File not in plan: ${normalized}`;
-              onDeny?.(`${input.tool_name} ${path}: ${reason}`);
-              return {
-                hookSpecificOutput: {
-                  hookEventName: "PreToolUse" as const,
-                  permissionDecision: "deny" as const,
-                  permissionDecisionReason: reason,
-                },
-              };
+              return deny(`File not in plan: ${normalized}`);
             }
-            return {
-              hookSpecificOutput: {
-                hookEventName: "PreToolUse" as const,
-                permissionDecision: "allow" as const,
-              },
-            };
+            return allow();
           },
         ],
       },
