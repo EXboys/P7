@@ -18,6 +18,8 @@ import {
   deriveThemesFromSignals,
 } from "./tech-discovery.ts";
 import type { DiscoveryDailyResult } from "./types.ts";
+import { queryDailyCostSummary } from "./state.ts";
+import type { CostSummary } from "./state.ts";
 import { notifyPlanReady } from "./notify/sender.ts";
 import { resolveNotifyConfig } from "./notify/env.ts";
 import { checkPrWorkGate } from "./vcs/pr-work-gate.ts";
@@ -160,6 +162,8 @@ export async function runDiscoveryDaily(
     }
   }
 
+  const costSummary: CostSummary | undefined = queryDailyCostSummary(projectPath);
+
   return {
     date,
     snapshotPath: snapPath,
@@ -169,5 +173,6 @@ export async function runDiscoveryDaily(
     planId,
     goal,
     phase,
-  };
+    costSummary,
+  } as DiscoveryDailyResult & { costSummary: CostSummary };
 }
