@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import { join } from "path";
 import { projectSubpathForRead, projectSubpathForWrite } from "./p7-paths.ts";
 import type { DevAgentConfig } from "./config.ts";
-import { getPlanState, preparePlanExecuteRetry, transitionPlanState, upsertPlanState } from "./state.ts";
+import { countQueuedPlans, getPlanState, preparePlanExecuteRetry, transitionPlanState, upsertPlanState } from "./state.ts";
 import { recommendRoadmapGoal } from "./roadmap.ts";
 import { listJobsForProject } from "../server/queue/store.ts";
 import type { ApprovalRecord, Plan, PlanRecord, PlanState } from "./types.ts";
@@ -121,6 +121,19 @@ export function processAutoApprovals(
     enqueueExecute?: (planId: string) => void;
   },
 ): AutoApproveBatchResult {
+  // 队列深度 ≥ 70% 时暂停所有自动审批，避免已积压时继续产生 approved Plan
+  const degradeThreshold = Math.ceil(cfg.max_pending_plans * 0.7);
+  const depth = countQueuedPlans(projectPath);
+  if (depth >= degradeThreshold) {
+    const pending = listPendingApprovals(projectPath).filter((p) =>
+      opts?.planIds ? opts.planIds.includes(p.planId) : true,
+    );
+    return {
+      approved: [],
+      skipped: pending.map((p) => ({ planId: p.planId, reason: "queue_depth" })),
+    };
+  }
+
   const approved: string[] = [];
   const skipped: { planId: string; reason: string }[] = [];
   const pending = listPendingApprovals(projectPath).filter((p) =>
