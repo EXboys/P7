@@ -18,6 +18,7 @@ import {
   shouldAutoApprove,
 } from "../src/approval.ts";
 import { getPlanDetailView } from "../src/plan-detail.ts";
+import { planDisplayTitle } from "../src/plan-i18n.ts";
 import { loadConfig, saveConfig } from "../src/config.ts";
 import { scanProject } from "../src/scanner.ts";
 import { refreshRoadmapForDashboard } from "../src/roadmap-refresh.ts";
@@ -559,7 +560,7 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
             : `<div class="muted" style="font-size:11px;margin-top:4px;color:var(--ok)">符合自动审批</div>`;
           return `<tr>
 <td><a href="/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(a.planId)}">${esc(a.planId)}</a></td>
-<td>${esc(a.plan.title)}${hint}</td>
+<td>${esc(planDisplayTitle(a.plan))}${hint}</td>
 <td>${esc(String(a.plan.estimated_diff_lines))} 行</td>
 <td>
 <form class="inline" method="post" action="/approve"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(a.planId)}"/><button class="btn ok sm">批准并执行</button></form>

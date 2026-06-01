@@ -11,6 +11,7 @@ import {
 } from "./approval.ts";
 import { appendLesson } from "./agent-memory.ts";
 import { notifyPlanReady, notifyExecutionResult, type NotifyConfig } from "./notify/sender.ts";
+import { planDisplayTitle } from "./plan-i18n.ts";
 import { resolveNotifyConfig } from "./notify/env.ts";
 import { runDiscovery } from "./tech-discovery.ts";
 import { listApprovedForExecution } from "./approval.ts";
@@ -51,7 +52,7 @@ export async function runDaily(
     if (notify) {
       await notifyExecutionResult(
         notify,
-        a.plan.title,
+        planDisplayTitle(a.plan),
         result.ok,
         result.ok
           ? `分支 ${result.branch} 提交 ${result.commitSha}\n${result.prUrl ?? ""}`
@@ -92,7 +93,7 @@ export async function runDaily(
 
   const batch = processAutoApprovals(projectPath, cfg, { planIds: [planId] });
   if (!batch.approved.includes(planId)) {
-    await appendLesson(projectPath, `plan:pending "${plan.title}" awaiting approval`);
+    await appendLesson(projectPath, `plan:pending "${planDisplayTitle(plan)}" awaiting approval`);
     return { phase: "awaiting_approval", goal, planId };
   }
 
@@ -110,7 +111,7 @@ export async function runDaily(
   if (notify) {
     await notifyExecutionResult(
       notify,
-      plan.title,
+      planDisplayTitle(plan),
       result.ok,
       result.ok
         ? `分支 ${result.branch} 提交 ${result.commitSha}\n${result.reviewUrl ?? ""}`

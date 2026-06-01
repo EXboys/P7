@@ -1,6 +1,7 @@
 import { formatPlanCard, formatStatusMarkdown } from "./format.ts";
 import { sendDingTalkActionCard, sendDingTalkMarkdown } from "./dingtalk.ts";
 import type { Plan } from "../types.ts";
+import { planDisplayTitle } from "../plan-i18n.ts";
 
 export interface NotifyConfig {
   dingtalk?: { webhook: string; secret?: string };
@@ -27,13 +28,13 @@ export async function notifyPlanReady(
     await sendDingTalkActionCard({
       webhook: cfg.dingtalk.webhook,
       secret: cfg.dingtalk.secret,
-      title: `待审批: ${plan.title}`,
+      title: `待审批: ${planDisplayTitle(plan)}`,
       text,
       singleTitle: "去审批",
       singleURL: url,
     });
   } else {
-    await sendDingTalkMarkdown(cfg.dingtalk.webhook, cfg.dingtalk.secret, plan.title, text);
+    await sendDingTalkMarkdown(cfg.dingtalk.webhook, cfg.dingtalk.secret, planDisplayTitle(plan), text);
   }
 }
 

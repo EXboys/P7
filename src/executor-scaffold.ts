@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { Plan } from "./types.ts";
+import { planPublishTitle } from "./plan-i18n.ts";
 
 /** 第 2 轮重试前为 Plan 中尚不存在的文件创建占位，便于 Agent 用 Edit 填充。 */
 export function scaffoldMissingPlanFiles(worktreePath: string, plan: Plan): string[] {
@@ -10,7 +11,7 @@ export function scaffoldMissingPlanFiles(worktreePath: string, plan: Plan): stri
     if (existsSync(full)) continue;
     mkdirSync(dirname(full), { recursive: true });
     const stub = [
-      `/** Scaffold for plan: ${plan.title} */`,
+      `/** Scaffold for plan: ${planPublishTitle(plan)} */`,
       `/** ${change.description.slice(0, 200)} */`,
       "export {};",
       "",

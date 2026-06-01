@@ -2,20 +2,32 @@ import { z } from "zod";
 import type { SdkTokenUsage } from "./sdk-cost.ts";
 
 export const PlanSchema = z.object({
+  /** English — commit / PR / Issue title on GitHub */
   title: z.string().min(1).max(120),
+  /** Chinese — admin console display */
+  title_zh: z.string().min(1).max(80).optional(),
+  /** English — GitHub PR / Issue body */
   motivation: z.string().min(1),
+  /** Chinese — admin console display */
+  motivation_zh: z.string().min(1).optional(),
   complexity: z.enum(["simple", "medium", "complex"]).optional(),
   changes: z
     .array(
       z.object({
         file: z.string().min(1),
+        /** English — GitHub PR body */
         description: z.string().min(1),
+        /** Chinese — admin console display */
+        description_zh: z.string().min(1).optional(),
         estimated_lines: z.number().int().nonnegative(),
       }),
     )
     .min(1)
     .max(5),
+  /** English — GitHub PR body */
   risks: z.array(z.string()),
+  /** Chinese — admin console display */
+  risks_zh: z.array(z.string()).optional(),
   validation: z.string().min(1),
   estimated_diff_lines: z.number().int().nonnegative().max(200),
   critique_notes: z.array(z.string()).optional(),

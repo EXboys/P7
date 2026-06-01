@@ -10,7 +10,8 @@ export function shouldDegrade(plan: Plan): boolean {
 export function splitPlan(plan: Plan): Plan[] {
   return plan.changes.map((c) => ({
     ...plan,
-    title: `${plan.title}（${c.file}）`,
+    title: `${plan.title} (${c.file})`,
+    title_zh: plan.title_zh ? `${plan.title_zh}（${c.file}）` : undefined,
     complexity: "simple" as const,
     changes: [c],
     estimated_diff_lines: Math.min(c.estimated_lines + 20, 80),

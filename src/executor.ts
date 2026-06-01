@@ -31,6 +31,7 @@ import { executorSemaphore, withExponentialBackoff } from "./retry.ts";
 import type { StepState } from "../server/queue/types.ts";
 import { updateJobStepState } from "../server/queue/db.ts";
 import { addSdkCost, emptySdkCost } from "./sdk-cost.ts";
+import { planDisplayTitle, planPublishTitle, planRoadmapHint } from "./plan-i18n.ts";
 import { scaffoldMissingPlanFiles } from "./executor-scaffold.ts";
 import {
   appendExecuteToolLog,
@@ -302,7 +303,7 @@ export async function executePlan(
       ? loadPreviousExecuteFailureContext(
           projectPath,
           planId,
-          plan.title,
+          planDisplayTitle(plan),
           process.env.P7_PROJECT_ALIAS,
           process.env.P7_JOB_ID,
         )
@@ -489,7 +490,7 @@ export async function executePlan(
 
     const gitStart = new Date().toISOString();
     writeStepState({ step_name: "git_commit_push", status: "running", started_at: gitStart });
-    const { sha } = commitWorktreeChanges(wt, baseCommit, plan.title);
+    const { sha } = commitWorktreeChanges(wt, baseCommit, planPublishTitle(plan));
 
     const pushArgs = workBranch
       ? ["push", "--force-with-lease", "-u", "origin", wt.branch]
@@ -554,13 +555,13 @@ export async function executePlan(
       });
     }
     writeStepState({ step_name: "vcs_publish", status: "completed", started_at: vcsStart, finished_at: new Date().toISOString() });
-    await markRoadmapStepDone(projectPath, plan.title, sha);
+    await markRoadmapStepDone(projectPath, planRoadmapHint(plan, plan.goal), sha);
     await refreshRoadmapIfExhausted(projectPath, cfg, { force: true, autoPlan: true });
 
     const durationSec = Math.round((Date.now() - start) / 1000);
     await appendLesson(
       projectPath,
-      `execute:ok "${plan.title}" -> ${branch} / ${durationSec}s${vcs.prUrl ? ` / ${vcs.prUrl}` : ""}`,
+      `execute:ok "${planDisplayTitle(plan)}" -> ${branch} / ${durationSec}s${vcs.prUrl ? ` / ${vcs.prUrl}` : ""}`,
     );
 
     removeWorktree(projectPath, wt, true, { keepBranch: Boolean(workBranch) });
@@ -587,7 +588,7 @@ export async function executePlan(
       costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
       tokenUsage: sdkCost.usage,
     });
-    await appendLesson(projectPath, `execute:failed "${plan.title}" x ${err.slice(0, 120)}`);
+    await appendLesson(projectPath, `execute:failed "${planDisplayTitle(plan)}" x ${err.slice(0, 120)}`);
     // Mark any running steps as failed so no step stays in "running" forever
     if (jobId) {
       const now = new Date().toISOString();
