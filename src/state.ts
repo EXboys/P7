@@ -287,6 +287,11 @@ export function initDb(projectPath: string): Database {
   } catch {
     /* exists */
   }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN goal TEXT");
+  } catch {
+    /* exists */
+  }
 
   migrateFromJsonIfNeeded(db, projectPath);
   dbCache.set(projectPath, db);
@@ -449,12 +454,12 @@ export function countQueuedPlans(projectPath: string): number {
 
 export function writeSdkCost(
   projectPath: string,
-  params: { planId?: string; role: string; model?: string; costUsd: number; usage?: SdkTokenUsage },
+  params: { planId?: string; role: string; model?: string; costUsd: number; usage?: SdkTokenUsage; goal?: string },
 ): void {
   const db = initDb(projectPath);
   const stmt = db.prepare(`
-    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)
-    VALUES ($plan_id, $role, $model, $cost_usd, $created_at, $input_tokens, $output_tokens, $cache_read_input_tokens, $cache_creation_input_tokens)
+    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, goal)
+    VALUES ($plan_id, $role, $model, $cost_usd, $created_at, $input_tokens, $output_tokens, $cache_read_input_tokens, $cache_creation_input_tokens, $goal)
   `);
   withBusyRetry(() => {
     stmt.run({
@@ -467,8 +472,21 @@ export function writeSdkCost(
       $output_tokens: params.usage?.outputTokens ?? null,
       $cache_read_input_tokens: params.usage?.cacheReadInputTokens ?? null,
       $cache_creation_input_tokens: params.usage?.cacheCreationInputTokens ?? null,
+      $goal: params.goal ?? null,
     });
   });
+}
+
+/**
+ * 查询指定 goal 下所有 plan（含所有状态）的累计成本。
+ * 涵盖 failed / merged / pushed 等全部状态的记录，用于 goal 维度预算熔断判断。
+ */
+export function getGoalCostSum(projectPath: string, goal: string): number {
+  const db = initDb(projectPath);
+  const row = db
+    .query(`SELECT COALESCE(SUM(cost_usd), 0) AS total FROM plan_states WHERE goal = $goal`)
+    .get({ $goal: goal }) as { total: number } | undefined;
+  return row?.total ?? 0;
 }
 
 /** 写入 diff-critic 检测结果到 plan_states.diff_critic_findings */
