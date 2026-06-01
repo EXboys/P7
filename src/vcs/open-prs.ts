@@ -1,12 +1,13 @@
 function ghRun(
   cwd: string,
   args: string[],
+  env?: Record<string, string>,
 ): { ok: boolean; out: string } {
   const proc = Bun.spawnSync(args, {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: process.env,
+    env: env ? { ...process.env, ...env } : process.env,
   });
   const stdout = new TextDecoder().decode(proc.stdout).trim();
   const stderr = new TextDecoder().decode(proc.stderr).trim();
@@ -25,7 +26,7 @@ export type OpenPr = {
 
 export function listOpenPullRequests(
   projectPath: string,
-  opts?: { label?: string; limit?: number },
+  opts?: { label?: string; limit?: number; ghEnv?: Record<string, string> },
 ): OpenPr[] {
   const limit = opts?.limit ?? 30;
   const args = [
@@ -42,7 +43,7 @@ export function listOpenPullRequests(
   if (opts?.label) {
     args.push("--label", opts.label);
   }
-  const r = ghRun(projectPath, args);
+  const r = ghRun(projectPath, args, opts?.ghEnv);
   if (!r.ok) return [];
   try {
     const rows = JSON.parse(r.out) as Array<{

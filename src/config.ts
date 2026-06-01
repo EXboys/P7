@@ -62,6 +62,10 @@ export const DevAgentConfigSchema = z.object({
       account_pick_mode: z.enum(["round_robin", "all"]).default("round_robin"),
       /** 轮询模式下当前账号失败时尝试下一个 */
       account_failover: z.boolean().default(true),
+      /** Review / approve / squash merge 专用主账号（与开 PR 的 accounts 分离） */
+      review_merge_auth_type: z.enum(["gh", "token_env"]).default("gh"),
+      review_merge_token_env: z.string().optional(),
+      review_merge_gh_host: z.string().default("github.com"),
       accounts: z
         .array(
           z.object({
@@ -98,6 +102,8 @@ export const DevAgentConfigSchema = z.object({
       labels: ["p7"],
       account_pick_mode: "round_robin",
       account_failover: true,
+      review_merge_auth_type: "gh",
+      review_merge_gh_host: "github.com",
       accounts: [],
     }),
   discovery: z
@@ -181,6 +187,8 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         account_pick_mode: "round_robin",
         account_failover: true,
         accounts: [],
+        review_merge_auth_type: "gh",
+        review_merge_gh_host: "github.com",
       },
       discovery: {
         enabled: true,

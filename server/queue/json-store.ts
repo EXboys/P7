@@ -145,6 +145,10 @@ export function listAllJobs(limit = 200): JobRow[] {
     .slice(0, limit);
 }
 
+export function listAllJobsUnbounded(): JobRow[] {
+  return loadAll().sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
 export function countTodayJobs(): number {
   const day = new Date().toISOString().slice(0, 10);
   return loadAll().filter((r) => r.created_at.startsWith(day)).length;

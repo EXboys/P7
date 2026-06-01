@@ -1,4 +1,5 @@
 import type { DevAgentConfig } from "../../src/config.ts";
+import { reviewMergeGhEnv } from "../../src/vcs/gh-env.ts";
 import { listOpenPullRequests } from "../../src/vcs/open-prs.ts";
 import type { JobRow } from "./types.ts";
 
@@ -17,13 +18,14 @@ function minutesSince(iso: string): number {
 
 function countOpenPrs(projectPath: string, dc: DevAgentConfig): number {
   const vcs = dc.vcs;
+  const ghEnv = reviewMergeGhEnv(vcs);
   const label =
     vcs.pr_review_only_p7_label !== false && vcs.labels.length > 0
       ? vcs.labels[0]
       : undefined;
-  let prs = listOpenPullRequests(projectPath, { label, limit: 30 });
+  let prs = listOpenPullRequests(projectPath, { label, limit: 30, ghEnv });
   if (prs.length === 0 && label) {
-    prs = listOpenPullRequests(projectPath, { limit: 30 });
+    prs = listOpenPullRequests(projectPath, { limit: 30, ghEnv });
   }
   return prs.length;
 }

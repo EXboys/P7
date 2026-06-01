@@ -5,7 +5,9 @@ import { join } from "path";
 import type { ServerConfig } from "./config.ts";
 import { saveServerConfig, writeClaudeSettings } from "./config.ts";
 import { audit } from "./audit.ts";
-import { listJobsForProject, listAllJobs, enqueueJob, sumTodayJobCostUsd, sumMonthJobCostUsd } from "./queue/store.ts";
+import { queryAuditLogs } from "./audit-log.ts";
+import { listJobsForProject, listAllJobs, listAllJobsUnbounded, enqueueJob, sumTodayJobCostUsd, sumMonthJobCostUsd } from "./queue/store.ts";
+import { paginateJobRows } from "./job-query.ts";
 import { listPlanStates, preparePlanExecuteRetry } from "../src/state.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
 import {
@@ -60,6 +62,9 @@ import {
   parseJobResultCost,
   renderReviewPage,
   projectShell,
+  pageTabs,
+  renderAuditLogPage,
+  renderJobsPage,
   discoverToolbar,
   renderTrendsPage,
   resolveProject,
@@ -73,9 +78,11 @@ function applyVcsConfigFromBody(
   dc: DevAgentConfig,
   body: Record<string, string>,
 ): string | null {
-  if (body.vcs_mode === "default_gh") {
+  const addId = String(body.add_account_id ?? "").trim();
+  const useCustom = body.vcs_mode === "custom" || !!addId;
+  if (!useCustom) {
     dc.vcs.accounts = [];
-  } else if (body.vcs_mode === "custom") {
+  } else {
     const accRaw = String(body.vcs_accounts_json ?? "").trim();
     if (accRaw) {
       try {
@@ -84,7 +91,6 @@ function applyVcsConfigFromBody(
         return "VCS JSON 格式错误";
       }
     }
-    const addId = String(body.add_account_id ?? "").trim();
     if (addId) {
       const entry = {
         id: addId,
@@ -147,6 +153,14 @@ function applyVcsConfigFromBody(
   if (body.vcs_account_failover !== undefined) {
     dc.vcs.account_failover = body.vcs_account_failover === "1";
   }
+  const rmAuth = String(body.vcs_review_merge_auth_type ?? "").trim();
+  if (rmAuth === "gh" || rmAuth === "token_env") {
+    dc.vcs.review_merge_auth_type = rmAuth;
+  }
+  const rmToken = String(body.vcs_review_merge_token_env ?? "").trim();
+  dc.vcs.review_merge_token_env = rmToken || undefined;
+  const rmHost = String(body.vcs_review_merge_gh_host ?? "").trim();
+  if (rmHost) dc.vcs.review_merge_gh_host = rmHost;
   return null;
 }
 
@@ -188,40 +202,47 @@ ${liveAuth && hostPills ? `<div class="host-pills">${hostPills}</div>` : liveAut
 
 <div class="gh-section">
 <h3>用哪个 GitHub 账号发 PR？</h3>
-<p class="section-hint">执行器 push 代码后用 gh 创建 PR。不填多账号时，自动用本机默认登录。</p>
+<p class="section-hint">单账号用本机 gh；多账号可配置 bot / PAT 并轮询开 PR。</p>
+<div class="vcs-mode-wrap">
 <div class="mode-cards">
 <label class="mode-card">
 <input type="radio" name="vcs_mode" value="default_gh" ${defaultGh ? "checked" : ""}/>
-<span class="mode-title">本机 gh 默认账号</span>
-<span class="mode-desc">推荐。终端执行 gh auth login 一次即可。</span>
+<span class="mode-title">单账号（本机 gh 默认）</span>
+<span class="mode-desc">推荐。终端执行 <code>gh auth login</code> 一次即可。</span>
 </label>
 <label class="mode-card">
 <input type="radio" name="vcs_mode" value="custom" ${!defaultGh ? "checked" : ""}/>
-<span class="mode-title">自定义多账号</span>
-<span class="mode-desc">组织机器人、PAT 环境变量等多身份推送。</span>
+<span class="mode-title">多账号（自定义）</span>
+<span class="mode-desc">组织机器人、PAT 环境变量；可轮询每次 1 账号开 PR。</span>
 </label>
 </div>
-<div id="vcs-custom" class="gh-advanced-wrap" style="${defaultGh ? "display:none" : ""}">
-<details class="gh-advanced" ${!defaultGh ? "open" : ""}>
-<summary>多账号配置（${dc.vcs.accounts.length} 个）</summary>
-${accountRows ? `<div class="tbl-wrap" style="margin-bottom:14px"><table><thead><tr><th>ID</th><th>鉴权</th><th>Host</th><th>Token 变量</th></tr></thead><tbody>${accountRows}</tbody></table></div>` : `<p class="muted">暂无账号，可在下方添加。</p>`}
+<div class="vcs-single-only gh-single-note">
+<p>当前模式：<strong>单账号</strong>。Push / 开 PR 均使用本机 <code>gh</code> 默认登录身份。</p>
+</div>
+<div class="vcs-multi-only">
+<div class="gh-accounts-section" style="margin-top:16px;padding:16px;border:1px solid var(--line);border-radius:var(--radius)">
+<h3 style="margin-top:0">多账号列表</h3>
+${accountRows ? `<div class="tbl-wrap" style="margin-bottom:16px"><table><thead><tr><th>ID</th><th>鉴权</th><th>Host</th><th>Token 变量</th></tr></thead><tbody>${accountRows}</tbody></table></div>` : `<p class="muted" style="margin:0 0 16px">暂无账号，在下方添加。</p>`}
+<div class="gh-add-box">
+<div class="gh-add-title">➕ 新增 / 更新账号</div>
 <div class="row">
 <div><label>账号 ID</label><input name="add_account_id" placeholder="org-bot"/></div>
-<div><label>鉴权</label><select name="add_account_auth_type"><option value="gh">gh 登录</option><option value="token_env">PAT 环境变量</option></select></div>
+<div><label>鉴权方式</label><select name="add_account_auth_type"><option value="gh">gh 登录（本机已 gh auth login）</option><option value="token_env">PAT 环境变量</option></select></div>
 </div>
 <div class="row">
 <div><label>Host</label><input name="add_account_gh_host" value="github.com"/></div>
-<div><label>Token 环境变量</label><input name="add_account_token_env" placeholder="GH_TOKEN_ORG"/></div>
+<div><label>Token 环境变量名</label><input name="add_account_token_env" placeholder="GH_TOKEN_ORG（PAT 模式必填）"/></div>
 </div>
-<label>JSON（高级编辑）</label>
-<textarea name="vcs_accounts_json" rows="4" style="font-family:ui-monospace,monospace;font-size:12px">${esc(JSON.stringify(dc.vcs.accounts, null, 2))}</textarea>
+<p class="section-hint muted" style="margin:0">PAT 模式：在运行 P7 的终端里 <code>export GH_TOKEN_ORG=ghp_xxx</code>，再保存。</p>
+</div>
+<details class="gh-advanced" style="margin-top:16px">
+<summary>JSON 高级编辑（${dc.vcs.accounts.length} 个账号）</summary>
+<textarea name="vcs_accounts_json" rows="5" style="font-family:ui-monospace,monospace;font-size:12px;margin-top:10px;width:100%">${esc(JSON.stringify(dc.vcs.accounts, null, 2))}</textarea>
 </details>
 </div>
-</div>
-
-<div class="gh-section">
+<div class="gh-section" style="margin-top:0">
 <h3>多账号 PR 策略</h3>
-<p class="section-hint">配置多个 GitHub 账号时，控制每次 Plan 交付用哪个身份开 PR。</p>
+<p class="section-hint">控制每次 Plan 交付用哪个身份开 PR。</p>
 <div class="toggle-grid">
 <div class="toggle-item"><span>账号选择</span><select name="vcs_account_pick_mode">
 <option value="round_robin" ${(dc.vcs.account_pick_mode ?? "round_robin") === "round_robin" ? "selected" : ""}>轮询（每次 1 账号 · 1 PR）</option>
@@ -229,13 +250,29 @@ ${accountRows ? `<div class="tbl-wrap" style="margin-bottom:14px"><table><thead>
 </select></div>
 <div class="toggle-item"><span>失败换下一个账号</span><select name="vcs_account_failover">${yesNo(dc.vcs.account_failover !== false)}</select></div>
 </div>
-<p class="section-hint muted" style="margin-top:8px">轮询模式共用同一条 push 分支，按顺序轮换 bot；仅当「自定义多账号」且 accounts 非空时生效。默认账号模式始终单 PR。</p>
+<p class="section-hint muted" style="margin-top:8px">轮询模式共用同一条 push 分支，按顺序轮换 bot。</p>
+</div>
+</div>
+</div>
 </div>
 
 <div class="gh-section">
 <h3>交付行为</h3>
 <p class="section-hint">Plan 执行成功并 push 分支后的自动化动作。</p>
-<div class="row" style="margin-bottom:12px">
+<div class="gh-review-merge-box">
+<h4>Review / Merge 主账号</h4>
+<p class="section-hint">子账号 / bot 开 PR 后，<strong>approve 与 squash merge 固定用此身份</strong>（避免 bot 自审自并）。开 PR 仍走上方多账号轮询。</p>
+<div class="row">
+<div><label>主账号鉴权</label><select name="vcs_review_merge_auth_type">
+<option value="gh" ${(dc.vcs.review_merge_auth_type ?? "gh") === "gh" ? "selected" : ""}>本机 gh 登录（主号 gh auth login）</option>
+<option value="token_env" ${dc.vcs.review_merge_auth_type === "token_env" ? "selected" : ""}>PAT 环境变量</option>
+</select></div>
+<div><label>主账号 Token 变量</label><input name="vcs_review_merge_token_env" value="${esc(dc.vcs.review_merge_token_env ?? "")}" placeholder="GH_TOKEN_MAIN"/></div>
+<div><label>Host</label><input name="vcs_review_merge_gh_host" value="${esc(dc.vcs.review_merge_gh_host ?? "github.com")}"/></div>
+</div>
+<p class="section-hint muted" style="margin:0">PAT 模式：<code>export GH_TOKEN_MAIN=ghp_xxx</code>（主号需有 approve + merge 权限）。主号也可加入上方多账号列表用于开 PR。</p>
+</div>
+<div class="row" style="margin-bottom:12px;margin-top:16px">
 <div><label>合并到分支</label><input name="vcs_base_branch" value="${esc(dc.vcs.base_branch ?? "")}" placeholder="main（留空用默认）"/></div>
 <div><label>固定工作分支</label><input name="vcs_work_branch" value="${esc(dc.vcs.work_branch ?? "")}" placeholder="p7/dev（留空则每次新建分支）"/></div>
 <div><label>PR 标签</label><input name="vcs_labels" value="${esc(dc.vcs.labels.join(", "))}" placeholder="p7"/></div>
@@ -271,22 +308,6 @@ ${accountRows ? `<div class="tbl-wrap" style="margin-bottom:14px"><table><thead>
 <span class="hint">保存后写入项目 <code>.p7/config.json</code>，下次执行 Plan 时生效。</span>
 <button type="submit" class="btn ok">保存 GitHub 设置</button>
 </div>
-<script>
-(function(){
-  const radios=document.querySelectorAll('input[name="vcs_mode"]');
-  const box=document.getElementById('vcs-custom');
-  function sync(){
-    const custom=[...radios].find(r=>r.value==='custom'&&r.checked);
-    if(box)box.style.display=custom?'block':'none';
-    document.querySelectorAll('.mode-card').forEach(card=>{
-      const inp=card.querySelector('input[type=radio]');
-      if(inp)card.style.borderColor=inp.checked?'var(--accent)':'';
-    });
-  }
-  radios.forEach(r=>r.addEventListener('change',sync));
-  sync();
-})();
-</script>
 </form>`;
 }
 
@@ -558,14 +579,18 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
 <h2 style="margin-top:24px">历史 Plan</h2>
 <div class="tbl-wrap"><table><thead><tr><th>ID</th><th>状态</th><th>标题</th></tr></thead><tbody>${planned || `<tr><td colspan="3" class="empty">无</td></tr>`}</tbody></table></div>`;
     }
+    const sectionDesc =
+      section === "plans"
+        ? "生成 Plan、审批待办与历史记录。"
+        : "查看与重新生成 Roadmap。";
+    body = `${pageTabs(alias, "plan", section)}${body}`;
     const html = projectShell(cfg, alias, "plan", {
       title: "规划",
-      description: "Roadmap 定方向，Plan 定本次改什么，你审批后才执行。",
+      description: sectionDesc,
       body,
       flash,
       toolbar: planToolbar(alias, section),
       pipelineDone: 3,
-      section,
     });
     return c.html(html ?? "not found", html ? 200 : 404);
   });
@@ -576,6 +601,9 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     const proj = resolveProject(cfg, alias);
     if (!proj) return c.text("not found", 404);
     const flash = c.req.query("flash");
+    const sectionRaw = c.req.query("section");
+    const section =
+      sectionRaw === "delivery" || sectionRaw === "jobs" ? sectionRaw : "executions";
     const states = existsSync(proj.path) ? listPlanStates(proj.path, 40) : [];
     const jobs = listJobsForProject(alias, 30);
     const todayCost = sumTodayJobCostUsd(alias);
@@ -640,23 +668,31 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
 <td class="muted">${esc((j.error ?? "").slice(0, 50))}</td></tr>`;
       })
       .join("");
-    const body = `
-<div class="cards" style="margin-bottom:20px">
+    const metricsHtml = `<div class="cards" style="margin-bottom:20px">
 ${metricCard(formatUsd(todayCost), "今日消耗", todayCost >= dailyCap * 0.8 ? "warn" : undefined)}
 ${metricCard(formatUsd(monthCost.total), "本月累计", undefined)}
 ${metricCard(String(monthCost.jobs), "本月计费任务")}
 ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
-</div>
-<p class="muted" style="margin-bottom:14px">模型费用来自 Claude SDK 返回的 <code>total_cost_usd</code> 与 token 统计；仅新执行会记录，历史任务显示 —。PR 复查请前往侧栏 <a href="/project/${encodeURIComponent(alias)}/review"><strong>Review</strong></a>。</p>
-<div class="panel"><h2>执行记录</h2>
-<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="8" class="empty">暂无</td></tr>`}</tbody></table></div></div>
-<div class="panel"><h2>PR / 交付</h2>
-<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>链接</th><th>合并</th></tr></thead><tbody>${prRows || `<tr><td colspan="4" class="empty">尚无 PR</td></tr>`}</tbody></table></div></div>
-<div class="panel"><h2>后台任务</h2><p class="muted">队列任务；运行中时长随页面刷新更新。</p>
+</div>`;
+    const hintHtml = `<p class="muted" style="margin-bottom:14px">模型费用来自 Claude SDK 返回的 <code>total_cost_usd</code> 与 token 统计；仅新执行会记录，历史任务显示 —。PR 复查请前往侧栏 <a href="/project/${encodeURIComponent(alias)}/review"><strong>Review</strong></a>。</p>`;
+    const executionsPanel = `<div class="panel"><h2>执行记录</h2>
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="8" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
+    const deliveryPanel = `<div class="panel"><h2>PR / 交付</h2>
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>链接</th><th>合并</th></tr></thead><tbody>${prRows || `<tr><td colspan="4" class="empty">尚无 PR</td></tr>`}</tbody></table></div></div>`;
+    const jobsPanel = `<div class="panel"><h2>后台任务</h2><p class="muted">队列任务；运行中时长随页面刷新更新。</p>
 <div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>错误</th></tr></thead><tbody>${jobRows || `<tr><td colspan="7" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
+    const sectionPanel =
+      section === "delivery" ? deliveryPanel : section === "jobs" ? jobsPanel : executionsPanel;
+    const sectionDesc =
+      section === "delivery"
+        ? "已创建的 Pull Request 与合并状态。"
+        : section === "jobs"
+          ? "discover / execute / pr-review 等队列任务。"
+          : "Plan 执行进度、耗时与成本。";
+    const body = `${metricsHtml}${pageTabs(alias, "run", section)}${hintHtml}${sectionPanel}`;
     const html = projectShell(cfg, alias, "run", {
       title: "运行与交付",
-      description: "执行进度、队列任务、已创建的 PR。",
+      description: sectionDesc,
       body,
       flash,
       pipelineDone: 4,
@@ -902,16 +938,26 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
 
   app.get("/jobs", (c) => {
     const cfg = getCfg();
-    const rows = listAllJobs(200)
-      .map(
-        (j) =>
-          `<tr><td><a href="/jobs/${encodeURIComponent(j.id)}/log">${esc(j.id)}</a></td><td><a href="/project/${encodeURIComponent(j.project_alias)}/run">${esc(j.project_alias)}</a></td><td>${esc(jobKindLabel(j.kind))}</td><td>${jobStatusBadge(j.status)}</td><td class="muted">${esc(j.created_at)}</td><td class="muted">${esc((j.error ?? "").slice(0, 80))}</td></tr>`,
-      )
-      .join("");
+    const page = Math.max(1, Number(c.req.query("page")) || 1);
+    const perPage = Math.min(100, Math.max(10, Number(c.req.query("per_page")) || 20));
+    const alias = c.req.query("alias")?.trim() || undefined;
+    const status = c.req.query("status")?.trim() || undefined;
+    const kind = c.req.query("kind")?.trim() || undefined;
+    const result = paginateJobRows(listAllJobsUnbounded(), { page, perPage, alias, status, kind });
     return c.html(
       layout({
         title: "任务队列",
-        body: `<table><tr><th>ID</th><th>项目</th><th>类型</th><th>状态</th><th>创建</th><th>错误</th></tr>${rows || `<tr><td colspan="6" class="muted">暂无</td></tr>`}</table>`,
+        description: "后台 discover / execute / pr-review 等任务；支持筛选与分页。",
+        body: renderJobsPage({
+          jobs: result.jobs,
+          total: result.total,
+          page: result.page,
+          perPage: result.perPage,
+          totalPages: result.totalPages,
+          aliasFilter: alias,
+          statusFilter: status,
+          kindFilter: kind,
+        }),
         systemPage: "/jobs",
         cfg,
       }),
@@ -1384,11 +1430,30 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
   app.get("/logs", (c) => {
     const cfg = getCfg();
     const logPath = join(resolveP7HomeDir(), "server.log");
-    const tail = existsSync(logPath)
-      ? readFileSync(logPath, "utf-8").split("\n").slice(-300).join("\n")
-      : "(empty)";
+    const page = Math.max(1, Number(c.req.query("page")) || 1);
+    const perPage = Math.min(200, Math.max(10, Number(c.req.query("per_page")) || 20));
+    const event = c.req.query("event")?.trim() || undefined;
+    const alias = c.req.query("alias")?.trim() || undefined;
+    const q = c.req.query("q")?.trim() || undefined;
+    const result = queryAuditLogs(logPath, { page, perPage, event, alias, q });
     return c.html(
-      layout({ title: "审计日志", body: `<pre>${esc(tail)}</pre>`, systemPage: "/logs", cfg }),
+      layout({
+        title: "审计日志",
+        description: "调度、任务、审批等后台事件；支持筛选与分页。",
+        body: renderAuditLogPage({
+          entries: result.entries,
+          total: result.total,
+          page: result.page,
+          perPage: result.perPage,
+          totalPages: result.totalPages,
+          logPath,
+          eventFilter: event,
+          aliasFilter: alias,
+          qFilter: q,
+        }),
+        systemPage: "/logs",
+        cfg,
+      }),
     );
   });
 

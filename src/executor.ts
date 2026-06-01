@@ -12,7 +12,7 @@ import {
   formatExecuteRetryPromptBlock,
   loadPreviousExecuteFailureContext,
 } from "./execute-retry-context.ts";
-import { transitionPlanState } from "./state.ts";
+import { transitionPlanState, updatePlanDiffCriticFindings } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
 import { runPrReviewAndMerge } from "./vcs/pr-lifecycle.ts";
@@ -453,9 +453,10 @@ export async function executePlan(
       // This ensures full findings are queryable via PlanState, not truncated in error field.
       if (planId) {
         try {
+          updatePlanDiffCriticFindings(projectPath, planId, critic.findings);
           transitionPlanState(projectPath, planId, "failed", {
             error: brief,
-            findings: critic.findings,
+            diffCriticFindings: critic.findings,
           });
         } catch {
           /* non-critical if persist fails */
@@ -469,8 +470,9 @@ export async function executePlan(
     // 与阻断路径统一使用 transitionPlanState，使 findings 可被 Review 控制台和后继门禁逻辑消费
     if (planId) {
       try {
+        updatePlanDiffCriticFindings(projectPath, planId, critic.findings);
         transitionPlanState(projectPath, planId, "executing", {
-          findings: critic.findings,
+          diffCriticFindings: critic.findings,
         });
       } catch {
         /* non-critical if persist fails */

@@ -10,6 +10,7 @@ import {
   transitionPlanState,
   upsertPlanState,
   preparePlanExecuteRetry,
+  updatePlanDiffCriticFindings,
 } from "../src/state.ts";
 
 function setupWithJsonState(): string {
@@ -121,6 +122,27 @@ describe("PlanState SQLite", () => {
       expect(ok?.error).toBeUndefined();
       expect(getPlanState(root, "fail-1")?.error).toBeUndefined();
       expect(preparePlanExecuteRetry(root, "fail-1")).toBeNull();
+    } finally {
+      closeDb(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("updatePlanDiffCriticFindings writes diff_critic_findings column", () => {
+    const root = join(tmpdir(), `p7-state-dc-${Date.now()}`);
+    try {
+      upsertPlanState(root, {
+        planId: "dc-1",
+        projectPath: root,
+        goal: "g",
+        title: "DC",
+        status: "executing",
+        createdAt: new Date().toISOString(),
+      });
+      updatePlanDiffCriticFindings(root, "dc-1", "FINDINGS:\n- [blocker] test\nOK: false");
+      const s = getPlanState(root, "dc-1");
+      expect(s?.diffCriticFindings).toContain("[blocker]");
+      expect(s?.findings).toBeUndefined();
     } finally {
       closeDb(root);
       rmSync(root, { recursive: true, force: true });

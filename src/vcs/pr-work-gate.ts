@@ -1,5 +1,6 @@
 import type { DevAgentConfig } from "../config.ts";
 import { listOpenPullRequests, type OpenPr } from "./open-prs.ts";
+import { reviewMergeGhEnv } from "./gh-env.ts";
 
 function prNeedsResolution(pr: OpenPr): boolean {
   return (
@@ -10,13 +11,14 @@ function prNeedsResolution(pr: OpenPr): boolean {
 }
 
 function listCandidateOpenPrs(projectPath: string, vcs: DevAgentConfig["vcs"]): OpenPr[] {
+  const ghEnv = reviewMergeGhEnv(vcs);
   const label =
     vcs.pr_review_only_p7_label !== false && vcs.labels.length > 0
       ? vcs.labels[0]
       : undefined;
-  let prs = listOpenPullRequests(projectPath, { label, limit: 30 });
+  let prs = listOpenPullRequests(projectPath, { label, limit: 30, ghEnv });
   if (prs.length === 0 && label) {
-    prs = listOpenPullRequests(projectPath, { limit: 30 });
+    prs = listOpenPullRequests(projectPath, { limit: 30, ghEnv });
   }
   return prs;
 }

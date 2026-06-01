@@ -126,6 +126,22 @@ label{display:block;margin:14px 0 6px;color:var(--mut);font-size:12px;font-weigh
 .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);padding:16px;overflow:auto;font-size:12px;line-height:1.55;max-height:min(60vh,520px);margin:0}
 .muted{color:var(--mut);font-size:13px}
+.audit-toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:16px;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--elev)}
+.audit-toolbar label{margin:0 0 6px;font-size:11px}
+.audit-toolbar .field{min-width:140px;flex:1}
+.audit-toolbar .field.narrow{max-width:120px;flex:0 1 120px}
+.audit-event{font-family:ui-monospace,monospace;font-size:12px;font-weight:600}
+.audit-detail{font-size:12px;color:var(--mut);line-height:1.45;word-break:break-word}
+.audit-detail code{font-size:11px;color:var(--fg)}
+.audit-detail summary{cursor:pointer;color:var(--accent);font-size:11px;user-select:none}
+.audit-detail pre{margin:8px 0 0;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font-size:11px;max-height:160px;overflow:auto}
+.pager{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding:12px 16px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
+.pager-info{font-size:13px;color:var(--mut)}
+.pager-links{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pager-links .btn.disabled{opacity:.45;pointer-events:none}
+.pager-num{min-width:36px;padding:6px 10px;font-size:12px;font-weight:600;text-align:center}
+.pager-num.active{background:var(--accent);color:#fff;border-radius:8px}
+.audit-meta{font-size:12px;color:var(--mut);margin-bottom:14px}
 .flash{background:rgba(91,141,239,.12);border:1px solid rgba(91,141,239,.35);color:var(--fg);padding:12px 16px;border-radius:var(--radius);margin-bottom:18px;font-size:13px}
 .flash.ok{background:rgba(62,207,142,.12);border-color:rgba(62,207,142,.45)}
 .busy-banner{position:fixed;top:0;left:0;right:0;z-index:9999;display:flex;align-items:center;justify-content:center;gap:12px;padding:14px 20px;background:rgba(12,16,28,.95);border-bottom:1px solid rgba(91,141,239,.5);color:var(--fg);font-size:14px;transform:translateY(-100%);transition:transform .2s;pointer-events:none}
@@ -150,6 +166,19 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--radius
 .mode-card input{position:absolute;left:16px;top:18px;accent-color:var(--accent);width:16px;height:16px}
 .mode-card .mode-title{display:block;font-weight:600;font-size:14px;margin-bottom:4px}
 .mode-card .mode-desc{display:block;font-size:12px;color:var(--mut);line-height:1.4}
+.gh-accounts-section{border-color:rgba(91,141,239,.35)}
+.gh-add-box{padding:16px;border:2px solid var(--accent);border-radius:var(--radius);background:rgba(91,141,239,.08)}
+.gh-add-title{font-size:15px;font-weight:700;margin:0 0 14px;color:var(--fg)}
+.gh-add-box .row{margin-bottom:12px}
+.gh-add-box .row:last-of-type{margin-bottom:8px}
+.vcs-mode-wrap .vcs-multi-only{display:none;flex-direction:column;gap:16px;margin-top:16px}
+.vcs-mode-wrap:has(input[name="vcs_mode"][value="custom"]:checked) .vcs-multi-only{display:flex}
+.vcs-mode-wrap:has(input[name="vcs_mode"][value="custom"]:checked) .vcs-single-only{display:none}
+.gh-single-note{margin-top:16px;padding:14px 16px;border-radius:var(--radius);border:1px solid var(--line);background:var(--surface2);font-size:13px;line-height:1.5}
+.gh-single-note p{margin:0}
+.gh-review-merge-box{margin-bottom:4px;padding:16px;border:2px solid rgba(62,207,142,.45);border-radius:var(--radius);background:rgba(62,207,142,.06)}
+.gh-review-merge-box h4{margin:0 0 8px;font-size:14px;font-weight:700}
+.gh-review-merge-box .row{margin-bottom:0}
 .gh-advanced{margin-top:4px;padding-top:16px;border-top:1px solid var(--line)}
 .gh-advanced summary{cursor:pointer;font-size:13px;font-weight:500;color:var(--mut);list-style:none;padding:4px 0}
 .gh-advanced summary::-webkit-details-marker{display:none}
@@ -348,15 +377,7 @@ const PIPELINE: {
 }[] = [
   { tab: "overview", label: "工作台", icon: "overview" },
   { tab: "trends", label: "趋势", icon: "trends" },
-  {
-    tab: "plan",
-    label: "规划",
-    icon: "plan",
-    subs: [
-      { id: "roadmap", label: "Roadmap" },
-      { id: "plans", label: "Plan 审批" },
-    ],
-  },
+  { tab: "plan", label: "规划", icon: "plan" },
   { tab: "run", label: "运行", icon: "run" },
   { tab: "review", label: "Review", icon: "review" },
   {
@@ -1196,6 +1217,36 @@ ${cfg && projectAlias ? projectNav(projectAlias, opts.projectTab, opts.section) 
   return `${head}${scroll}<div class="sidebar-foot">${systemNav(opts.systemPage)}</div>`;
 }
 
+/** 内容区横向 Tab（规划 / 运行页等） */
+export function pageTabs(
+  alias: string,
+  page: "plan" | "run",
+  active: string,
+): string {
+  const base = `/project/${encodeURIComponent(alias)}/${page}`;
+  const items =
+    page === "plan"
+      ? [
+          { id: "roadmap", label: "Roadmap" },
+          { id: "plans", label: "Plan 审批" },
+        ]
+      : page === "run"
+        ? [
+            { id: "executions", label: "执行记录" },
+            { id: "delivery", label: "PR / 交付" },
+            { id: "jobs", label: "后台任务" },
+          ]
+        : [];
+  const aria =
+    page === "plan" ? "规划页分类" : page === "run" ? "运行页分类" : "页面分类";
+  return `<nav class="subnav" aria-label="${aria}">${items
+    .map(
+      (i) =>
+        `<a href="${base}?section=${esc(i.id)}" class="${active === i.id ? "active" : ""}">${esc(i.label)}</a>`,
+    )
+    .join("")}</nav>`;
+}
+
 /** 子页面 Tab（规划/设置内）— 侧栏已有时可省略，保留给无侧栏场景 */
 export function subnav(alias: string, section: "plan" | "settings", active: string): string {
   return "";
@@ -1477,4 +1528,239 @@ ${themePills}
   });
 })();
 </script>`;
+}
+
+function auditEventBadgeClass(event: string): string {
+  if (/failed|error|parse_error|rejected/.test(event)) return "fail";
+  if (/done|save|approve|merged|started|enqueued/.test(event)) return "ok";
+  if (/skipped|cooldown|orphan|reclaimed/.test(event)) return "idle";
+  return "run";
+}
+
+function auditDetailSummary(detail: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const pick = (k: string) => {
+    const v = detail[k];
+    if (v === undefined || v === null || v === "") return;
+    parts.push(`<code>${esc(k)}</code>=${esc(String(v).slice(0, 120))}`);
+  };
+  for (const k of ["alias", "kind", "id", "planId", "reason", "error", "openPrs"]) pick(k);
+  if (parts.length === 0) {
+    const keys = Object.keys(detail);
+    if (keys.length === 0) return "—";
+    return keys
+      .slice(0, 4)
+      .map((k) => `<code>${esc(k)}</code>=${esc(String(detail[k]).slice(0, 48))}`)
+      .join(" · ");
+  }
+  return parts.join(" · ");
+}
+
+function logsPageUrl(params: {
+  page?: number;
+  event?: string;
+  alias?: string;
+  q?: string;
+  perPage?: number;
+}): string {
+  const sp = new URLSearchParams();
+  if (params.page && params.page > 1) sp.set("page", String(params.page));
+  if (params.event) sp.set("event", params.event);
+  if (params.alias) sp.set("alias", params.alias);
+  if (params.q) sp.set("q", params.q);
+  if (params.perPage && params.perPage !== 20) sp.set("per_page", String(params.perPage));
+  const qs = sp.toString();
+  return qs ? `/logs?${qs}` : "/logs";
+}
+
+function renderPagerBar(opts: {
+  page: number;
+  totalPages: number;
+  total: number;
+  hrefForPage: (page: number) => string;
+  ariaLabel: string;
+}): string {
+  const { page, totalPages, total, hrefForPage, ariaLabel } = opts;
+  const prev =
+    page > 1
+      ? `<a class="btn ghost sm" href="${esc(hrefForPage(page - 1))}">上一页</a>`
+      : `<span class="btn ghost sm disabled">上一页</span>`;
+  const next =
+    page < totalPages
+      ? `<a class="btn ghost sm" href="${esc(hrefForPage(page + 1))}">下一页</a>`
+      : `<span class="btn ghost sm disabled">下一页</span>`;
+
+  const window = 5;
+  let start = Math.max(1, page - Math.floor(window / 2));
+  const end = Math.min(totalPages, start + window - 1);
+  start = Math.max(1, end - window + 1);
+  const nums: string[] = [];
+  for (let p = start; p <= end; p++) {
+    nums.push(
+      p === page
+        ? `<span class="pager-num active">${p}</span>`
+        : `<a class="pager-num btn ghost sm" href="${esc(hrefForPage(p))}">${p}</a>`,
+    );
+  }
+
+  return `<nav class="pager" aria-label="${esc(ariaLabel)}">
+<span class="pager-info">共 ${total} 条 · 第 ${page} / ${totalPages} 页</span>
+<div class="pager-links">${prev}${nums.join("")}${next}</div>
+</nav>`;
+}
+
+export function renderAuditLogPage(opts: {
+  entries: Array<{ at: string; event: string; detail: Record<string, unknown> }>;
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
+  logPath: string;
+  eventFilter?: string;
+  aliasFilter?: string;
+  qFilter?: string;
+}): string {
+  const { entries, total, page, perPage, totalPages, logPath, eventFilter, aliasFilter, qFilter } =
+    opts;
+  const rows = entries
+    .map((e) => {
+      const when = e.at ? formatDateTime(e.at) : "—";
+      const badge = auditEventBadgeClass(e.event);
+      const detailJson = esc(JSON.stringify(e.detail, null, 2));
+      return `<tr>
+<td class="muted" style="white-space:nowrap">${esc(when)}</td>
+<td><span class="badge ${badge} audit-event">${esc(e.event)}</span></td>
+<td class="audit-detail">${auditDetailSummary(e.detail)}${
+        Object.keys(e.detail).length > 0
+          ? `<details style="margin-top:6px"><summary>完整 JSON</summary><pre>${detailJson}</pre></details>`
+          : ""
+      }</td>
+</tr>`;
+    })
+    .join("");
+
+  const filterForm = `<form class="audit-toolbar" method="get" action="/logs">
+<div class="field"><label>事件</label><input name="event" value="${esc(eventFilter ?? "")}" placeholder="scheduler / job.done"/></div>
+<div class="field narrow"><label>项目</label><input name="alias" value="${esc(aliasFilter ?? "")}" placeholder="p7"/></div>
+<div class="field"><label>搜索</label><input name="q" value="${esc(qFilter ?? "")}" placeholder="关键词"/></div>
+<input type="hidden" name="per_page" value="${perPage}"/>
+<button type="submit" class="btn sm">筛选</button>
+<a class="btn ghost sm" href="/logs">重置</a>
+</form>`;
+
+  const table = `<div class="tbl-wrap"><table><thead><tr><th style="width:160px">时间</th><th style="width:200px">事件</th><th>详情</th></tr></thead><tbody>${
+    rows || `<tr><td colspan="3" class="empty">无匹配记录</td></tr>`
+  }</tbody></table></div>`;
+
+  return `${filterForm}
+<p class="audit-meta">来源 <code>${esc(logPath)}</code> · 最新在前 · 每页 ${perPage} 条</p>
+${table}
+${renderPagerBar({
+  page,
+  totalPages,
+  total,
+  ariaLabel: "审计日志分页",
+  hrefForPage: (p) => logsPageUrl({ page: p, event: eventFilter, alias: aliasFilter, q: qFilter, perPage }),
+})}`;
+}
+
+function jobsPageUrl(params: {
+  page?: number;
+  alias?: string;
+  status?: string;
+  kind?: string;
+  perPage?: number;
+}): string {
+  const sp = new URLSearchParams();
+  if (params.page && params.page > 1) sp.set("page", String(params.page));
+  if (params.alias) sp.set("alias", params.alias);
+  if (params.status) sp.set("status", params.status);
+  if (params.kind) sp.set("kind", params.kind);
+  if (params.perPage && params.perPage !== 20) sp.set("per_page", String(params.perPage));
+  const qs = sp.toString();
+  return qs ? `/jobs?${qs}` : "/jobs";
+}
+
+const JOB_KIND_OPTIONS = [
+  "discover-daily",
+  "daily",
+  "execute",
+  "pr-review",
+  "plan",
+  "quickfix",
+  "initialize",
+] as const;
+
+const JOB_STATUS_OPTIONS = ["pending", "running", "done", "failed"] as const;
+
+export function renderJobsPage(opts: {
+  jobs: Array<{
+    id: string;
+    project_alias: string;
+    kind: string;
+    status: string;
+    created_at: string;
+    error: string | null;
+  }>;
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
+  aliasFilter?: string;
+  statusFilter?: string;
+  kindFilter?: string;
+}): string {
+  const { jobs, total, page, perPage, totalPages, aliasFilter, statusFilter, kindFilter } = opts;
+  const kindOpts = JOB_KIND_OPTIONS.map(
+    (k) =>
+      `<option value="${k}"${kindFilter === k ? " selected" : ""}>${esc(jobKindLabel(k))}</option>`,
+  ).join("");
+  const statusOpts = JOB_STATUS_OPTIONS.map(
+    (s) => `<option value="${s}"${statusFilter === s ? " selected" : ""}>${esc(s)}</option>`,
+  ).join("");
+
+  const rows = jobs
+    .map(
+      (j) =>
+        `<tr>
+<td><a href="/jobs/${encodeURIComponent(j.id)}/log"><code style="font-size:11px">${esc(j.id.slice(0, 14))}…</code></a></td>
+<td><a href="/project/${encodeURIComponent(j.project_alias)}/run?section=jobs">${esc(j.project_alias)}</a></td>
+<td>${esc(jobKindLabel(j.kind))}</td>
+<td>${jobStatusBadge(j.status)}</td>
+<td class="muted">${esc(formatDateTime(j.created_at))}</td>
+<td class="muted">${esc((j.error ?? "").slice(0, 80)) || "—"}</td>
+</tr>`,
+    )
+    .join("");
+
+  const filterForm = `<form class="audit-toolbar" method="get" action="/jobs">
+<div class="field narrow"><label>项目</label><input name="alias" value="${esc(aliasFilter ?? "")}" placeholder="p7"/></div>
+<div class="field narrow"><label>状态</label><select name="status"><option value="">全部</option>${statusOpts}</select></div>
+<div class="field"><label>类型</label><select name="kind"><option value="">全部</option>${kindOpts}</select></div>
+<input type="hidden" name="per_page" value="${perPage}"/>
+<button type="submit" class="btn sm">筛选</button>
+<a class="btn ghost sm" href="/jobs">重置</a>
+</form>`;
+
+  const table = `<div class="tbl-wrap"><table><thead><tr><th>任务 ID</th><th>项目</th><th>类型</th><th>状态</th><th>创建时间</th><th>错误</th></tr></thead><tbody>${
+    rows || `<tr><td colspan="6" class="empty">暂无任务</td></tr>`
+  }</tbody></table></div>`;
+
+  return `${filterForm}
+<p class="audit-meta">最新在前 · 每页 ${perPage} 条 · 点击 ID 查看日志</p>
+${table}
+${renderPagerBar({
+  page,
+  totalPages,
+  total,
+  ariaLabel: "任务队列分页",
+  hrefForPage: (p) =>
+    jobsPageUrl({
+      page: p,
+      alias: aliasFilter,
+      status: statusFilter,
+      kind: kindFilter,
+      perPage,
+    }),
+})}`;
 }
