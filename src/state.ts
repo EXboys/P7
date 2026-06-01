@@ -5,6 +5,21 @@ import { legacyProjectDir, p7ProjectDir, projectDataDirForRead } from "./p7-path
 import type { PlanState, PlanStateStatus, VcsAccountPublishResult } from "./types.ts";
 import type { SdkTokenUsage } from "./sdk-cost.ts";
 
+/** 按 goal 维度归因的成本明细 */
+export interface GoalCostBreakdown {
+  goal: string;
+  totalCostUsd: number;
+  planCount: number;
+}
+
+/** 成本汇总：今日总额、本月总额、查询次数、按 goal 归因 */
+export interface CostSummary {
+  todayTotalUsd: number;
+  monthTotalUsd: number;
+  todayQueryCount: number;
+  byGoal: GoalCostBreakdown[];
+}
+
 export type BackpressureEventType =
   | "degradation"
   | "retry_backoff"
@@ -543,4 +558,40 @@ export function recordBackpressureEvent(
       $plan_id: planId,
     });
   });
+}
+
+/** 查询今日/本月成本汇总，含按 goal 维度的归因 */
+export function queryDailyCostSummary(projectPath: string): CostSummary {
+  const db = initDb(projectPath);
+  const today = new Date().toISOString().slice(0, 10);
+  const monthStart = new Date().toISOString().slice(0, 7) + "-01";
+
+  const todayRow = db
+    .query(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS total, COUNT(*) AS cnt FROM sdk_costs WHERE created_at >= $today`,
+    )
+    .get({ $today: today }) as { total: number; cnt: number } | undefined;
+
+  const monthRow = db
+    .query(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS total FROM sdk_costs WHERE created_at >= $month_start`,
+    )
+    .get({ $month_start: monthStart }) as { total: number } | undefined;
+
+  const byGoalRows = db
+    .query(
+      `SELECT goal, COALESCE(SUM(cost_usd), 0) AS total, COUNT(*) AS cnt FROM plan_states WHERE cost_usd > 0 GROUP BY goal ORDER BY total DESC`,
+    )
+    .all() as { goal: string; total: number; cnt: number }[];
+
+  return {
+    todayTotalUsd: todayRow?.total ?? 0,
+    monthTotalUsd: monthRow?.total ?? 0,
+    todayQueryCount: todayRow?.cnt ?? 0,
+    byGoal: byGoalRows.map((r) => ({
+      goal: r.goal,
+      totalCostUsd: r.total,
+      planCount: r.cnt,
+    })),
+  };
 }
