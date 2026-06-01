@@ -33,7 +33,7 @@ describe("hallucination diff fixtures", () => {
     for (const category of HALLUCINATION_CATEGORIES) {
       expect(seen.has(category)).toBe(true);
     }
-    expect(HALLUCINATION_FIXTURES.length).toBe(24);
+    expect(HALLUCINATION_FIXTURES.length).toBe(26);
   });
 
   test("covers security-jailbreak category with at least one fixture", () => {
