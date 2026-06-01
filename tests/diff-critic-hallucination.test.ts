@@ -25,7 +25,7 @@ describe("hallucination diff fixtures", () => {
     }
   });
 
-  test("covers all three hallucination categories with at least one fixture each", () => {
+  test("covers all hallucination categories with at least one fixture each", () => {
     const seen = new Set<HallucinationCategory>();
     for (const fixture of HALLUCINATION_FIXTURES) {
       seen.add(fixture.category);
@@ -33,7 +33,26 @@ describe("hallucination diff fixtures", () => {
     for (const category of HALLUCINATION_CATEGORIES) {
       expect(seen.has(category)).toBe(true);
     }
-    expect(HALLUCINATION_FIXTURES.length).toBe(17);
+    expect(HALLUCINATION_FIXTURES.length).toBe(22);
+  });
+
+  test("covers security-jailbreak category with at least one fixture", () => {
+    const jailbreakFixtures = HALLUCINATION_FIXTURES.filter(
+      (f) => f.category === "security-jailbreak",
+    );
+    expect(jailbreakFixtures.length).toBeGreaterThanOrEqual(1);
+    for (const fixture of jailbreakFixtures) {
+      expect(fixture.hallucinationPattern).toBe("security-jailbreak");
+    }
+  });
+
+  test("hallucinationPattern field is non-empty string when present", () => {
+    const withPattern = HALLUCINATION_FIXTURES.filter((f) => f.hallucinationPattern !== undefined);
+    expect(withPattern.length).toBeGreaterThanOrEqual(4);
+    for (const fixture of withPattern) {
+      expect(typeof fixture.hallucinationPattern).toBe("string");
+      expect(fixture.hallucinationPattern!.length).toBeGreaterThan(0);
+    }
   });
 
   test("each category has at least 5 fixtures", () => {
