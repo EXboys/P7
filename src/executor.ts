@@ -347,6 +347,9 @@ export async function executePlan(
 
   await executorSemaphore.acquire();
 
+  const deniedOps: string[] = [];
+  let permissionFindings = "";
+
   try {
     if (
       scanRemote?.includes("github.com") &&
@@ -430,7 +433,10 @@ export async function executePlan(
           : "";
 
       const toolTrace = emptyToolTrace();
-      const onDeny = (reason: string) => appendExecuteToolLog(`hook deny ${reason}`);
+      const onDeny = (reason: string) => {
+        deniedOps.push(reason);
+        appendExecuteToolLog(`hook deny ${reason}`);
+      };
 
       const runOnce = async () => {
         const result = await runSdkQuery({
@@ -495,6 +501,17 @@ export async function executePlan(
         await Bun.sleep(cfg.execution_retry.pass_retry_delay_ms);
         resetWorktree(wt!.path);
       }
+    }
+
+    // ── Permission violations gate ──
+    if (deniedOps.length > 0) {
+      permissionFindings = `Permission violations detected during execution:\n${deniedOps.map((r) => `- ${r}`).join("\n")}`;
+      if (planId) {
+        transitionPlanState(projectPath, planId, "failed", {
+          error: permissionFindings,
+        });
+      }
+      throw new Error(permissionFindings);
     }
 
     if (stats.files === 0) {
@@ -687,6 +704,7 @@ export async function executePlan(
     if (planId) {
       transitionPlanState(projectPath, planId, "failed", {
         error: err,
+        ...(permissionFindings ? { findings: permissionFindings } : {}),
         costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
         tokenUsage: sdkCost.usage,
       });
