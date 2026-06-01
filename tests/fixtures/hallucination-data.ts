@@ -577,6 +577,70 @@ export const userSchema = z.object({ name: z.string() });
 +}`,
     expectedBlockers: [],
   },
+  // --- Negative: wrong-type-signature (type-correct refactoring) ---
+  {
+    id: "wrong-type-signature-negative-valid-refactor",
+    category: "wrong-type-signature",
+    description: "Valid refactoring that preserves type annotations — should NOT be flagged",
+    isNegative: true,
+    setupFiles: {
+      "src/math.ts": `export function double(x: number): number {
+  return x * 2;
+}
+`,
+    },
+    diffStat: ` src/math.ts | 3 +++
+@@ -1,3 +1,6 @@
+ export function double(x: number): number {
+   return x * 2;
+ }
++export function quadruple(x: number): number {
++  return double(double(x));
++}`,
+    expectedBlockers: [],
+  },
+  // --- Nonexistent API: Math.sum() ---
+  {
+    id: "nonexistent-api-math-sum",
+    category: "nonexistent-api",
+    description: "Call Math.sum() which does not exist in JavaScript standard library",
+    setupFiles: {
+      "src/average.ts": `export function computeAvg(a: number, b: number): number {
+  return (a + b) / 2;
+}
+`,
+    },
+    diffStat: ` src/average.ts | 2 +++
+@@ -1,3 +1,5 @@
+ export function computeAvg(a: number, b: number): number {
+   return (a + b) / 2;
+ }
++export function avgList(arr: number[]): number {
++  return Math.sum(arr) / arr.length;
++}`,
+    expectedBlockers: ["Math.sum"],
+  },
+  // --- Fictional import: @nestjs/websocket ---
+  {
+    id: "fictional-import-nestjs-websocket",
+    category: "fictional-import",
+    description: "Import fictional npm package @nestjs/websocket",
+    setupFiles: {
+      "src/gateway.ts": `import { Controller } from "@nestjs/common";
+
+export class AppController {}
+`,
+    },
+    diffStat: ` src/gateway.ts | 3 +++
+@@ -1,3 +1,6 @@
+ import { Controller } from "@nestjs/common";
++import { WebSocketGateway } from "@nestjs/websocket";
+
+ export class AppController {}
++@WebSocketGateway()
++export class AppGateway {}`,
+    expectedBlockers: ["@nestjs/websocket"],
+  },
 ];
 
 export const HALLUCINATION_CATEGORIES: HallucinationCategory[] = [

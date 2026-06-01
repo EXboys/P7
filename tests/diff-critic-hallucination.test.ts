@@ -33,7 +33,7 @@ describe("hallucination diff fixtures", () => {
     for (const category of HALLUCINATION_CATEGORIES) {
       expect(seen.has(category)).toBe(true);
     }
-    expect(HALLUCINATION_FIXTURES.length).toBe(26);
+    expect(HALLUCINATION_FIXTURES.length).toBe(29);
   });
 
   test("covers security-jailbreak category with at least one fixture", () => {
@@ -92,6 +92,20 @@ describe("hallucination diff fixtures", () => {
         fixture.diffStat,
       );
       expect(suspicious).toBe(false);
+    }
+  });
+
+  test("fictional-import / nonexistent-api / wrong-type-signature each cover at least 1 negative fixture", () => {
+    const targetCategories: HallucinationCategory[] = [
+      "fictional-import",
+      "nonexistent-api",
+      "wrong-type-signature",
+    ];
+    for (const category of targetCategories) {
+      const negatives = HALLUCINATION_FIXTURES.filter(
+        (f) => f.category === category && f.isNegative === true,
+      );
+      expect(negatives.length).toBeGreaterThanOrEqual(1);
     }
   });
 });
