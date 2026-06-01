@@ -7,6 +7,7 @@ import {
 import { getPlanState } from "../src/state.ts";
 import { detectPipelineStall } from "../src/pipeline-stall.ts";
 import { loadConfig } from "../src/config.ts";
+import { planDisplayTitle } from "../src/plan-i18n.ts";
 import { listJobsForProject } from "./queue/store.ts";
 import type { JobRow } from "./queue/types.ts";
 
@@ -72,7 +73,7 @@ export function getProjectActivity(
       : new Date(state.updatedAt).getTime() + FAILED_RETRY_COOLDOWN_MS;
     failedPlan = {
       planId: rec.planId,
-      title: state.title ?? rec.plan.title,
+      title: state.title ?? planDisplayTitle(rec.plan),
       error: state.error ?? "执行失败",
       canRetryNow,
       retryAtMs,

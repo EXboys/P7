@@ -2,6 +2,12 @@ import type { ServerConfig } from "./config.ts";
 import type { ProjectActivity } from "./project-activity.ts";
 import { getProjectActivity } from "./project-activity.ts";
 import type { PlanDetailView } from "../src/plan-detail.ts";
+import {
+  planDisplayChangeDescription,
+  planDisplayMotivation,
+  planDisplayRisks,
+  planDisplayTitle,
+} from "../src/plan-i18n.ts";
 import type { PipelineCheckItem } from "../src/pipeline-check.ts";
 import { pipelineReady } from "../src/pipeline-check.ts";
 import type { SdkTokenUsage } from "../src/sdk-cost.ts";
@@ -964,7 +970,7 @@ export function renderPlanDetailPage(alias: string, detail: PlanDetailView): str
   const planId = detail.planId;
   const st = detail.state;
   const p = detail.plan;
-  const title = st?.title ?? p?.title ?? `Plan ${planId}`;
+  const title = st?.title ?? (p ? planDisplayTitle(p) : undefined) ?? `Plan ${planId}`;
 
   const statRow = p
     ? `<div class="plan-stat-row">
@@ -980,7 +986,7 @@ ${planStatChip(p.validation, "验证")}
     const items = p.changes
       .map(
         (ch) =>
-          `<li class="change-item"><div class="change-head"><code class="change-path">${esc(ch.file)}</code><span class="change-lines">${esc(String(ch.estimated_lines))} 行</span></div><p class="change-desc">${esc(ch.description)}</p></li>`,
+          `<li class="change-item"><div class="change-head"><code class="change-path">${esc(ch.file)}</code><span class="change-lines">${esc(String(ch.estimated_lines))} 行</span></div><p class="change-desc">${esc(planDisplayChangeDescription(ch))}</p></li>`,
       )
       .join("");
     changesBlock = `<section class="plan-section"><h2>变更清单 <span class="muted" style="font-weight:500;font-size:12px">共 ${p.changes.length} 项</span></h2><ul class="change-list">${items}</ul></section>`;
@@ -989,15 +995,16 @@ ${planStatChip(p.validation, "验证")}
   }
 
   const motivationBlock = p?.motivation
-    ? `<section class="plan-section"><h2>动机</h2><p class="plan-motivation">${esc(p.motivation)}</p></section>`
+    ? `<section class="plan-section"><h2>动机</h2><p class="plan-motivation">${esc(planDisplayMotivation(p))}</p></section>`
     : "";
 
+  const displayRisks = p ? planDisplayRisks(p) : [];
   const risksBlock = p
     ? `<section class="plan-section"><h2>风险 ${
-        p.risks.length > 0 ? `<span class="muted" style="font-weight:500;font-size:12px">${p.risks.length} 条</span>` : ""
+        displayRisks.length > 0 ? `<span class="muted" style="font-weight:500;font-size:12px">${displayRisks.length} 条</span>` : ""
       }</h2>${
-        p.risks.length > 0
-          ? `<div class="risk-pills">${p.risks.map((r) => `<span class="risk-pill">${esc(r)}</span>`).join("")}</div>`
+        displayRisks.length > 0
+          ? `<div class="risk-pills">${displayRisks.map((r) => `<span class="risk-pill">${esc(r)}</span>`).join("")}</div>`
           : `<p class="risk-none">未标注风险</p>`
       }</section>`
     : "";

@@ -9,6 +9,7 @@ import { appendLesson } from "./agent-memory.ts";
 import { countQueuedPlans, recordBackpressureEvent, upsertPlanState } from "./state.ts";
 import { processAutoApprovals, savePendingApproval } from "./approval.ts";
 import { loadConfig } from "./config.ts";
+import { planDisplayTitle } from "./plan-i18n.ts";
 import { PlanSchema, type Plan, type PlanRecord, type ProjectScan } from "./types.ts";
 import { getHeadCommit } from "./worktree.ts";
 
@@ -151,7 +152,7 @@ export async function generatePlan(
       planId: record.planId,
       projectPath,
       goal,
-      title: p.title,
+      title: planDisplayTitle(p),
       status: "planned",
       createdAt: record.createdAt,
     });
@@ -223,7 +224,7 @@ export function recordFailedPlan(
     join(dir, `${Date.now()}.json`),
     JSON.stringify({
       planId: plan.planId,
-      title: plan.title,
+      title: planDisplayTitle(plan),
       reason,
       failedAt: new Date().toISOString(),
     }),

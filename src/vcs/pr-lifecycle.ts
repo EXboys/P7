@@ -5,6 +5,7 @@ import { readPrompt, runSdkQuery } from "../sdk.ts";
 import { getPlanState } from "../state.ts";
 import { parseFindings } from "../diff-critic.ts";
 import type { Plan } from "../types.ts";
+import { planDisplayTitle } from "../plan-i18n.ts";
 import { defaultBaseBranch } from "../worktree.ts";
 import { reviewMergeGhEnv, reviewMergeTokenMissing } from "./gh-env.ts";
 import type { VcsPublishResult } from "./types.ts";
@@ -145,7 +146,7 @@ async function resolveConflictsLocally(
 
   const status = git(projectPath, ["status", "--porcelain"]);
   await runSdkQuery({
-    prompt: `解决当前仓库合并冲突并纳入 ${baseBranch}。\n\nPlan：${plan.title}\n\ngit status:\n${status.out}`,
+    prompt: `解决当前仓库合并冲突并纳入 ${baseBranch}。\n\nPlan：${planDisplayTitle(plan)}\n\ngit status:\n${status.out}`,
     cwd: projectPath,
     systemPrompt: readPrompt("merge-conflict.md"),
     role: "executor",

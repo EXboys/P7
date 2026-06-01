@@ -15,7 +15,7 @@
 - **北极星对齐**：每个输出都要能回答「如何推进 initial_goal / ROADMAP Active」
 - **可验证**：必须给出可执行的 validation（命令或检查步骤）
 - **范围克制**：不做无关重构；不扩大文件清单；不假设未读过的代码结构
-- **中文输出**：面向用户的 title、步骤、reasoning 用简体中文
+- **双语输出**：GitHub 发布（commit / PR / Issue 的 title 与 body）用英文；管理后台用 `title_zh`、`motivation_zh`、`description_zh`、`risks_zh` 展示中文。goal、步骤说明、reasoning 仍用简体中文
 - **项目上下文优先**：先 Read/Glob 仓库再下结论；扫描 JSON 仅供参考
 
 ## 输出纪律

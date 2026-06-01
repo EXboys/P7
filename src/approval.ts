@@ -3,6 +3,7 @@ import { join } from "path";
 import { projectSubpathForRead, projectSubpathForWrite } from "./p7-paths.ts";
 import type { DevAgentConfig } from "./config.ts";
 import { countQueuedPlans, getPlanState, preparePlanExecuteRetry, transitionPlanState, upsertPlanState } from "./state.ts";
+import { planDisplayTitle } from "./plan-i18n.ts";
 import { recommendRoadmapGoal } from "./roadmap.ts";
 import { listJobsForProject } from "../server/queue/store.ts";
 import type { ApprovalRecord, Plan, PlanRecord, PlanState } from "./types.ts";
@@ -35,7 +36,7 @@ export function savePendingApproval(
     planId: planRecord.planId,
     projectPath,
     goal: planRecord.goal,
-    title: planRecord.plan.title,
+    title: planDisplayTitle(planRecord.plan),
     status: "pending_approval",
     createdAt: planRecord.createdAt,
   });
@@ -234,7 +235,8 @@ export function pickNextApprovedPlanForExecution(
   const roadmapGoal = recommendRoadmapGoal(projectPath);
   if (roadmapGoal) {
     const aligned = candidates.find((r) =>
-      titleMatchesRoadmapGoal(r.plan.title, roadmapGoal),
+      titleMatchesRoadmapGoal(planDisplayTitle(r.plan), roadmapGoal) ||
+      titleMatchesRoadmapGoal(r.goal, roadmapGoal),
     );
     if (aligned) return aligned;
   }
