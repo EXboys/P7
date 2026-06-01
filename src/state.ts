@@ -405,13 +405,109 @@ export function getPlanState(projectPath: string, planId: string): PlanState | n
   return row ? rowToPlanState(row) : null;
 }
 
-export function listPlanStates(projectPath: string, limit = 50): PlanState[] {
+export function listPlanStates(projectPath: string, limit = 50, offset = 0): PlanState[] {
   const db = initDb(projectPath);
   const rows = db
     .query(
-      `SELECT * FROM plan_states ORDER BY updated_at DESC LIMIT $limit`,
+      `SELECT * FROM plan_states ORDER BY updated_at DESC LIMIT $limit OFFSET $offset`,
     )
-    .all({ $limit: limit }) as Record<string, unknown>[];
+    .all({ $limit: limit, $offset: offset }) as Record<string, unknown>[];
+  return rows.map(rowToPlanState);
+}
+
+export function countPlanStates(projectPath: string): number {
+  const db = initDb(projectPath);
+  const row = db.query(`SELECT COUNT(*) AS c FROM plan_states`).get() as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
+function statusFilterSql(statuses: PlanStateStatus[]): string {
+  const allowed = statuses.filter((s) => STATUS_VALUES.includes(s));
+  if (allowed.length === 0) return "1 = 0";
+  return `status IN (${allowed.map((s) => `'${s}'`).join(", ")})`;
+}
+
+export function countPlanStatesByStatuses(
+  projectPath: string,
+  statuses: PlanStateStatus[],
+): number {
+  const db = initDb(projectPath);
+  const row = db
+    .query(`SELECT COUNT(*) AS c FROM plan_states WHERE ${statusFilterSql(statuses)}`)
+    .get() as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
+export function listPlanStatesByStatuses(
+  projectPath: string,
+  statuses: PlanStateStatus[],
+  limit = 50,
+  offset = 0,
+): PlanState[] {
+  const db = initDb(projectPath);
+  const rows = db
+    .query(
+      `SELECT * FROM plan_states
+       WHERE ${statusFilterSql(statuses)}
+       ORDER BY updated_at DESC
+       LIMIT $limit OFFSET $offset`,
+    )
+    .all({ $limit: limit, $offset: offset }) as Record<string, unknown>[];
+  return rows.map(rowToPlanState);
+}
+
+export function countPlanStatesWithPr(projectPath: string): number {
+  const db = initDb(projectPath);
+  const row = db
+    .query(`SELECT COUNT(*) AS c FROM plan_states WHERE pr_url IS NOT NULL AND pr_url != ''`)
+    .get() as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
+export function listPlanStatesWithPr(
+  projectPath: string,
+  limit = 50,
+  offset = 0,
+): PlanState[] {
+  const db = initDb(projectPath);
+  const rows = db
+    .query(
+      `SELECT * FROM plan_states
+       WHERE pr_url IS NOT NULL AND pr_url != ''
+       ORDER BY updated_at DESC
+       LIMIT $limit OFFSET $offset`,
+    )
+    .all({ $limit: limit, $offset: offset }) as Record<string, unknown>[];
+  return rows.map(rowToPlanState);
+}
+
+export function countPlanStatesWithDelivery(projectPath: string): number {
+  const db = initDb(projectPath);
+  const row = db
+    .query(
+      `SELECT COUNT(*) AS c FROM plan_states
+       WHERE (pr_url IS NOT NULL AND pr_url != '')
+          OR (issue_url IS NOT NULL AND issue_url != '')`,
+    )
+    .get() as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
+export function listPlanStatesWithDelivery(
+  projectPath: string,
+  limit = 50,
+  offset = 0,
+): PlanState[] {
+  const db = initDb(projectPath);
+  const rows = db
+    .query(
+      `SELECT * FROM plan_states
+       WHERE (pr_url IS NOT NULL AND pr_url != '')
+          OR (issue_url IS NOT NULL AND issue_url != '')
+       ORDER BY updated_at DESC
+       LIMIT $limit OFFSET $offset`,
+    )
+    .all({ $limit: limit, $offset: offset }) as Record<string, unknown>[];
   return rows.map(rowToPlanState);
 }
 

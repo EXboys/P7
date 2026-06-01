@@ -4,9 +4,15 @@ import { join } from "path";
 import { tmpdir } from "os";
 import {
   closeDb,
+  countPlanStatesByStatuses,
+  countPlanStatesWithDelivery,
+  countPlanStatesWithPr,
   dbPath,
   getPlanState,
   listPlanStates,
+  listPlanStatesByStatuses,
+  listPlanStatesWithDelivery,
+  listPlanStatesWithPr,
   transitionPlanState,
   upsertPlanState,
   preparePlanExecuteRetry,
@@ -76,6 +82,49 @@ describe("PlanState SQLite", () => {
       const list = listPlanStates(root, 10);
       expect(list[0]?.planId).toBe("b");
       expect(list.length).toBe(2);
+    } finally {
+      closeDb(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("lists plan states with PR using limit and offset", () => {
+    const root = join(tmpdir(), `p7-state-pr-page-${Date.now()}`);
+    try {
+      for (let i = 1; i <= 3; i++) {
+        upsertPlanState(root, {
+          planId: `pr-${i}`,
+          projectPath: root,
+          goal: "g",
+          title: `PR ${i}`,
+          status: "pr_opened",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: `2026-01-0${i}T00:00:00.000Z`,
+          prUrl: `https://github.com/example/pr/${i}`,
+        });
+      }
+      upsertPlanState(root, {
+        planId: "no-pr",
+        projectPath: root,
+        goal: "g",
+        title: "No PR",
+        status: "planned",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-04T00:00:00.000Z",
+      });
+
+      expect(countPlanStatesWithPr(root)).toBe(3);
+      expect(listPlanStatesWithPr(root, 2).map((s) => s.planId)).toEqual(["pr-3", "pr-2"]);
+      expect(listPlanStatesWithPr(root, 2, 2).map((s) => s.planId)).toEqual(["pr-1"]);
+      expect(countPlanStatesWithDelivery(root)).toBe(3);
+      expect(countPlanStatesByStatuses(root, ["pr_opened"])).toBe(3);
+      expect(listPlanStatesByStatuses(root, ["pr_opened"], 1, 1).map((s) => s.planId)).toEqual([
+        "pr-2",
+      ]);
+      expect(listPlanStatesWithDelivery(root, 2, 1).map((s) => s.planId)).toEqual([
+        "pr-2",
+        "pr-1",
+      ]);
     } finally {
       closeDb(root);
       rmSync(root, { recursive: true, force: true });

@@ -5,13 +5,14 @@ import { tmpdir } from "os";
 import {
   abandonStuckApprovedPlan,
   decideApproval,
+  getApprovalRecord,
   listApprovedForExecution,
   savePendingApproval,
   sweepStuckApprovedPlans,
 } from "../src/approval.ts";
 import { planGoalMatchesRoadmapDone } from "../src/roadmap.ts";
 import type { PlanRecord } from "../src/types.ts";
-import { upsertPlanState } from "../src/state.ts";
+import { getPlanState, upsertPlanState } from "../src/state.ts";
 
 function setupProject(roadmap: string): string {
   const root = join(tmpdir(), `p7-stuck-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -115,6 +116,44 @@ describe("stuck approved plans", () => {
         goal: samplePlan.goal,
       });
       expect(reason).toBe("stale-roadmap-goal");
+      expect(listApprovedForExecution(root)).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("abandon delivered approved plan preserves delivered plan state", () => {
+    const root = setupProject(`# Roadmap
+## Active
+- [x] Shipped task
+
+## Done
+`);
+    try {
+      samplePlan.projectPath = root;
+      samplePlan.goal = "Shipped task";
+      savePendingApproval(root, samplePlan);
+      decideApproval(root, samplePlan.planId, "approved", "test");
+      upsertPlanState(root, {
+        planId: samplePlan.planId,
+        projectPath: root,
+        goal: samplePlan.goal,
+        title: "Shipped",
+        status: "pr_opened",
+        createdAt: samplePlan.createdAt,
+        prUrl: "https://github.com/example/pr/123",
+        mergeStatus: "merged",
+      });
+
+      const reason = abandonStuckApprovedPlan(root, samplePlan.planId, {
+        projectAlias: "demo",
+        goal: samplePlan.goal,
+      });
+      expect(reason).toBe("plan-already-delivered");
+      expect(getApprovalRecord(root, samplePlan.planId)?.status).toBe("rejected");
+      expect(getApprovalRecord(root, samplePlan.planId)?.decidedBy).toBe("plan-already-delivered");
+      expect(getPlanState(root, samplePlan.planId)?.status).toBe("pr_opened");
+      expect(getPlanState(root, samplePlan.planId)?.mergeStatus).toBe("merged");
       expect(listApprovedForExecution(root)).toHaveLength(0);
     } finally {
       rmSync(root, { recursive: true, force: true });

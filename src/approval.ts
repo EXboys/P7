@@ -50,6 +50,12 @@ export function getApprovalRecord(projectPath: string, planId: string): Approval
   return JSON.parse(readFileSync(path, "utf-8")) as ApprovalRecord;
 }
 
+function writeApprovalRecord(projectPath: string, record: ApprovalRecord): void {
+  const dir = projectSubpathForWrite(projectPath, "approvals");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(approvalFilePath(projectPath, record.planId, true), JSON.stringify(record, null, 2));
+}
+
 export function listPendingApprovals(projectPath: string): ApprovalRecord[] {
   const dir = approvalsDir(projectPath);
   if (!existsSync(dir)) return [];
@@ -70,9 +76,7 @@ export function decideApproval(
   record.status = status;
   record.decidedAt = new Date().toISOString();
   record.decidedBy = decidedBy;
-  const dir = projectSubpathForWrite(projectPath, "approvals");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(approvalFilePath(projectPath, planId, true), JSON.stringify(record, null, 2));
+  writeApprovalRecord(projectPath, record);
   transitionPlanState(projectPath, planId, status === "approved" ? "approved" : "rejected");
   return record;
 }
@@ -236,6 +240,13 @@ export function abandonApprovedPlan(
 ): boolean {
   const approval = getApprovalRecord(projectPath, planId);
   if (!approval || approval.status !== "approved") return false;
+  if (decidedBy === "plan-already-delivered") {
+    approval.status = "rejected";
+    approval.decidedAt = new Date().toISOString();
+    approval.decidedBy = decidedBy;
+    writeApprovalRecord(projectPath, approval);
+    return true;
+  }
   decideApproval(projectPath, planId, "rejected", decidedBy);
   return true;
 }
@@ -252,7 +263,10 @@ export function abandonStuckApprovedPlan(
   const state = getPlanState(projectPath, planId);
   if (
     state &&
-    (state.status === "merged" || state.status === "pr_opened" || state.status === "pushed")
+    (state.status === "merged" ||
+      state.status === "pr_opened" ||
+      state.status === "pushed" ||
+      state.mergeStatus === "merged")
   ) {
     if (abandonApprovedPlan(projectPath, planId, "plan-already-delivered")) {
       return "plan-already-delivered";

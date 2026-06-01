@@ -4,9 +4,10 @@ import {
   isRoadmapExhausted,
   loadRoadmap,
 } from "./roadmap.ts";
-import { listApprovedForExecution, listPendingApprovals, sweepStuckApprovedPlans } from "./approval.ts";
-import { countQueuedPlans } from "./state.ts";
+import { getApprovalRecord, listApprovedForExecution, listPendingApprovals, sweepStuckApprovedPlans } from "./approval.ts";
+import { countQueuedPlans, getPlanState } from "./state.ts";
 import { listJobsForProject } from "../server/queue/store.ts";
+import type { JobRow } from "../server/queue/types.ts";
 
 export const PIPELINE_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
 
@@ -49,23 +50,68 @@ export function detectPipelineStall(
   };
 }
 
-export function hasRecentPipelineRecovery(
+const RECOVERY_DELIVERED_STATUSES = new Set(["merged", "pr_opened", "pushed"]);
+const RECOVERY_CLEANUP_REASONS = new Set([
+  "plan-already-delivered",
+  "roadmap-already-done",
+  "stale-roadmap-goal",
+]);
+
+function parseRecoveryPlanId(job: JobRow): string | null {
+  if (!job.result_json) return null;
+  try {
+    const outer = JSON.parse(job.result_json) as { raw?: string };
+    const raw = outer.raw ?? job.result_json;
+    const inner = JSON.parse(String(raw).trim()) as { planId?: string };
+    return inner.planId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 最近一次 stall 恢复仍在冷却中；已成功交付的恢复不再阻塞下一轮。 */
+export function pipelineRecoveryCooldownRemainingMs(
   projectAlias: string,
+  projectPath?: string,
   cooldownMs = PIPELINE_RECOVERY_COOLDOWN_MS,
-): boolean {
+): number {
   const cutoff = Date.now() - cooldownMs;
   for (const job of listJobsForProject(projectAlias, 40)) {
     if (job.kind !== "discover-daily") continue;
     if (job.status === "failed") continue;
-    if (new Date(job.created_at).getTime() < cutoff) continue;
+    const jobTime = new Date(job.created_at).getTime();
+    if (jobTime < cutoff) continue;
     try {
       const payload = JSON.parse(job.payload) as { recoverStall?: boolean };
-      if (payload.recoverStall) return true;
+      if (!payload.recoverStall) continue;
+      if (projectPath) {
+        const planId = parseRecoveryPlanId(job);
+        if (planId) {
+          const approval = getApprovalRecord(projectPath, planId);
+          if (approval?.decidedBy && RECOVERY_CLEANUP_REASONS.has(approval.decidedBy)) continue;
+          const state = getPlanState(projectPath, planId);
+          if (
+            state &&
+            (RECOVERY_DELIVERED_STATUSES.has(state.status) || state.mergeStatus === "merged")
+          ) {
+            continue;
+          }
+        }
+      }
+      return Math.max(0, jobTime + cooldownMs - Date.now());
     } catch {
       /* ignore */
     }
   }
-  return false;
+  return 0;
+}
+
+export function hasRecentPipelineRecovery(
+  projectAlias: string,
+  projectPath?: string,
+  cooldownMs = PIPELINE_RECOVERY_COOLDOWN_MS,
+): boolean {
+  return pipelineRecoveryCooldownRemainingMs(projectAlias, projectPath, cooldownMs) > 0;
 }
 
 export function shouldEnqueuePipelineRecovery(
@@ -75,6 +121,6 @@ export function shouldEnqueuePipelineRecovery(
 ): PipelineStall | null {
   const stall = detectPipelineStall(projectPath, dc, projectAlias);
   if (!stall) return null;
-  if (hasRecentPipelineRecovery(projectAlias)) return null;
+  if (hasRecentPipelineRecovery(projectAlias, projectPath)) return null;
   return stall;
 }
