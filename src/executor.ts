@@ -12,7 +12,7 @@ import {
   formatExecuteRetryPromptBlock,
   loadPreviousExecuteFailureContext,
 } from "./execute-retry-context.ts";
-import { transitionPlanState, updatePlanDiffCriticFindings } from "./state.ts";
+import { transitionPlanState, updatePlanDiffCriticFindings, recordBackpressureEvent } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
 import { runPrReviewAndMerge } from "./vcs/pr-lifecycle.ts";
@@ -356,6 +356,12 @@ export async function executePlan(
         });
         sdkCost = addSdkCost(sdkCost, result);
         if (sdkCost.costUsd > cfg.execution_cost_limit) {
+          recordBackpressureEvent(projectPath, planId ?? "", {
+            type: "cost_limit_hit",
+            detail: `Cost limit $${cfg.execution_cost_limit.toFixed(2)} exceeded: $${sdkCost.costUsd.toFixed(4)}`,
+            limitUsd: cfg.execution_cost_limit,
+            actualUsd: sdkCost.costUsd,
+          });
           throw new Error(
             `execution cost exceeded limit: ${sdkCost.costUsd} > ${cfg.execution_cost_limit}`,
           );
@@ -366,6 +372,10 @@ export async function executePlan(
         try {
           await runOnce();
         } catch (e) {
+          recordBackpressureEvent(projectPath, planId ?? "", {
+            type: "retry_backoff",
+            detail: e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200),
+          });
           resetWorktree(wt!.path);
           throw e;
         }

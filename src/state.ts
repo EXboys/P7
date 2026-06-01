@@ -4,6 +4,25 @@ import { join } from "path";
 import { legacyProjectDir, p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
 import type { PlanState, PlanStateStatus, VcsAccountPublishResult } from "./types.ts";
 
+export type BackpressureEventType =
+  | "degradation"
+  | "retry_backoff"
+  | "cost_limit_hit"
+  | "execution_recovery";
+
+export interface BackpressureEvent {
+  type: BackpressureEventType;
+  timestamp: string;
+  detail: string;
+  attempt?: number;
+  delayMs?: number;
+  limitUsd?: number;
+  actualUsd?: number;
+}
+
+/** PlanState 可能携带背压事件（本地扩展，不入侵 types.ts 的接口定义） */
+type PlanStateWithBp = PlanState & { backpressureEvents?: BackpressureEvent[] };
+
 const STATUS_VALUES: PlanStateStatus[] = [
   "planned",
   "pending_approval",
@@ -69,6 +88,14 @@ function rowToPlanState(row: Record<string, unknown>): PlanState {
       /* ignore */
     }
   }
+  const bpRaw = row.backpressure_events as string | null | undefined;
+  if (bpRaw) {
+    try {
+      (state as PlanStateWithBp).backpressureEvents = JSON.parse(bpRaw) as BackpressureEvent[];
+    } catch {
+      /* ignore */
+    }
+  }
   return state;
 }
 
@@ -94,6 +121,9 @@ function planStateBinds(state: PlanState): Record<string, string | null> {
     $token_usage: state.tokenUsage ? JSON.stringify(state.tokenUsage) : null,
     $findings: state.findings ?? null,
     $diff_critic_findings: state.diffCriticFindings ?? null,
+    $backpressure_events: (state as PlanStateWithBp).backpressureEvents?.length
+      ? JSON.stringify((state as PlanStateWithBp).backpressureEvents)
+      : null,
     $error: state.error ?? null,
   };
 }
@@ -215,6 +245,11 @@ export function initDb(projectPath: string): Database {
   } catch {
     /* exists */
   }
+  try {
+    db.run("ALTER TABLE plan_states ADD COLUMN backpressure_events TEXT");
+  } catch {
+    /* exists */
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS sdk_costs (
@@ -275,11 +310,11 @@ export function upsertPlanState(
     INSERT INTO plan_states (
       plan_id, project_path, goal, title, status, created_at, updated_at,
       branch, commit_sha, review_url, pr_url, issue_url, merge_status,
-      account_results, cost_usd, token_usage, findings, diff_critic_findings, error
+      account_results, cost_usd, token_usage, findings, diff_critic_findings, backpressure_events, error
     ) VALUES (
       $plan_id, $project_path, $goal, $title, $status, $created_at, $updated_at,
       $branch, $commit_sha, $review_url, $pr_url, $issue_url, $merge_status,
-      $account_results, $cost_usd, $token_usage, $findings, $diff_critic_findings, $error
+      $account_results, $cost_usd, $token_usage, $findings, $diff_critic_findings, $backpressure_events, $error
     )
     ON CONFLICT(plan_id) DO UPDATE SET
       project_path = excluded.project_path,
@@ -298,6 +333,7 @@ export function upsertPlanState(
       token_usage = COALESCE(excluded.token_usage, plan_states.token_usage),
       findings = COALESCE(excluded.findings, plan_states.findings),
       diff_critic_findings = COALESCE(excluded.diff_critic_findings, plan_states.diff_critic_findings),
+      backpressure_events = COALESCE(excluded.backpressure_events, plan_states.backpressure_events),
       error = excluded.error
   `);
 
@@ -425,6 +461,43 @@ export function updatePlanDiffCriticFindings(
       $plan_id: planId,
       $diff_critic_findings: findings,
       $updated_at: new Date().toISOString(),
+    });
+  });
+}
+
+/**
+ * 在 PlanState 的 backpressure_events 数组中追加一条事件记录。
+ * 当 planId 对应的行不存在时静默跳过（预期不会发生）。
+ */
+export function recordBackpressureEvent(
+  projectPath: string,
+  planId: string,
+  event: Omit<BackpressureEvent, "timestamp">,
+): void {
+  const db = initDb(projectPath);
+  withBusyRetry(() => {
+    const row = db
+      .query(`SELECT backpressure_events FROM plan_states WHERE plan_id = $plan_id`)
+      .get({ $plan_id: planId }) as { backpressure_events: string | null } | undefined;
+    if (!row) return; // no matching plan — skip silently
+
+    const events: BackpressureEvent[] = [];
+    if (row.backpressure_events) {
+      try {
+        const parsed = JSON.parse(row.backpressure_events);
+        if (Array.isArray(parsed)) events.push(...parsed);
+      } catch {
+        /* ignore malformed JSON — start fresh */
+      }
+    }
+    events.push({ ...event, timestamp: new Date().toISOString() });
+
+    db.query(
+      `UPDATE plan_states SET backpressure_events = $events, updated_at = $updated_at WHERE plan_id = $plan_id`,
+    ).run({
+      $events: JSON.stringify(events),
+      $updated_at: new Date().toISOString(),
+      $plan_id: planId,
     });
   });
 }
