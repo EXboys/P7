@@ -33,7 +33,7 @@ describe("hallucination diff fixtures", () => {
     for (const category of HALLUCINATION_CATEGORIES) {
       expect(seen.has(category)).toBe(true);
     }
-    expect(HALLUCINATION_FIXTURES.length).toBe(22);
+    expect(HALLUCINATION_FIXTURES.length).toBe(24);
   });
 
   test("covers security-jailbreak category with at least one fixture", () => {
@@ -48,7 +48,7 @@ describe("hallucination diff fixtures", () => {
 
   test("hallucinationPattern field is non-empty string when present", () => {
     const withPattern = HALLUCINATION_FIXTURES.filter((f) => f.hallucinationPattern !== undefined);
-    expect(withPattern.length).toBeGreaterThanOrEqual(4);
+    expect(withPattern.length).toBeGreaterThanOrEqual(7);
     for (const fixture of withPattern) {
       expect(typeof fixture.hallucinationPattern).toBe("string");
       expect(fixture.hallucinationPattern!.length).toBeGreaterThan(0);
