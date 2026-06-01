@@ -132,6 +132,7 @@ export interface PlanState {
   tokenUsage?: SdkTokenUsage;
   error?: string;
   findings?: string;
+  diffCriticFindings?: string;
 }
 
 export interface VcsAccountPublishResult {
