@@ -5,6 +5,7 @@ import {
   loadRoadmap,
 } from "./roadmap.ts";
 import { listApprovedForExecution, listPendingApprovals } from "./approval.ts";
+import { countQueuedPlans } from "./state.ts";
 import { listJobsForProject } from "../server/queue/store.ts";
 
 export const PIPELINE_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
@@ -23,6 +24,12 @@ export function detectPipelineStall(
   dc: DevAgentConfig,
 ): PipelineStall | null {
   if (dc.discovery.auto_recover_stall === false) return null;
+
+  // 队列深度 ≥ 70% 时不触发 stall 恢复——系统正在高负荷运转
+  const degradeThreshold = Math.ceil(dc.max_pending_plans * 0.7);
+  const depth = countQueuedPlans(projectPath);
+  if (depth >= degradeThreshold) return null;
+
   if (isRoadmapExhausted(projectPath)) return null;
   if (listApprovedForExecution(projectPath).length > 0) return null;
   if (listPendingApprovals(projectPath).length > 0) return null;

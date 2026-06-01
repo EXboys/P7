@@ -5,7 +5,8 @@ import { bigramJaccard, extractLastJsonBlock } from "./json-utils.ts";
 import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
 import { shouldDegrade, splitPlan } from "./degrade.ts";
-import { upsertPlanState } from "./state.ts";
+import { appendLesson } from "./agent-memory.ts";
+import { countQueuedPlans, upsertPlanState } from "./state.ts";
 import { processAutoApprovals, savePendingApproval } from "./approval.ts";
 import { loadConfig } from "./config.ts";
 import { PlanSchema, type Plan, type PlanRecord, type ProjectScan } from "./types.ts";
@@ -48,6 +49,23 @@ export async function generatePlan(
   } catch {
     baseCommit = undefined;
   }
+
+  // 队列深度检查：积压超标时拒绝新 Plan
+  const cfg = loadConfig(projectPath);
+  const depth = countQueuedPlans(projectPath);
+  const degradeThreshold = Math.ceil(cfg.max_pending_plans * 0.7);
+  if (depth >= cfg.max_pending_plans) {
+    throw new Error(
+      `max_pending_plans (${cfg.max_pending_plans}) exceeded: ${depth} plans queued`,
+    );
+  }
+  if (depth >= degradeThreshold) {
+    await appendLesson(
+      projectPath,
+      `plan:degrade queue depth ${depth}/${cfg.max_pending_plans}`,
+    );
+  }
+
   const system = readPrompt("planner-system.md");
   const criticPrompt = readPrompt("plan-critic.md");
 
@@ -135,7 +153,6 @@ export async function generatePlan(
     if (!first) first = record;
   }
 
-  const cfg = loadConfig(projectPath);
   processAutoApprovals(projectPath, cfg, { planIds: savedIds });
 
   return first!;

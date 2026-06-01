@@ -379,6 +379,17 @@ export function listPlanStates(projectPath: string, limit = 50): PlanState[] {
   return rows.map(rowToPlanState);
 }
 
+/** 查询队列中待处理（planned / pending_approval / approved）的 Plan 数量 */
+export function countQueuedPlans(projectPath: string): number {
+  const db = initDb(projectPath);
+  const row = db
+    .query(
+      `SELECT COUNT(*) AS c FROM plan_states WHERE status IN ('planned', 'pending_approval', 'approved')`,
+    )
+    .get() as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
 export function writeSdkCost(
   projectPath: string,
   params: { planId?: string; role: string; model?: string; costUsd: number },
