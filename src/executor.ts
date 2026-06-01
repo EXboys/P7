@@ -12,7 +12,7 @@ import {
   formatExecuteRetryPromptBlock,
   loadPreviousExecuteFailureContext,
 } from "./execute-retry-context.ts";
-import { transitionPlanState, updatePlanDiffCriticFindings } from "./state.ts";
+import { transitionPlanState } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
 import { runPrReviewAndMerge } from "./vcs/pr-lifecycle.ts";
@@ -465,10 +465,13 @@ export async function executePlan(
       throw new Error(`diff-critic blocked: ${brief}`);
     }
 
-    // Persist findings for non-blocking case (best-effort traceability)
+    // Persist findings for non-blocking case via transitionPlanState (best-effort traceability)
+    // 与阻断路径统一使用 transitionPlanState，使 findings 可被 Review 控制台和后继门禁逻辑消费
     if (planId) {
       try {
-        updatePlanDiffCriticFindings(projectPath, planId, critic.findings);
+        transitionPlanState(projectPath, planId, "executing", {
+          findings: critic.findings,
+        });
       } catch {
         /* non-critical if persist fails */
       }
