@@ -201,6 +201,11 @@ export function initDb(projectPath: string): Database {
   } catch {
     /* exists */
   }
+  try {
+    db.run("ALTER TABLE plan_states ADD COLUMN findings TEXT");
+  } catch {
+    /* exists */
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS sdk_costs (
@@ -378,5 +383,20 @@ export function writeSdkCost(
       $cost_usd: params.costUsd,
       $created_at: new Date().toISOString(),
     });
+  });
+}
+
+/** 写入 diff-critic 检测结果（findings JSON）到 plan_states 表 */
+export function updatePlanDiffCriticFindings(
+  projectPath: string,
+  planId: string,
+  findings: string,
+): void {
+  const db = initDb(projectPath);
+  const stmt = db.prepare(
+    `UPDATE plan_states SET findings = $findings WHERE plan_id = $plan_id`,
+  );
+  withBusyRetry(() => {
+    stmt.run({ $plan_id: planId, $findings: findings });
   });
 }
