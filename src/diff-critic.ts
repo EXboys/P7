@@ -2,16 +2,36 @@ import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { addSdkCost, emptySdkCost, type SdkCostSummary } from "./sdk-cost.ts";
 import type { DiffCriticFinding, DcSeverity } from "./types.ts";
 
-/** 行级正则：匹配规范 findings 行，格式: `- [severity] AI 生成代码特征-{维度}: {消息}` */
-const FINDING_LINE_RE =
-  /^\s*-\s*\[(info|warning|blocker)\]\s*(AI\s生成代码特征-(?:过度抽象|模板重复|不合理嵌套|幻觉检测|安全越狱)|疑似AI特征|疑似越狱模式):\s*(.+)$/i;
+/* ── AI 生成代码特征维度声明 ── */
+
+/** 已知 AI 生成代码退化维度列表。新增维度时只需在此追加，正则自动跟随。 */
+export const AI_CODE_DIMENSIONS = [
+  "过度抽象",
+  "模板重复",
+  "不合理嵌套",
+  "幻觉检测",
+  "安全越狱",
+] as const;
+
+export type AiCodeDimension = (typeof AI_CODE_DIMENSIONS)[number];
+
+/** 疑似前缀（不确定时的降级标注） */
+const SUSPICIOUS_PREFIXES = ["疑似AI特征", "疑似越狱模式"];
+
+/** 构建行级正则：匹配 `- [severity] AI 生成代码特征-{维度}: {消息}` 或疑似前缀行 */
+const FINDING_LINE_RE = new RegExp(
+  `^\\s*-\\s*\\[(info|warning|blocker)\\]\\s*` +
+    `(AI\\s生成代码特征-(?:${AI_CODE_DIMENSIONS.join("|")})` +
+    `|${SUSPICIOUS_PREFIXES.join("|")}):\\s*(.+)$`,
+  "i",
+);
 
 /** 降级正则：仅匹配 `- [severity]` 前缀，兜底捕获未知维度 */
 const FALLBACK_SEVERITY_RE = /^\s*-\s*\[(info|warning|blocker)\]\s*(.+)$/i;
 
 /**
  * 将 LLM 返回的 findings 文本解析为结构化 DiffCriticFinding 数组。
- * 优先匹配规范格式，不匹配时走降级 regex 兜底。
+ * 优先匹配规范格式（含 AI 生成代码特征前缀），不匹配时走降级 regex 兜底。
  */
 export function parseFindings(text: string): DiffCriticFinding[] {
   const findings: DiffCriticFinding[] = [];
