@@ -174,7 +174,7 @@ export function runPipelineCheck(
       label: "VCS 账号",
       detail:
         acc.length > 0
-          ? `已配置 ${acc.length} 个: ${acc.map((a) => a.id).join(", ")}`
+          ? `已配置 ${acc.length} 个: ${acc.map((a) => a.id).join(", ")} · ${cfg.vcs.account_pick_mode ?? "round_robin"}${cfg.vcs.account_failover !== false ? " + failover" : ""}`
           : "accounts[] 为空 — 将回退本机 gh 默认账号 default-gh",
       fix: "项目 → 设置 → GitHub 交付，或 /project/<别名>/settings?section=github",
     });

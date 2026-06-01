@@ -140,6 +140,13 @@ function applyVcsConfigFromBody(
   }
   if (body.vcs_create_pr !== undefined) dc.vcs.create_pr = body.vcs_create_pr === "1";
   if (body.vcs_create_issue !== undefined) dc.vcs.create_issue = body.vcs_create_issue === "1";
+  const pickMode = String(body.vcs_account_pick_mode ?? "").trim();
+  if (pickMode === "round_robin" || pickMode === "all") {
+    dc.vcs.account_pick_mode = pickMode;
+  }
+  if (body.vcs_account_failover !== undefined) {
+    dc.vcs.account_failover = body.vcs_account_failover === "1";
+  }
   return null;
 }
 
@@ -210,6 +217,19 @@ ${accountRows ? `<div class="tbl-wrap" style="margin-bottom:14px"><table><thead>
 <textarea name="vcs_accounts_json" rows="4" style="font-family:ui-monospace,monospace;font-size:12px">${esc(JSON.stringify(dc.vcs.accounts, null, 2))}</textarea>
 </details>
 </div>
+</div>
+
+<div class="gh-section">
+<h3>多账号 PR 策略</h3>
+<p class="section-hint">配置多个 GitHub 账号时，控制每次 Plan 交付用哪个身份开 PR。</p>
+<div class="toggle-grid">
+<div class="toggle-item"><span>账号选择</span><select name="vcs_account_pick_mode">
+<option value="round_robin" ${(dc.vcs.account_pick_mode ?? "round_robin") === "round_robin" ? "selected" : ""}>轮询（每次 1 账号 · 1 PR）</option>
+<option value="all" ${dc.vcs.account_pick_mode === "all" ? "selected" : ""}>全部（每账号各开 1 PR）</option>
+</select></div>
+<div class="toggle-item"><span>失败换下一个账号</span><select name="vcs_account_failover">${yesNo(dc.vcs.account_failover !== false)}</select></div>
+</div>
+<p class="section-hint muted" style="margin-top:8px">轮询模式共用同一条 push 分支，按顺序轮换 bot；仅当「自定义多账号」且 accounts 非空时生效。默认账号模式始终单 PR。</p>
 </div>
 
 <div class="gh-section">

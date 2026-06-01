@@ -2,6 +2,10 @@ import { reviewUrl } from "../platform.ts";
 import type { DevAgentConfig } from "../config.ts";
 import type { VcsAccountPublishResult } from "../types.ts";
 import type { VcsProvider, VcsPublishInput, VcsPublishResult } from "./types.ts";
+import {
+  advanceAccountRotation,
+  orderedAccountsRoundRobin,
+} from "./account-rotation.ts";
 
 type GitHubAccount = DevAgentConfig["vcs"]["accounts"][number];
 
@@ -147,8 +151,28 @@ export class GitHubProvider implements VcsProvider {
           ];
 
     const accountResults: VcsAccountPublishResult[] = [];
-    for (const account of accounts) {
-      accountResults.push(await this.publishWithAccount(input, account, accounts.length > 1));
+    const pickAll = cfg.account_pick_mode === "all";
+
+    if (pickAll) {
+      for (const account of accounts) {
+        accountResults.push(await this.publishWithAccount(input, account, accounts.length > 1));
+      }
+    } else {
+      const { order } = orderedAccountsRoundRobin(accounts, input.projectPath);
+      const tryOrder = order.length > 0 ? order : accounts;
+      let winner: VcsAccountPublishResult | null = null;
+      for (const account of tryOrder) {
+        const result = await this.publishWithAccount(input, account, false);
+        accountResults.push(result);
+        if (result.ok) {
+          winner = result;
+          break;
+        }
+        if (cfg.account_failover === false) break;
+      }
+      if (winner?.ok) {
+        advanceAccountRotation(input.projectPath, winner.accountId, accounts);
+      }
     }
 
     const firstPr = accountResults.find((r) => r.prUrl);
