@@ -8,7 +8,7 @@ import {
   hasProjectMutexInFlight,
 } from "./queue/store.ts";
 import { loadConfig } from "../src/config.ts";
-import { pickNextApprovedPlanForExecution } from "../src/approval.ts";
+import { pickNextApprovedPlanForExecution, sweepStuckApprovedPlans } from "../src/approval.ts";
 import { getPlanState, preparePlanExecuteRetry } from "../src/state.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { ghInstalled, gitRemoteOrigin } from "../src/gh-status.ts";
@@ -27,6 +27,8 @@ function runSchedulerTick(cfg: ServerConfig): void {
     } catch {
       continue;
     }
+
+    sweepStuckApprovedPlans(path, alias);
 
     if (
       dc.discovery.auto_execute_after_approve !== false &&

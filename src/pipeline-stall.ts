@@ -4,7 +4,7 @@ import {
   isRoadmapExhausted,
   loadRoadmap,
 } from "./roadmap.ts";
-import { listApprovedForExecution, listPendingApprovals } from "./approval.ts";
+import { listApprovedForExecution, listPendingApprovals, sweepStuckApprovedPlans } from "./approval.ts";
 import { countQueuedPlans } from "./state.ts";
 import { listJobsForProject } from "../server/queue/store.ts";
 
@@ -22,8 +22,11 @@ export type PipelineStall = {
 export function detectPipelineStall(
   projectPath: string,
   dc: DevAgentConfig,
+  projectAlias?: string,
 ): PipelineStall | null {
   if (dc.discovery.auto_recover_stall === false) return null;
+
+  sweepStuckApprovedPlans(projectPath, projectAlias);
 
   // 队列深度 ≥ 70% 时不触发 stall 恢复——系统正在高负荷运转
   const degradeThreshold = Math.ceil(dc.max_pending_plans * 0.7);
@@ -70,7 +73,7 @@ export function shouldEnqueuePipelineRecovery(
   projectAlias: string,
   dc: DevAgentConfig,
 ): PipelineStall | null {
-  const stall = detectPipelineStall(projectPath, dc);
+  const stall = detectPipelineStall(projectPath, dc, projectAlias);
   if (!stall) return null;
   if (hasRecentPipelineRecovery(projectAlias)) return null;
   return stall;

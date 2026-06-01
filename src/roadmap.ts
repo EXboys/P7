@@ -125,6 +125,39 @@ export function recommendRoadmapGoal(projectPath: string): string | null {
   return step ? step.text : null;
 }
 
+/** Fuzzy match for plan titles / goals against roadmap step text. */
+export function roadmapTextMatches(a: string, b: string): boolean {
+  const t = a.toLowerCase();
+  const g = b.toLowerCase();
+  const prefixA = g.slice(0, Math.min(18, g.length));
+  const prefixB = t.slice(0, Math.min(18, t.length));
+  return prefixA.length >= 8 && (g.includes(prefixB) || t.includes(prefixA));
+}
+
+function normalizeDoneLine(line: string): string {
+  return line
+    .replace(/^-\s+\[[xX]\]\s+/, "")
+    .replace(/\(commit:\s*[a-f0-9]+\)/i, "")
+    .trim();
+}
+
+/** True when plan goal/title already corresponds to a ROADMAP Done entry. */
+export function planGoalMatchesRoadmapDone(
+  projectPath: string,
+  goal: string,
+  title?: string,
+): boolean {
+  const rm = loadRoadmap(projectPath);
+  if (!rm) return false;
+  for (const line of rm.done) {
+    const text = normalizeDoneLine(line);
+    if (!text) continue;
+    if (roadmapTextMatches(goal, text)) return true;
+    if (title && roadmapTextMatches(title, text)) return true;
+  }
+  return false;
+}
+
 export function backupRoadmap(projectPath: string): string {
   const src = roadmapPath(projectPath);
   if (!existsSync(src)) return "";
