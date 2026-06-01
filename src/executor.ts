@@ -439,15 +439,6 @@ export async function executePlan(
     const critic = await reviewDiff(wt.path, diffStatOut, plan.title);
     if (critic.cost) sdkCost = addSdkCost(sdkCost, critic.cost);
 
-    // Persist findings to PlanState for traceability (best-effort)
-    if (planId) {
-      try {
-        updatePlanDiffCriticFindings(projectPath, planId, critic.findings);
-      } catch {
-        /* non-critical if persist fails */
-      }
-    }
-
     if (!critic.ok) {
       // Extract dimension-level blocker/warning summary for actionable error
       const blockedDims = critic.findings
@@ -457,7 +448,30 @@ export async function executePlan(
         .slice(0, 5)
         .join("; ");
       const brief = blockedDims || critic.findings.slice(0, 300);
+
+      // Persist complete findings to PlanState via transitionPlanState before blocking.
+      // This ensures full findings are queryable via PlanState, not truncated in error field.
+      if (planId) {
+        try {
+          transitionPlanState(projectPath, planId, "failed", {
+            error: brief,
+            findings: critic.findings,
+          });
+        } catch {
+          /* non-critical if persist fails */
+        }
+      }
+
       throw new Error(`diff-critic blocked: ${brief}`);
+    }
+
+    // Persist findings for non-blocking case (best-effort traceability)
+    if (planId) {
+      try {
+        updatePlanDiffCriticFindings(projectPath, planId, critic.findings);
+      } catch {
+        /* non-critical if persist fails */
+      }
     }
     writeStepState({ step_name: "diff_critic", status: "completed", started_at: criticStart, finished_at: new Date().toISOString() });
 

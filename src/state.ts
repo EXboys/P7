@@ -55,6 +55,7 @@ function rowToPlanState(row: Record<string, unknown>): PlanState {
   }
   if (accountResults?.length) state.accountResults = accountResults;
   if (row.error) state.error = String(row.error);
+  if (row.findings) state.findings = String(row.findings);
   if (row.cost_usd != null && row.cost_usd !== "") {
     const cost = Number(row.cost_usd);
     if (Number.isFinite(cost)) state.costUsd = cost;
@@ -90,6 +91,7 @@ function planStateBinds(state: PlanState): Record<string, string | null> {
       : null,
     $cost_usd: state.costUsd != null ? String(state.costUsd) : null,
     $token_usage: state.tokenUsage ? JSON.stringify(state.tokenUsage) : null,
+    $findings: state.findings ?? null,
     $error: state.error ?? null,
   };
 }
@@ -266,11 +268,11 @@ export function upsertPlanState(
     INSERT INTO plan_states (
       plan_id, project_path, goal, title, status, created_at, updated_at,
       branch, commit_sha, review_url, pr_url, issue_url, merge_status,
-      account_results, cost_usd, token_usage, error
+      account_results, cost_usd, token_usage, findings, error
     ) VALUES (
       $plan_id, $project_path, $goal, $title, $status, $created_at, $updated_at,
       $branch, $commit_sha, $review_url, $pr_url, $issue_url, $merge_status,
-      $account_results, $cost_usd, $token_usage, $error
+      $account_results, $cost_usd, $token_usage, $findings, $error
     )
     ON CONFLICT(plan_id) DO UPDATE SET
       project_path = excluded.project_path,
@@ -287,6 +289,7 @@ export function upsertPlanState(
       account_results = excluded.account_results,
       cost_usd = COALESCE(excluded.cost_usd, plan_states.cost_usd),
       token_usage = COALESCE(excluded.token_usage, plan_states.token_usage),
+      findings = COALESCE(excluded.findings, plan_states.findings),
       error = excluded.error
   `);
 
@@ -339,6 +342,7 @@ export function transitionPlanState(
         issue_url = $issue_url,
         merge_status = $merge_status,
         account_results = $account_results,
+        findings = $findings,
         error = $error
       WHERE plan_id = $plan_id
     `);
