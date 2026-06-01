@@ -58,6 +58,10 @@ export const DevAgentConfigSchema = z.object({
       work_branch: z.string().optional(),
       reviewers: z.array(z.string()).default([]),
       labels: z.array(z.string()).default(["p7"]),
+      /** round_robin：每次只选一个账号开 1 个 PR；all：每个账号各开 PR（旧行为） */
+      account_pick_mode: z.enum(["round_robin", "all"]).default("round_robin"),
+      /** 轮询模式下当前账号失败时尝试下一个 */
+      account_failover: z.boolean().default(true),
       accounts: z
         .array(
           z.object({
@@ -92,6 +96,8 @@ export const DevAgentConfigSchema = z.object({
       block_new_work_only_conflicting: true,
       reviewers: [],
       labels: ["p7"],
+      account_pick_mode: "round_robin",
+      account_failover: true,
       accounts: [],
     }),
   discovery: z
@@ -172,6 +178,8 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         block_new_work_only_conflicting: true,
         reviewers: [],
         labels: ["p7"],
+        account_pick_mode: "round_robin",
+        account_failover: true,
         accounts: [],
       },
       discovery: {
