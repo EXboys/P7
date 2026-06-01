@@ -171,3 +171,15 @@ export interface DiscoveryDailyResult {
   phase: string;
   error?: string;
 }
+
+export type DcSeverity = "info" | "warning" | "blocker";
+
+export interface DiffCriticFinding {
+  dimension: string;
+  severity: DcSeverity;
+  message: string;
+  prefix?: string;
+  file?: string;
+  line?: number;
+  code?: string;
+}
