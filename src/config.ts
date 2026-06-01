@@ -131,6 +131,7 @@ export const DevAgentConfigSchema = z.object({
       allow_template_fallback: false,
       auto_recover_stall: true,
     }),
+  allowed_api_domains: z.array(z.string()).default(["api.anthropic.com"]),
   max_pending_plans: z.number().int().positive().default(5),
   max_consecutive_failures: z.number().int().positive().default(3),
   execution_retry: z
@@ -218,6 +219,7 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         allow_template_fallback: false,
         auto_recover_stall: true,
       },
+      allowed_api_domains: ["api.anthropic.com"],
       max_pending_plans: 5,
       max_consecutive_failures: 3,
       execution_retry: {
