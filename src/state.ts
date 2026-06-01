@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { legacyProjectDir, p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
 import type { PlanState, PlanStateStatus, VcsAccountPublishResult } from "./types.ts";
+import type { SdkTokenUsage } from "./sdk-cost.ts";
 
 export type BackpressureEventType =
   | "degradation"
@@ -266,6 +267,26 @@ export function initDb(projectPath: string): Database {
   db.run(
     `CREATE INDEX IF NOT EXISTS idx_sdk_costs_created ON sdk_costs(created_at DESC)`,
   );
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN input_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN output_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN cache_read_input_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN cache_creation_input_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
 
   migrateFromJsonIfNeeded(db, projectPath);
   dbCache.set(projectPath, db);
@@ -428,12 +449,12 @@ export function countQueuedPlans(projectPath: string): number {
 
 export function writeSdkCost(
   projectPath: string,
-  params: { planId?: string; role: string; model?: string; costUsd: number },
+  params: { planId?: string; role: string; model?: string; costUsd: number; usage?: SdkTokenUsage },
 ): void {
   const db = initDb(projectPath);
   const stmt = db.prepare(`
-    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at)
-    VALUES ($plan_id, $role, $model, $cost_usd, $created_at)
+    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)
+    VALUES ($plan_id, $role, $model, $cost_usd, $created_at, $input_tokens, $output_tokens, $cache_read_input_tokens, $cache_creation_input_tokens)
   `);
   withBusyRetry(() => {
     stmt.run({
@@ -442,6 +463,10 @@ export function writeSdkCost(
       $model: params.model ?? null,
       $cost_usd: params.costUsd,
       $created_at: new Date().toISOString(),
+      $input_tokens: params.usage?.inputTokens ?? null,
+      $output_tokens: params.usage?.outputTokens ?? null,
+      $cache_read_input_tokens: params.usage?.cacheReadInputTokens ?? null,
+      $cache_creation_input_tokens: params.usage?.cacheCreationInputTokens ?? null,
     });
   });
 }
