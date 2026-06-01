@@ -125,7 +125,7 @@ function hasBashPathTraversal(command: string, worktreeRoot: string): boolean {
   return false;
 }
 
-function buildPreToolHook(
+export function buildPreToolHook(
   allowedFiles: Set<string>,
   cwd: string,
   onDeny?: (reason: string) => void,
