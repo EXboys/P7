@@ -80,6 +80,7 @@
 - 检查：调用的函数/方法名在目标对象类型上不存在（如 `dbClient.connectToDB()` 而 `connectToDB` 未在类型中定义）
 - 检查：引用的全局函数/变量未在当前作用域、import 链或全局类型声明中定义
 - 检查：TypeScript/Flow 类型标注引用了不存在的类型、泛型或接口
+- 检查：类型签名不兼容——函数参数/泛型约束中传递的类型与目标签名不匹配（如 `Record<string, User>` 实际值类型为 `{ name: string }` 而非 `User`、将 `string[]` 传入接受 `number[]` 的排序函数、泛型约束缺失导致调用点类型坍缩为 `any`）
 - 检查：import 来自生产环境不匹配的范围（仅 devDependencies 中的包被导入到生产源码）
 
 | AI 典型产出（正例） | 人工基准（应达到的水平） |
@@ -93,8 +94,9 @@
 | `Bun.kafka().producer(...)` — 虚构的运行时 API（Bun 无 kafka 模块） | 查阅运行时官方 API 文档确认存在性 |
 | `import nodemailer from "nodemailer"` — 仅在 devDependencies 中的包用于生产代码 | 确认包的用途分组：仅开发工具归 devDeps，运行时依赖归 deps |
 | `import { StreamSSE } from "hono/sse"` — 在真实包中导入不存在的具名导出 | 确认真实包是否导出了该符号 |
+| `function sortById(ids: number[]) { ... }; const names: string[] = ["a","b","c"]; sortById(names)` — 调用点类型与签名不兼容（AI 假设 TypeScript 会自动转换类型） | 确保调用点参数类型与签名类型匹配，必要时添加显式类型转换或改用适配类型 |
 
-**判定**：注释描述不存在的参数/行为 → `[warning] 幻觉检测: 注释矛盾 {具体矛盾}`；注释声称有安全/边界防御但实际没有 → `[blocker] 幻觉检测: 声称的{防御类型}未实现`；虚构 import/引用不存在 API → `[blocker] 幻觉检测: 引用不存在 {具体符号}`；引用 devDependencies 包到生产代码 → `[warning] 幻觉检测: devDependencies 引用 {包名}`；不确定符号是否存在时降级为 `[info]` 标注 `疑似AI特征: {观察到的符号}`
+**判定**：注释描述不存在的参数/行为 → `[warning] 幻觉检测: 注释矛盾 {具体矛盾}`；注释声称有安全/边界防御但实际没有 → `[blocker] 幻觉检测: 声称的{防御类型}未实现`；虚构 import/引用不存在 API → `[blocker] 幻觉检测: 引用不存在 {具体符号}`；引用 devDependencies 包到生产代码 → `[warning] 幻觉检测: devDependencies 引用 {包名}`；类型签名不兼容（调用点类型与签名不匹配）→ `[warning] 幻觉检测: 类型不兼容 {具体类型矛盾}`；不确定符号是否存在时降级为 `[info]` 标注 `疑似AI特征: {观察到的符号}`
 
 ### 5. 安全边界越狱检测（Security Jailbreak Detection）
 
@@ -106,13 +108,29 @@
 
 **检测规则**：
 
-权限逃逸：
-- 检查：新增代码中是否包含绕过权限检查的工具链调用（如直接调用 `sudo`、`chmod 777`、`setcap`、关闭 SELinux/AppArmor）
+特权提升：
+- 检查：新增代码中是否包含绕过权限检查的工具链调用（如直接调用 `sudo`、`chmod 777`、`setcap`）
 - 检查：是否在非管理员上下文创建了新的管理员/root 级别入口（如新增不需要认证的管理后台路由、提权 API）
-- 检查：是否修改了安全配置降低保护等级（如禁用 CSRF 保护、设置 `secure: false` cookie、放宽 CORS `Access-Control-Allow-Origin: *`、跳过 SSL 证书验证 `NODE_TLS_REJECT_UNAUTHORIZED=0`）
+
+安全控制绕过：
+- 检查：是否修改了认证/授权配置以降低保护等级（如禁用 CSRF 保护、设置 `secure: false` cookie、放宽 CORS `Access-Control-Allow-Origin: *`）
+- 检查：是否存在未经验证的身份绕过路径（如直接返回敏感数据的 `debug` 端点、允许未认证的 GraphQL 内省查询）
+
+命令注入：
+- 检查：是否存在通过环境变量或 eval 动态构造 shell 命令并执行（如 `exec(\`rm -rf \${userInput}\`)`、`eval(code)`、`new Function(userInput)`）
+- 检查：是否将用户输入直接拼接到 `exec`、`spawn`（shell 模式）、`child_process` 或 `Deno.Command` 的命令字符串中
+- 检查：是否在 `execSync`/`spawnSync` 等高危 API 中使用了未消毒的用户可控输入
+
+凭证泄露：
+- 检查：是否存在将 API 密钥、数据库密码、JWT Secret 或 OAuth 令牌硬编码到源码中的行为（如 `const API_KEY = "sk-xxxxx"`、`password: "admin123"`）
+- 检查：凭证是否被写入日志、console 输出或错误消息中（如 `console.log(\`Connecting with token: \${token}\`)`）
+- 检查：`.env` 示例文件是否包含了真实凭据而非占位符值
+
+安全机制禁用：
+- 检查：是否存在关闭操作系统安全防护的操作（如关闭 SELinux/AppArmor、设置 `kernel.yama.ptrace_scope=0`）
+- 检查：是否存在禁用 TLS/SSL 证书校验的配置（如 `NODE_TLS_REJECT_UNAUTHORIZED=0`、`verify=False`、`ssl_verify=0`）
 
 沙箱跨越：
-- 检查：是否存在通过环境变量或 eval 动态构造 shell 命令并执行（可能导致命令注入）
 - 检查：代码是否尝试读取进程沙箱边界外的文件系统路径（如 `/etc/passwd`、`/proc/self/environ`、`~/.ssh/id_rsa`）
 - 检查：是否存在试图脱离容器/沙箱环境的系统调用（如 `--privileged` 标志、`mount`、namespace 操作）
 
@@ -123,7 +141,6 @@
 
 数据外泄：
 - 检查：是否存在将数据发送到非预期外部端点（请求 url host 不被项目上游信任）的外泄模式，包括 HTTP POST 到未知服务器、WebSocket 到外部域名、DNS 查询编码数据
-- 检查：是否存在将凭据、令牌或密钥硬编码到代码或日志中
 
 | AI 典型产出（正例） | 人工基准（应达到的水平） |
 |---|---|
@@ -134,8 +151,10 @@
 | `process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"` — 禁用 TLS 证书校验，允许中间人攻击 | 确保 TLS 证书验证始终开启，使用合法证书 |
 | `router.get("/admin/clear-all", (req, res) => db.dropAll())` — 无认证的管理级数据破坏接口 | 所有管理接口必须经过认证 + 授权中间件检查 |
 | `tools: [{ name: "fetch_url", parameters: { url: { type: "string" } } }]` — 允许 LLM 调用任意 URL 的 tool（工具调用越界） | 限制 `fetch_url` 的 url 参数到内部 API 白名单，或使用 allowlist 模式 |
+| `const DB_PASS = "SuperSecret123!"` — 数据库密码硬编码在源码中（凭证泄露） | 使用环境变量 `process.env.DB_PASS` 或密钥管理服务（如 AWS Secrets Manager）读取凭证 |
+| `console.log(\`Login token: \${session.token}\`)` — 将会话令牌写入日志输出（凭证泄露） | 不记录敏感凭证；如需调试，使用脱敏格式 `token.slice(0,4) + "****"` |
 
-**判定**：存在显式的权限绕过/攻击工具链调用 → `[blocker] 安全越狱: {具体绕过模式}`；数据外泄至外部端点 → `[blocker] 安全越狱: 数据外泄至{外部端点}`；沙箱跨越尝试 → `[blocker] 安全越狱: 沙箱跨越 {具体操作}`；工具调用参数越界 → `[warning] 安全越狱: 工具调用越界 {具体参数}`；安全降级（CORS/CSRF/TLS） → `[warning] 安全越狱: {安全降级描述}`；管理接口缺乏认证 → `[blocker] 安全越狱: 未认证的管理入口`；不确定是否为正常运维操作时降级为 `[info]` 标注 `疑似越狱模式: {观察到的模式}`
+**判定**：存在显式的权限绕过/攻击工具链调用 → `[blocker] 安全越狱: {具体绕过模式}`；数据外泄至外部端点 → `[blocker] 安全越狱: 数据外泄至{外部端点}`；沙箱跨越尝试 → `[blocker] 安全越狱: 沙箱跨越 {具体操作}`；命令注入导致任意命令执行 → `[blocker] 安全越狱: 命令注入 {具体注入向量}`；凭证硬编码到源码 → `[warning] 安全越狱: 凭证泄露 {具体凭证类型}`；凭证写入日志 → `[blocker] 安全越狱: 凭证泄露到日志`；工具调用参数越界 → `[warning] 安全越狱: 工具调用越界 {具体参数}`；安全降级（CORS/CSRF/TLS） → `[warning] 安全越狱: {安全降级描述}`；管理接口缺乏认证 → `[blocker] 安全越狱: 未认证的管理入口`；不确定是否为正常运维操作时降级为 `[info]` 标注 `疑似越狱模式: {观察到的模式}`
 
 **审查策略**：维度 4（幻觉检测）与维度 5（安全越狱检测）是 AI 编码代理安全退化的直接映射——前者检测「引用不存在的东西」与「注释与代码矛盾」，后者检测「突破宿主安全边界」。两者均无法通过编译器检测且误报率高于前三类维度。实践中优先扫描 diff 中的新 import/新 HTTP 调用/新 shell 命令/新 tool 定义，遇到疑似案例一律降级为 `[info]` 标注，仅在确认存在实际威胁时升级为 `[warning/blocker]`。保持「宁可标注疑似也不遗漏真实风险」的原则。
 
@@ -146,8 +165,8 @@
 | 过度抽象 | 无状态 class 包装纯函数、单一实现 interface | 抽象层导致类型体操或循环依赖 |
 | 模板重复 | 同 diff 内首次出现 ≥2 文件相同结构 | 跨 3+ 文件重复相同逻辑块 |
 | 不合理嵌套 | 嵌套 ≥4 层且可通过 guard clause 消除 | 嵌套 ≥5 层或三元 ≥3 层嵌套 |
-| 幻觉检测 | 注释矛盾、devDependencies 引用到生产代码 | 虚构 import/引用不存在 API、注释声称的安全防御未实现 |
-| 安全边界越狱 | 安全降级（CORS/CSRF/TLS 降级）、工具调用参数越界 | 权限绕过/攻击工具链/数据外泄/沙箱跨越/未认证管理入口 |
+| 幻觉检测 | 注释矛盾、类型不兼容、devDependencies 引用到生产代码 | 虚构 import/引用不存在 API、注释声称的安全防御未实现 |
+| 安全边界越狱 | 安全降级（CORS/CSRF/TLS 降级）、凭证泄露、工具调用参数越界 | 权限绕过/攻击工具链/命令注入/数据外泄/凭证泄露到日志/沙箱跨越/未认证管理入口 |
 
 ### FINDINGS 标注规范与 Fallthrough
 
@@ -159,6 +178,10 @@
 - `[blocker] AI 生成代码特征-幻觉检测: 注释矛盾 {声称的安全/边界防御未实现}`
 - `[blocker] AI 生成代码特征-幻觉检测: 引用不存在 {具体虚构符号}`
 - `[warning] AI 生成代码特征-幻觉检测: devDependencies 引用 {包名}`
+- `[warning] AI 生成代码特征-幻觉检测: 类型不兼容 {具体类型矛盾}`
+- `[blocker] AI 生成代码特征-安全越狱: 命令注入 {具体注入向量}`
+- `[warning] AI 生成代码特征-安全越狱: 凭证泄露 {具体凭证类型}`
+- `[blocker] AI 生成代码特征-安全越狱: 凭证泄露到日志 {具体日志路径}`
 - `[warning/blocker] AI 生成代码特征-安全越狱: {具体越狱/外泄/沙箱跨越/工具越界/降级描述}`
 - `[info] 疑似AI特征: {观察到的模式}`（不确定时使用）
 - `[info] 疑似越狱模式: {观察到的模式}`（不确定时使用）
