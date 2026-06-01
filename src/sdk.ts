@@ -153,6 +153,7 @@ export async function runSdkQuery(opts: {
       role: opts.role ?? "default",
       model,
       costUsd,
+      usage,
     });
   }
 
