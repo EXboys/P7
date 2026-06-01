@@ -4,7 +4,8 @@ import { projectSubpathForRead, projectSubpathForWrite } from "./p7-paths.ts";
 import type { DevAgentConfig } from "./config.ts";
 import { countQueuedPlans, getPlanState, preparePlanExecuteRetry, transitionPlanState, upsertPlanState } from "./state.ts";
 import { planDisplayTitle } from "./plan-i18n.ts";
-import { recommendRoadmapGoal } from "./roadmap.ts";
+import { planGoalMatchesRoadmapDone, recommendRoadmapGoal, roadmapTextMatches, firstUnfinishedStep } from "./roadmap.ts";
+import { appendLesson } from "./agent-memory.ts";
 import { listJobsForProject } from "../server/queue/store.ts";
 import type { ApprovalRecord, Plan, PlanRecord, PlanState } from "./types.ts";
 
@@ -211,12 +212,117 @@ function isEligibleForExecute(
   return true;
 }
 
+export function isExecuteRetryExhausted(
+  projectAlias: string | undefined,
+  planId: string,
+  state: PlanState,
+): boolean {
+  if (state.status !== "failed") return false;
+  if (!projectAlias) return false;
+  return countFailedExecuteJobsForPlan(projectAlias, planId) >= MAX_FAILED_EXECUTE_PER_PLAN;
+}
+
+export type AbandonPlanReason =
+  | "auto-exhausted-retries"
+  | "roadmap-already-done"
+  | "stale-roadmap-goal"
+  | "plan-already-delivered";
+
+/** Reject an approved plan that should no longer block the pipeline. */
+export function abandonApprovedPlan(
+  projectPath: string,
+  planId: string,
+  decidedBy: AbandonPlanReason,
+): boolean {
+  const approval = getApprovalRecord(projectPath, planId);
+  if (!approval || approval.status !== "approved") return false;
+  decideApproval(projectPath, planId, "rejected", decidedBy);
+  return true;
+}
+
+/** Drop failed plans after max auto-retries, or goals already listed in ROADMAP Done. */
+export function abandonStuckApprovedPlan(
+  projectPath: string,
+  planId: string,
+  opts?: { projectAlias?: string; title?: string; goal?: string },
+): AbandonPlanReason | null {
+  const approval = getApprovalRecord(projectPath, planId);
+  if (!approval || approval.status !== "approved") return null;
+
+  const state = getPlanState(projectPath, planId);
+  if (
+    state &&
+    (state.status === "merged" || state.status === "pr_opened" || state.status === "pushed")
+  ) {
+    if (abandonApprovedPlan(projectPath, planId, "plan-already-delivered")) {
+      return "plan-already-delivered";
+    }
+    return null;
+  }
+
+  const goal = opts?.goal ?? approval.goal;
+  const title = opts?.title ?? planDisplayTitle(approval.plan);
+  if (planGoalMatchesRoadmapDone(projectPath, goal, title)) {
+    if (abandonApprovedPlan(projectPath, planId, "roadmap-already-done")) {
+      void appendLesson(
+        projectPath,
+        `plan:abandon ${planId} roadmap-already-done "${title.slice(0, 60)}"`,
+      );
+      return "roadmap-already-done";
+    }
+    return null;
+  }
+
+  if (state?.status === "failed") {
+    const active = firstUnfinishedStep(projectPath);
+    if (active) {
+      const aligned =
+        roadmapTextMatches(goal, active.text) ||
+        roadmapTextMatches(title, active.text);
+      if (!aligned) {
+        if (abandonApprovedPlan(projectPath, planId, "stale-roadmap-goal")) {
+          void appendLesson(
+            projectPath,
+            `plan:abandon ${planId} stale-roadmap-goal active="${active.text.slice(0, 48)}"`,
+          );
+          return "stale-roadmap-goal";
+        }
+        return null;
+      }
+    }
+  }
+
+  if (!state || state.status !== "failed") return null;
+  if (!isExecuteRetryExhausted(opts?.projectAlias, planId, state)) return null;
+  if (abandonApprovedPlan(projectPath, planId, "auto-exhausted-retries")) {
+    void appendLesson(
+      projectPath,
+      `plan:abandon ${planId} auto-exhausted-retries (${MAX_FAILED_EXECUTE_PER_PLAN} execute failures)`,
+    );
+    return "auto-exhausted-retries";
+  }
+  return null;
+}
+
+/** Scheduler tick: clear plans that would otherwise stay approved+failed forever. */
+export function sweepStuckApprovedPlans(
+  projectPath: string,
+  projectAlias?: string,
+): AbandonPlanReason[] {
+  const reasons: AbandonPlanReason[] = [];
+  for (const rec of listApprovedForExecution(projectPath)) {
+    const reason = abandonStuckApprovedPlan(projectPath, rec.planId, {
+      projectAlias,
+      goal: rec.goal,
+      title: planDisplayTitle(rec.plan),
+    });
+    if (reason) reasons.push(reason);
+  }
+  return reasons;
+}
+
 function titleMatchesRoadmapGoal(title: string, goal: string): boolean {
-  const t = title.toLowerCase();
-  const g = goal.toLowerCase();
-  const a = g.slice(0, Math.min(18, g.length));
-  const b = t.slice(0, Math.min(18, t.length));
-  return a.length >= 8 && (g.includes(b) || t.includes(a));
+  return roadmapTextMatches(title, goal);
 }
 
 /** 下一个应入队 execute 的已批准 Plan（跳过已结束；优先对齐当前 Roadmap 步骤） */

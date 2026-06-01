@@ -12,6 +12,7 @@ import {
   formatExecuteRetryPromptBlock,
   loadPreviousExecuteFailureContext,
 } from "./execute-retry-context.ts";
+import { abandonStuckApprovedPlan } from "./approval.ts";
 import { transitionPlanState, updatePlanDiffCriticFindings, recordBackpressureEvent } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
@@ -185,19 +186,35 @@ async function runTypecheck(wtPath: string): Promise<{ ok: boolean; out: string 
   };
 }
 
-function diffStatsAgainstBase(wtPath: string, baseCommit: string): { files: number; lines: number } {
+export function diffStatsAgainstBase(wtPath: string, baseCommit: string): { files: number; lines: number } {
   const raw = git(wtPath, ["diff", baseCommit, "--numstat"]);
-  if (!raw.ok || !raw.out.trim()) return { files: 0, lines: 0 };
   let files = 0;
   let lines = 0;
-  for (const row of raw.out.split("\n").filter(Boolean)) {
-    const parts = row.split("\t");
-    if (parts.length < 3) continue;
-    const adds = parts[0] === "-" ? 0 : Number(parts[0]) || 0;
-    const dels = parts[1] === "-" ? 0 : Number(parts[1]) || 0;
-    if (adds + dels > 0) files++;
-    lines += adds + dels;
+  if (raw.ok && raw.out.trim()) {
+    for (const row of raw.out.split("\n").filter(Boolean)) {
+      const parts = row.split("\t");
+      if (parts.length < 3) continue;
+      const adds = parts[0] === "-" ? 0 : Number(parts[0]) || 0;
+      const dels = parts[1] === "-" ? 0 : Number(parts[1]) || 0;
+      if (adds + dels > 0) files++;
+      lines += adds + dels;
+    }
   }
+
+  // New files are untracked until commit — git diff baseCommit does not include them.
+  const untracked = git(wtPath, ["ls-files", "--others", "--exclude-standard"]);
+  if (untracked.ok && untracked.out.trim()) {
+    for (const rel of untracked.out.split("\n").filter(Boolean)) {
+      files++;
+      try {
+        const content = readFileSync(join(wtPath, rel), "utf-8");
+        lines += content.length === 0 ? 0 : content.split("\n").length;
+      } catch {
+        lines += 1;
+      }
+    }
+  }
+
   return { files, lines };
 }
 
@@ -593,11 +610,18 @@ export async function executePlan(
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     recordFailedPlan(projectPath, plan, err);
-    if (planId) transitionPlanState(projectPath, planId, "failed", {
-      error: err,
-      costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
-      tokenUsage: sdkCost.usage,
-    });
+    if (planId) {
+      transitionPlanState(projectPath, planId, "failed", {
+        error: err,
+        costUsd: sdkCost.costUsd > 0 ? sdkCost.costUsd : undefined,
+        tokenUsage: sdkCost.usage,
+      });
+      abandonStuckApprovedPlan(projectPath, planId, {
+        projectAlias: process.env.P7_PROJECT_ALIAS,
+        goal: plan.goal,
+        title: planDisplayTitle(plan),
+      });
+    }
     await appendLesson(projectPath, `execute:failed "${planDisplayTitle(plan)}" x ${err.slice(0, 120)}`);
     // Mark any running steps as failed so no step stays in "running" forever
     if (jobId) {

@@ -3,6 +3,7 @@ import {
   FAILED_RETRY_COOLDOWN_MS,
   listApprovedForExecution,
   MAX_FAILED_EXECUTE_PER_PLAN,
+  sweepStuckApprovedPlans,
 } from "../src/approval.ts";
 import { getPlanState } from "../src/state.ts";
 import { detectPipelineStall } from "../src/pipeline-stall.ts";
@@ -63,6 +64,7 @@ export function getProjectActivity(
     null;
 
   let failedPlan: ProjectActivity["failedPlan"] = null;
+  sweepStuckApprovedPlans(projectPath, projectAlias);
   for (const rec of listApprovedForExecution(projectPath)) {
     const state = getPlanState(projectPath, rec.planId);
     if (!state || state.status !== "failed") continue;
@@ -88,6 +90,6 @@ export function getProjectActivity(
     failedPlan,
     schedulerEnabled,
     schedulerIntervalMinutes,
-    pipelineStall: detectPipelineStall(projectPath, loadConfig(projectPath)),
+    pipelineStall: detectPipelineStall(projectPath, loadConfig(projectPath), projectAlias),
   };
 }
