@@ -12,7 +12,7 @@ import {
   formatExecuteRetryPromptBlock,
   loadPreviousExecuteFailureContext,
 } from "./execute-retry-context.ts";
-import { transitionPlanState } from "./state.ts";
+import { transitionPlanState, updatePlanDiffCriticFindings } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
 import { runPrReviewAndMerge } from "./vcs/pr-lifecycle.ts";
@@ -438,8 +438,26 @@ export async function executePlan(
     writeStepState({ step_name: "diff_critic", status: "running", started_at: criticStart });
     const critic = await reviewDiff(wt.path, diffStatOut, plan.title);
     if (critic.cost) sdkCost = addSdkCost(sdkCost, critic.cost);
+
+    // Persist findings to PlanState for traceability (best-effort)
+    if (planId) {
+      try {
+        updatePlanDiffCriticFindings(projectPath, planId, critic.findings);
+      } catch {
+        /* non-critical if persist fails */
+      }
+    }
+
     if (!critic.ok) {
-      throw new Error(`diff-critic blocked: ${critic.findings.slice(0, 300)}`);
+      // Extract dimension-level blocker/warning summary for actionable error
+      const blockedDims = critic.findings
+        .split("\n")
+        .filter((l) => /\[(blocker|warning)\]/.test(l))
+        .map((l) => l.trim())
+        .slice(0, 5)
+        .join("; ");
+      const brief = blockedDims || critic.findings.slice(0, 300);
+      throw new Error(`diff-critic blocked: ${brief}`);
     }
     writeStepState({ step_name: "diff_critic", status: "completed", started_at: criticStart, finished_at: new Date().toISOString() });
 
