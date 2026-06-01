@@ -131,6 +131,7 @@ export interface PlanState {
   costUsd?: number;
   tokenUsage?: SdkTokenUsage;
   error?: string;
+  findings?: string;
 }
 
 export interface VcsAccountPublishResult {
