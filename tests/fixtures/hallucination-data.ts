@@ -641,6 +641,88 @@ export class AppController {}
 +export class AppGateway {}`,
     expectedBlockers: ["@nestjs/websocket"],
   },
+  // --- Fictional import: typo-squat express ---
+  {
+    id: "fictional-import-typo-express",
+    category: "fictional-import",
+    description: "Import typo-squat package name 'express' (not real 'express')",
+    setupFiles: {
+      "src/web.ts": `import { Hono } from "hono";
+
+export const webApp = new Hono();
+`,
+    },
+    diffStat: ` src/web.ts | 2 +++
+@@ -1,3 +1,5 @@
+ import { Hono } from "hono";
++import express from "express";
+
+ export const webApp = new Hono();
++express().listen(3000);`,
+    expectedBlockers: ["express"],
+  },
+  // --- Nonexistent API: global $http ---
+  {
+    id: "nonexistent-api-global-undef",
+    category: "nonexistent-api",
+    description: "Call non-existent global $http.get() as an HTTP client",
+    setupFiles: {
+      "src/api.ts": `export async function fetchData(url: string) {
+  return await fetch(url).then(r => r.json());
+}
+`,
+    },
+    diffStat: ` src/api.ts | 2 +++
+@@ -1,3 +1,6 @@
+ export async function fetchData(url: string) {
+   return await fetch(url).then(r => r.json());
+ }
++export function fetchDataV2(url: string) {
++  return $http.get(url);
++}`,
+    expectedBlockers: ["$http"],
+  },
+  // --- Nonexistent API: Array.prototype.asyncMap ---
+  {
+    id: "nonexistent-api-array-async-map",
+    category: "nonexistent-api",
+    description: "Call Array.prototype.asyncMap() which does not exist",
+    setupFiles: {
+      "src/process.ts": `export function processItems(items: number[]): Promise<number[]> {
+  return Promise.resolve(items.map(x => x * 2));
+}
+`,
+    },
+    diffStat: ` src/process.ts | 2 +++
+@@ -1,3 +1,5 @@
+ export function processItems(items: number[]): Promise<number[]> {
+-  return Promise.resolve(items.map(x => x * 2));
++  return items.asyncMap(async (x) => x * 2);
+ }`,
+    expectedBlockers: ["asyncMap"],
+  },
+  // --- Wrong type signature: readonly mismatch ---
+  {
+    id: "wrong-type-signature-readonly-mismatch",
+    category: "wrong-type-signature",
+    description: "Function declared to return readonly string[] returns mutable array and calls push()",
+    setupFiles: {
+      "src/strings.ts": `export function getNames(): string[] {
+  return ["alice", "bob"];
+}
+`,
+    },
+    diffStat: ` src/strings.ts | 3 +++
+@@ -1,3 +1,5 @@
+-export function getNames(): string[] {
+-  return ["alice", "bob"];
++export function getNames(): readonly string[] {
++  const names = ["alice", "bob"];
++  names.push("charlie");
++  return names;
+ }`,
+    expectedBlockers: ["readonly", "push"],
+  },
 ];
 
 export const HALLUCINATION_CATEGORIES: HallucinationCategory[] = [
