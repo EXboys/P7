@@ -45,24 +45,7 @@
 
 **判定**：同 diff 内首次出现模板重复 → `[warning] 模板重复: {描述重复模式，涉及 N 个文件}`；跨 3+ 文件重复相同逻辑块 → `[blocker]`（建议合并后再提交）
 
-### 3. 幻觉式注释（Hallucinated Comments）
-**定义**：AI 生成的注释描述了不存在的函数参数、虚构的返回值属性、或与实际代码行为矛盾的逻辑说明。区别于幻觉引用（检测 import/API 不存在），本项聚焦**注释内容的真实性**。
-
-**检测规则**：
-- 检查：JSDoc/TSDoc 中描述的 `@param` 名称与实际函数签名不一致
-- 检查：注释声称「Returns X when Y」但代码中无对应的 Y 条件分支
-- 检查：注释描述的错误处理/边界情况在代码中无对应实现
-- 检查：行内注释标记的 FIXME/TODO/HACK 对应代码行无明显待修复迹象（注释本身是 AI 的「习惯性填充」）
-
-| AI 典型产出（正例） | 人工基准（应达到的水平） |
-|---|---|
-| `/** @param userId - The user's unique identifier @returns The user profile */ function getUser(email: string)` — @param 与实际签名矛盾 | `/** @param email - The user's email @returns The user profile */ function getUser(email: string)` |
-| `// Handle edge case when data array is empty` 下一行仅有 `return data.map(...)` 无空数组检查 | 若确实处理了：`if (!data.length) return []; return data.map(...)`；若不处理则不写误导性注释 |
-| `// TODO: add rate limiting` 出现在已实现 rate limiting 的函数上方——注释是旧 prompt 残留 | 删除已完成 TODO 注释，或在实现时同步清理 |
-
-**判定**：注释描述不存在的参数/行为 → `[warning] 幻觉注释: {具体矛盾}`；注释声称有安全/边界防御但实际没有 → `[blocker] 幻觉注释: 声称的{防御类型}未实现`
-
-### 4. 不合理嵌套（Unreasonable Nesting）
+### 3. 不合理嵌套（Unreasonable Nesting）
 **定义**：AI 在增量生成时保持局部上下文导致的条件/回调深层嵌套（≥4 层），且可通过提前 return（guard clause）或 Promise chain 扁平化。AI 生成的嵌套往往每一层仅做微小变换但拒绝重构结构。
 
 **检测规则**：
@@ -78,21 +61,32 @@
 
 **判定**：嵌套 ≥4 层且可通过 guard clause/可选链消除 → `[warning] 不合理嵌套: {位置与简化建议}`；嵌套 ≥5 层或三元 ≥3 层嵌套（可读性严重恶化）→ `[blocker]`
 
-### 5. 幻觉引用检测（Hallucinated Reference Detection）
+### 4. 幻觉检测（综合 Hallucination Detection）
 
-**定义**：检测 AI 生成的虚构 import/require、不存在的 API/方法调用、错误类型签名等编译时无法捕获的引用异常。区别于维度 3「幻觉式注释」（聚焦注释-代码矛盾），本项聚焦**代码中引用的符号本身是否存在**。
+**定义**：检测 AI 生成代码中各类虚构/不存在的引用、API 调用、类型签名与注释行为。本维度统一覆盖注释-代码矛盾与符号存在性验证两大幻觉面向，从注释描述到 import 源到 API 调用到类型标注的完整引用链。
 
-**背景案例**：EY Canada 发布的网络安全报告中大量引用由 AI 生成的虚构论文（Signal #22），暴露了 AI 在引用领域知识时「自信地捏造不存在来源」的退化模式。在代码场景中，该退化的等价表现为虚构 npm 导入、不存在的运行时 API、以及不存在的方法签名。
+**背景案例**：EY Canada 发布的网络安全报告中大量引用由 AI 生成的虚构论文，暴露了 AI 在引用领域知识时「自信地捏造不存在来源」的退化模式。在代码场景中，该退化的等价表现包括虚构 npm 导入、不存在的运行时 API、不存在的类型签名以及误导性注释。
 
 **检测规则**：
+
+注释真实性验证：
+- 检查：JSDoc/TSDoc 中描述的 `@param` 名称与实际函数签名不一致
+- 检查：注释声称「Returns X when Y」但代码中无对应的 Y 条件分支
+- 检查：注释描述的错误处理/边界情况在代码中无对应实现
+- 检查：行内注释标记的 FIXME/TODO/HACK 对应代码行无明显待修复迹象（注释本身是 AI 的「习惯性填充」）
+
+符号存在性验证：
 - 检查：新增 import/require 指向的包不在 `package.json` 或 `node_modules` 已知包列表中（尤其注意拼写接近真实包名的钓鱼包，如 `fastify-redis` 而非 `@fastify/redis`）
-- 检查：调用的函数/方法名在目标对象类型上不存在（如 `dbClient.connectToDB()` 而 `connectToDB` 未在 `dbClient` 或其接口中定义）
+- 检查：调用的函数/方法名在目标对象类型上不存在（如 `dbClient.connectToDB()` 而 `connectToDB` 未在类型中定义）
 - 检查：引用的全局函数/变量未在当前作用域、import 链或全局类型声明中定义
 - 检查：TypeScript/Flow 类型标注引用了不存在的类型、泛型或接口
 - 检查：import 来自生产环境不匹配的范围（仅 devDependencies 中的包被导入到生产源码）
 
 | AI 典型产出（正例） | 人工基准（应达到的水平） |
 |---|---|
+| `/** @param userId - The user's unique identifier @returns The user profile */ function getUser(email: string)` — @param 与实际签名矛盾 | `/** @param email - The user's email @returns The user profile */ function getUser(email: string)` |
+| `// Handle edge case when data array is empty` 下一行仅有 `return data.map(...)` 无空数组检查 | 若确实处理了：`if (!data.length) return []; return data.map(...)`；若不处理则不写误导性注释 |
+| `// TODO: add rate limiting` 出现在已实现 rate limiting 的函数上方——注释是旧 prompt 残留 | 删除已完成 TODO 注释，或在实现时同步清理 |
 | `import Redis from "@fastify/redis"` — 不存在于 package.json 的虚构包 | 使用已声明的缓存依赖（如 `ioredis`）或先在 package.json 中添加依赖再导入 |
 | `dbClient.connectToDB()` — 调用对象上不存在的方法（AI 假设方法存在） | 通过 IDE 自动补全或类型定义确认方法签名后再调用 |
 | `import { hashToken } from "../../utils/crypto-v2"` — 相对路径指向不存在的文件 | 确保目标文件存在并导出相应符号 |
@@ -100,22 +94,36 @@
 | `import nodemailer from "nodemailer"` — 仅在 devDependencies 中的包用于生产代码 | 确认包的用途分组：仅开发工具归 devDeps，运行时依赖归 deps |
 | `import { StreamSSE } from "hono/sse"` — 在真实包中导入不存在的具名导出 | 确认真实包是否导出了该符号 |
 
-**判定**：虚构 import/引用不存在 API → `[blocker] 幻觉引用: {具体符号不存在}`；引用 devDependencies 包到生产代码 → `[warning] 幻觉引用: {包名} 仅存在于 devDependencies，不应在生产中使用`；不确定符号是否存在时降级为 `[info]` 标注 `疑似AI特征: {观察到的符号}`
+**判定**：注释描述不存在的参数/行为 → `[warning] 幻觉检测: 注释矛盾 {具体矛盾}`；注释声称有安全/边界防御但实际没有 → `[blocker] 幻觉检测: 声称的{防御类型}未实现`；虚构 import/引用不存在 API → `[blocker] 幻觉检测: 引用不存在 {具体符号}`；引用 devDependencies 包到生产代码 → `[warning] 幻觉检测: devDependencies 引用 {包名}`；不确定符号是否存在时降级为 `[info]` 标注 `疑似AI特征: {观察到的符号}`
 
-### 6. 安全边界越狱检测（Security Jailbreak Detection）
+### 5. 安全边界越狱检测（Security Jailbreak Detection）
 
-**定义**：检测 AI 生成的代码是否绕过权限控制、构建数据外泄通道、或暗中降低安全等级以突破宿主环境的限制。这类问题常表现为「语法正确且编译通过、但侵入宿主安全边界」的黑客式代码模式。
+**定义**：检测 AI 生成的代码是否绕过权限控制、构建数据外泄通道、跨越沙箱边界或暗中降低安全等级以突破宿主环境的限制。这类问题常表现为「语法正确且编译通过、但侵入宿主安全边界」的黑客式代码模式。
 
 **背景案例**：
-- **Codex sudo 绕过（Signal #5）**：攻击者通过 prompt 注入引导 Codex 在 sudo 上下文中生成危险 shell 命令，利用了 AI 对权限语义理解模糊的特性，绕过操作系统的权限限制。
-- **ChatGPT Sheets 泄露（Signal #17）**：AI 在未获明确授权的情况下将敏感对话数据同步到外部 Google Sheets，构建了隐蔽的数据外泄（exfiltration）通道。
+- **Codex sudo 绕过**：攻击者通过 prompt 注入引导 Codex 在 sudo 上下文中生成危险 shell 命令，利用了 AI 对权限语义理解模糊的特性，绕过操作系统的权限限制。
+- **ChatGPT Sheets 泄露**：AI 在未获明确授权的情况下将敏感对话数据同步到外部 Google Sheets，构建了隐蔽的数据外泄（exfiltration）通道。
 
 **检测规则**：
+
+权限逃逸：
 - 检查：新增代码中是否包含绕过权限检查的工具链调用（如直接调用 `sudo`、`chmod 777`、`setcap`、关闭 SELinux/AppArmor）
-- 检查：是否存在将数据发送到非预期外部端点（请求 url host 不被项目上游信任）的外泄模式，包括 HTTP POST 到未知服务器、WebSocket 到外部域名、DNS 查询编码数据
-- 检查：是否修改了安全配置降低保护等级（如禁用 CSRF 保护、设置 `secure: false` cookie、放宽 CORS `Access-Control-Allow-Origin: *`、跳过 SSL 证书验证 `NODE_TLS_REJECT_UNAUTHORIZED=0`）
-- 检查：是否存在通过环境变量或 eval 动态构造 shell 命令并执行（可能导致命令注入）
 - 检查：是否在非管理员上下文创建了新的管理员/root 级别入口（如新增不需要认证的管理后台路由、提权 API）
+- 检查：是否修改了安全配置降低保护等级（如禁用 CSRF 保护、设置 `secure: false` cookie、放宽 CORS `Access-Control-Allow-Origin: *`、跳过 SSL 证书验证 `NODE_TLS_REJECT_UNAUTHORIZED=0`）
+
+沙箱跨越：
+- 检查：是否存在通过环境变量或 eval 动态构造 shell 命令并执行（可能导致命令注入）
+- 检查：代码是否尝试读取进程沙箱边界外的文件系统路径（如 `/etc/passwd`、`/proc/self/environ`、`~/.ssh/id_rsa`）
+- 检查：是否存在试图脱离容器/沙箱环境的系统调用（如 `--privileged` 标志、`mount`、namespace 操作）
+
+工具调用越界：
+- 检查：AI 代理代码中定义的 tool/function calling 参数是否允许 LLM 调用超出设计范围的操作（如允许任意 URL fetch 而非仅项目内部 API）
+- 检查：代码中是否存在将 AI 模型内部状态、对话历史或 prompt 内容泄露到外部输出的路径
+- 检查：工具函数的参数校验是否缺失（如允许用户控制 system prompt、temperature 等非公开参数）
+
+数据外泄：
+- 检查：是否存在将数据发送到非预期外部端点（请求 url host 不被项目上游信任）的外泄模式，包括 HTTP POST 到未知服务器、WebSocket 到外部域名、DNS 查询编码数据
+- 检查：是否存在将凭据、令牌或密钥硬编码到代码或日志中
 
 | AI 典型产出（正例） | 人工基准（应达到的水平） |
 |---|---|
@@ -125,10 +133,11 @@
 | `const cmd = \`rm -rf \${userInput}\`; exec(cmd)` — 使用用户输入拼接 shell 命令 | 使用 `execFile` 或参数化 API 避免 shell 注入 |
 | `process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"` — 禁用 TLS 证书校验，允许中间人攻击 | 确保 TLS 证书验证始终开启，使用合法证书 |
 | `router.get("/admin/clear-all", (req, res) => db.dropAll())` — 无认证的管理级数据破坏接口 | 所有管理接口必须经过认证 + 授权中间件检查 |
+| `tools: [{ name: "fetch_url", parameters: { url: { type: "string" } } }]` — 允许 LLM 调用任意 URL 的 tool（工具调用越界） | 限制 `fetch_url` 的 url 参数到内部 API 白名单，或使用 allowlist 模式 |
 
-**判定**：存在显式的权限绕过/攻击工具链调用 → `[blocker] 安全越狱: {具体绕过模式}`；数据外泄外部端点 → `[blocker] 安全越狱: 数据外泄至{外部端点}`；安全降级（CORS/CSRF/TLS） → `[warning] 安全越狱: {安全降级描述}`；管理接口缺乏认证 → `[blocker] 安全越狱: 未认证的管理入口`；不确定是否为正常管理模式时降级为 `[info]` 标注 `疑似越狱模式: {观察到的模式}`
+**判定**：存在显式的权限绕过/攻击工具链调用 → `[blocker] 安全越狱: {具体绕过模式}`；数据外泄至外部端点 → `[blocker] 安全越狱: 数据外泄至{外部端点}`；沙箱跨越尝试 → `[blocker] 安全越狱: 沙箱跨越 {具体操作}`；工具调用参数越界 → `[warning] 安全越狱: 工具调用越界 {具体参数}`；安全降级（CORS/CSRF/TLS） → `[warning] 安全越狱: {安全降级描述}`；管理接口缺乏认证 → `[blocker] 安全越狱: 未认证的管理入口`；不确定是否为正常运维操作时降级为 `[info]` 标注 `疑似越狱模式: {观察到的模式}`
 
-**审查策略**：维度 5（幻觉引用）与维度 6（安全越狱）是 AI 编码代理安全退化的直接映射——前者检测「引用不存在的东西」，后者检测「突破宿主安全边界」。两者均无法通过编译器检测且误报率高于前三类维度。实践中优先扫描 diff 中的新 import/新 HTTP 调用/新 shell 命令，遇到疑似案例一律降级为 `[info]` 标注，仅在确认存在实际威胁时升级为 `[warning/blocker]`。保持「宁可标注疑似也不遗漏真实风险」的原则。
+**审查策略**：维度 4（幻觉检测）与维度 5（安全越狱检测）是 AI 编码代理安全退化的直接映射——前者检测「引用不存在的东西」与「注释与代码矛盾」，后者检测「突破宿主安全边界」。两者均无法通过编译器检测且误报率高于前三类维度。实践中优先扫描 diff 中的新 import/新 HTTP 调用/新 shell 命令/新 tool 定义，遇到疑似案例一律降级为 `[info]` 标注，仅在确认存在实际威胁时升级为 `[warning/blocker]`。保持「宁可标注疑似也不遗漏真实风险」的原则。
 
 ### 严重程度总览
 
@@ -136,21 +145,21 @@
 |---|---|---|
 | 过度抽象 | 无状态 class 包装纯函数、单一实现 interface | 抽象层导致类型体操或循环依赖 |
 | 模板重复 | 同 diff 内首次出现 ≥2 文件相同结构 | 跨 3+ 文件重复相同逻辑块 |
-| 幻觉式注释 | 注释描述不存在的参数/行为 | 注释声称的安全/边界防御实际未实现 |
 | 不合理嵌套 | 嵌套 ≥4 层且可通过 guard clause 消除 | 嵌套 ≥5 层或三元 ≥3 层嵌套 |
-| 幻觉引用检测 | 引用 devDependencies 包到生产代码 | 虚构 import/引用不存在 API |
-| 安全边界越狱 | 安全降级（CORS/CSRF/TLS 降级） | 权限绕过/攻击工具链/数据外泄/未认证管理入口 |
+| 幻觉检测 | 注释矛盾、devDependencies 引用到生产代码 | 虚构 import/引用不存在 API、注释声称的安全防御未实现 |
+| 安全边界越狱 | 安全降级（CORS/CSRF/TLS 降级）、工具调用参数越界 | 权限绕过/攻击工具链/数据外泄/沙箱跨越/未认证管理入口 |
 
 ### FINDINGS 标注规范与 Fallthrough
 
 **标注前缀**：在 FINDINGS 输出中统一使用 `AI 生成代码特征-{子类}` 前缀。格式示例：
 - `[warning] AI 生成代码特征-过度抽象: {具体问题}`
 - `[warning] AI 生成代码特征-模板重复: {涉及 N 个文件的重复模式描述}`
-- `[warning] AI 生成代码特征-幻觉注释: {注释与实际行为的矛盾}`
 - `[warning] AI 生成代码特征-不合理嵌套: {位置与简化建议}`
-- `[warning] AI 生成代码特征-幻觉引用: {devDependencies 包用于生产}`
-- `[blocker] AI 生成代码特征-幻觉引用: {虚构符号描述}`
-- `[warning/blocker] AI 生成代码特征-安全越狱: {具体越狱/外泄/降级描述}`
+- `[warning] AI 生成代码特征-幻觉检测: 注释矛盾 {注释与实际行为不一致}`
+- `[blocker] AI 生成代码特征-幻觉检测: 注释矛盾 {声称的安全/边界防御未实现}`
+- `[blocker] AI 生成代码特征-幻觉检测: 引用不存在 {具体虚构符号}`
+- `[warning] AI 生成代码特征-幻觉检测: devDependencies 引用 {包名}`
+- `[warning/blocker] AI 生成代码特征-安全越狱: {具体越狱/外泄/沙箱跨越/工具越界/降级描述}`
 - `[info] 疑似AI特征: {观察到的模式}`（不确定时使用）
 - `[info] 疑似越狱模式: {观察到的模式}`（不确定时使用）
 
