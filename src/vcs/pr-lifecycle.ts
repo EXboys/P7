@@ -225,18 +225,18 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
     return { mergeStatus: "not_requested", detail: parts.join("；") || "仅 review" };
   }
 
-  // ── diff-critic 安全检查：读取 PlanState 中的 findings，阻止安全越狱 blocker 自动合并 ──
+  // ── diff-critic 安全检查：读取 PlanState 中的 findings，阻止安全越狱/幻觉检测 blocker 自动合并 ──
   if (input.planId) {
     try {
       const planState = getPlanState(projectPath, input.planId);
       if (planState?.diffCriticFindings) {
         const findings = parseFindings(planState.diffCriticFindings);
-        const securityBlockers = findings.filter(
-          (f) => f.severity === "blocker" && f.dimension === "安全越狱",
+        const blockerFindings = findings.filter(
+          (f) => f.severity === "blocker" && (f.dimension === "安全越狱" || f.dimension === "幻觉检测"),
         );
-        if (securityBlockers.length > 0) {
-          const detail = `diff-critic 安全越狱 blocker 阻止自动合并：${securityBlockers.map((f) => f.message).join("；")}`;
-          await appendLesson(projectPath, `pr:security-blocked ${prUrl} — ${detail}`);
+        if (blockerFindings.length > 0) {
+          const detail = `diff-critic blocker 阻止自动合并：${blockerFindings.map((f) => `[${f.dimension}] ${f.message}`).join("；")}`;
+          await appendLesson(projectPath, `pr:blocked ${prUrl} — ${detail}`);
           return { mergeStatus: "failed", detail };
         }
       }
