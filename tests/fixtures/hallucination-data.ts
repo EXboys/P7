@@ -41,6 +41,25 @@ export const cacheApp = new Hono();
     expectedBlockers: ["@fastify/redis"],
   },
   {
+    id: "fictional-import-typo-squatting",
+    category: "fictional-import",
+    description: "Import unscoped package fastify-redis (typo-squatting close to @fastify/redis)",
+    setupFiles: {
+      "src/cache.ts": `import { Hono } from "hono";
+
+export const cacheApp = new Hono();
+`,
+    },
+    diffStat: ` src/cache.ts | 2 +++
+@@ -1,3 +1,5 @@
+ import { Hono } from "hono";
++import Redis from "fastify-redis";
+
+ export const cacheApp = new Hono();
++const redis = Redis({ url: "redis://localhost" });`,
+    expectedBlockers: ["fastify-redis"],
+  },
+  {
     id: "fictional-import-org-ml-core",
     category: "fictional-import",
     description: "Import fictional scoped package @org/ml-core",
@@ -536,6 +555,27 @@ export const userSchema = z.object({ name: z.string() });
  export const userSchema = z.object({ name: z.string() });
 +export type UserUltra = ZodUltraSchema<typeof userSchema>;`,
     expectedBlockers: ["ZodUltraSchema"],
+  },
+  {
+    id: "wrong-type-signature-negative-valid-generic-call",
+    category: "wrong-type-signature",
+    description: "Correct usage of generic first<T>(items: T[]) with number[] argument — should NOT be flagged",
+    isNegative: true,
+    setupFiles: {
+      "src/utils.ts": `export function first<T>(items: T[]): T {
+  return items[0];
+}
+`,
+    },
+    diffStat: ` src/utils.ts | 2 +++
+@@ -1,4 +1,6 @@
+ export function first<T>(items: T[]): T {
+   return items[0];
+ }
++export function getScore() {
++  return first([100, 200, 300]);
++}`,
+    expectedBlockers: [],
   },
 ];
 
