@@ -27,7 +27,7 @@ import {
   resolveWorkBranch,
   type WorktreeInfo,
 } from "./worktree.ts";
-import { withExponentialBackoff } from "./retry.ts";
+import { executorSemaphore, withExponentialBackoff } from "./retry.ts";
 import type { StepState } from "../server/queue/types.ts";
 import { updateJobStepState } from "../server/queue/db.ts";
 import { addSdkCost, emptySdkCost } from "./sdk-cost.ts";
@@ -274,6 +274,8 @@ export async function executePlan(
 
   let sdkCost = emptySdkCost();
 
+  await executorSemaphore.acquire();
+
   try {
     if (
       scanRemote?.includes("github.com") &&
@@ -367,6 +369,10 @@ export async function executePlan(
           resetWorktree(wt!.path);
           throw e;
         }
+      }, {
+        maxRetries: cfg.execution_retry.max_retries,
+        initialDelayMs: cfg.execution_retry.initial_delay_ms,
+        maxDelayMs: cfg.execution_retry.max_delay_ms,
       });
 
       const toolSummary = formatToolTraceSummary(toolTrace, pass);
@@ -384,6 +390,7 @@ export async function executePlan(
           projectPath,
           `execute:retry pass ${pass + 2} — no diff vs ${baseCommit.slice(0, 7)}`,
         );
+        await Bun.sleep(cfg.execution_retry.pass_retry_delay_ms);
         resetWorktree(wt!.path);
       }
     }
@@ -603,6 +610,7 @@ export async function executePlan(
       durationSec: Math.round((Date.now() - start) / 1000),
     };
   } finally {
+    executorSemaphore.release();
     if (wt) {
       try {
         removeWorktree(projectPath, wt, false, {
