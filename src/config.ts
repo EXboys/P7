@@ -22,6 +22,7 @@ export const DevAgentConfigSchema = z.object({
       risks_max: 5,
     }),
   execution_cost_limit: z.number().min(0.5).default(5),
+  goal_cost_limit: z.number().min(0.5).default(5),
   execution_timeout_minutes: z.number().min(1).default(35),
   test_command: z.string().optional(),
   diff_critic: z
@@ -175,6 +176,7 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         risks_max: 5,
       },
       execution_cost_limit: 5,
+      goal_cost_limit: 5,
       execution_timeout_minutes: 35,
       diff_critic: {
         tolerated_files: [],

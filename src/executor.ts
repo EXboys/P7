@@ -13,7 +13,7 @@ import {
   loadPreviousExecuteFailureContext,
 } from "./execute-retry-context.ts";
 import { abandonStuckApprovedPlan } from "./approval.ts";
-import { transitionPlanState, updatePlanDiffCriticFindings, recordBackpressureEvent } from "./state.ts";
+import { getGoalCostSum, transitionPlanState, updatePlanDiffCriticFindings, recordBackpressureEvent } from "./state.ts";
 import type { ExecutionResult, Plan } from "./types.ts";
 import { publishToVcs } from "./vcs/index.ts";
 import { runPrReviewAndMerge } from "./vcs/pr-lifecycle.ts";
@@ -304,6 +304,24 @@ export async function executePlan(
       throw new Error(checkPrWorkGate(projectPath, cfg).reason);
     }
     if (planId) transitionPlanState(projectPath, planId, "executing");
+
+    // ── Pre-execution check: goal-level cost limit ──
+    if (plan.goal && cfg.goal_cost_limit > 0) {
+      const goalCost = getGoalCostSum(projectPath, plan.goal);
+      if (goalCost >= cfg.goal_cost_limit) {
+        recordBackpressureEvent(projectPath, planId ?? "", {
+          type: "cost_limit_hit",
+          detail: `Goal "${plan.goal}" cumulative cost $${goalCost.toFixed(2)} >= limit $${cfg.goal_cost_limit.toFixed(2)}`,
+          limitUsd: cfg.goal_cost_limit,
+          actualUsd: goalCost,
+        });
+        throw new Error(
+          `Goal cost limit exceeded: $${goalCost.toFixed(2)} >= $${cfg.goal_cost_limit.toFixed(2)} for goal "${plan.goal}"`,
+        );
+      }
+    }
+    // ──────────────────────────────────────────────────
+
     await appendLesson(
       projectPath,
       `execute:base ${base.source} @ ${baseCommit.slice(0, 7)}${base.synced ? "" : " (未同步远程)"}`,
@@ -371,6 +389,9 @@ export async function executePlan(
           hooks: buildPreToolHook(allowedFiles, wt!.path, onDeny) as never,
           maxTurns,
           toolTrace,
+          projectPath,
+          planId,
+          goal: plan.goal,
         });
         sdkCost = addSdkCost(sdkCost, result);
         if (sdkCost.costUsd > cfg.execution_cost_limit) {

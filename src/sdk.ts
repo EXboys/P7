@@ -84,6 +84,7 @@ export async function runSdkQuery(opts: {
   maxTurns?: number;
   planId?: string;
   projectPath?: string;
+  goal?: string;
   toolTrace?: SdkToolTraceSummary;
 }): Promise<{ text: string; costUsd?: number; usage?: SdkTokenUsage; toolTrace?: SdkToolTraceSummary }> {
   applyAllLlmEnv();
@@ -154,6 +155,7 @@ export async function runSdkQuery(opts: {
       model,
       costUsd,
       usage,
+      goal: opts.goal,
     });
   }
 
