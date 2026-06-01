@@ -2,6 +2,8 @@ import { existsSync } from "fs";
 import type { DevAgentConfig } from "../config.ts";
 import { appendLesson } from "../agent-memory.ts";
 import { readPrompt, runSdkQuery } from "../sdk.ts";
+import { getPlanState } from "../state.ts";
+import { parseFindings } from "../diff-critic.ts";
 import type { Plan } from "../types.ts";
 import { defaultBaseBranch } from "../worktree.ts";
 import { reviewMergeGhEnv, reviewMergeTokenMissing } from "./gh-env.ts";
@@ -183,6 +185,8 @@ export type PrLifecycleInput = {
   config: DevAgentConfig;
   /** 定时复查时可缩短单 PR 等待时间（分钟） */
   mergeWaitMinutes?: number;
+  /** planId（如有）用于读取 PlanState 中的 diff-critic findings 做合并前安全检查 */
+  planId?: string;
 };
 
 export type PrLifecycleResult = {
@@ -218,6 +222,27 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
 
   if (!vcs.auto_merge) {
     return { mergeStatus: "not_requested", detail: parts.join("；") || "仅 review" };
+  }
+
+  // ── diff-critic 安全检查：读取 PlanState 中的 findings，阻止安全越狱 blocker 自动合并 ──
+  if (input.planId) {
+    try {
+      const planState = getPlanState(projectPath, input.planId);
+      if (planState?.diffCriticFindings) {
+        const findings = parseFindings(planState.diffCriticFindings);
+        const securityBlockers = findings.filter(
+          (f) => f.severity === "blocker" && f.dimension === "安全越狱",
+        );
+        if (securityBlockers.length > 0) {
+          const detail = `diff-critic 安全越狱 blocker 阻止自动合并：${securityBlockers.map((f) => f.message).join("；")}`;
+          await appendLesson(projectPath, `pr:security-blocked ${prUrl} — ${detail}`);
+          return { mergeStatus: "failed", detail };
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      parts.push(`安全检查异常（已跳过合并前阻断）：${msg}`);
+    }
   }
 
   const waitMs = (input.mergeWaitMinutes ?? vcs.merge_wait_minutes ?? 20) * 60 * 1000;
