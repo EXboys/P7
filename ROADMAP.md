@@ -19,6 +19,7 @@ Feature: OpenRouter 融资信号驱动的 AI 基础设施成本可观测性 (sta
 - 构建门禁扩展——支持 ESLint/Prettier 格式一致性检查接入 executor 预检阶段
 
 ## Done
+- 分析 executor pipeline 各环节的背压缺口——识别无界队列、无限重试、同步阻塞等 10 个反压缺失点，输出可操作治理路线
 - P7 自主开发管线初始化（discovery → Roadmap → Plan → PR 全链路）
 - 基础 diff-critic 实现（regex OK: true/false 判定）
 - 基础 plan-critic 实现（4 维审查）
