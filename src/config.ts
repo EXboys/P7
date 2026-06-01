@@ -132,6 +132,21 @@ export const DevAgentConfigSchema = z.object({
     }),
   max_pending_plans: z.number().int().positive().default(5),
   max_consecutive_failures: z.number().int().positive().default(3),
+  execution_retry: z
+    .object({
+      max_retries: z.number().int().nonnegative().default(3),
+      initial_delay_ms: z.number().int().positive().default(5000),
+      max_delay_ms: z.number().int().positive().default(60000),
+      pass_retry_delay_ms: z.number().int().positive().default(10000),
+      max_concurrency: z.number().int().positive().default(2),
+    })
+    .default({
+      max_retries: 3,
+      initial_delay_ms: 5000,
+      max_delay_ms: 60000,
+      pass_retry_delay_ms: 10000,
+      max_concurrency: 2,
+    }),
 });
 
 export type DevAgentConfig = z.infer<typeof DevAgentConfigSchema>;
@@ -203,6 +218,13 @@ export function loadConfig(projectPath: string): DevAgentConfig {
       },
       max_pending_plans: 5,
       max_consecutive_failures: 3,
+      execution_retry: {
+        max_retries: 3,
+        initial_delay_ms: 5000,
+        max_delay_ms: 60000,
+        pass_retry_delay_ms: 10000,
+        max_concurrency: 2,
+      },
     };
     saveConfig(projectPath, defaults);
     return defaults;
