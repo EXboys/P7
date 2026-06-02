@@ -3,6 +3,22 @@ import { existsSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { legacyProjectDir, p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
 import type { PlanState, PlanStateStatus, VcsAccountPublishResult } from "./types.ts";
+import type { SdkTokenUsage } from "./sdk-cost.ts";
+
+/** 按 goal 维度归因的成本明细 */
+export interface GoalCostBreakdown {
+  goal: string;
+  totalCostUsd: number;
+  planCount: number;
+}
+
+/** 成本汇总：今日总额、本月总额、查询次数、按 goal 归因 */
+export interface CostSummary {
+  todayTotalUsd: number;
+  monthTotalUsd: number;
+  todayQueryCount: number;
+  byGoal: GoalCostBreakdown[];
+}
 
 export type BackpressureEventType =
   | "degradation"
@@ -266,6 +282,31 @@ export function initDb(projectPath: string): Database {
   db.run(
     `CREATE INDEX IF NOT EXISTS idx_sdk_costs_created ON sdk_costs(created_at DESC)`,
   );
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN input_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN output_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN cache_read_input_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN cache_creation_input_tokens INTEGER");
+  } catch {
+    /* exists */
+  }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN goal TEXT");
+  } catch {
+    /* exists */
+  }
 
   migrateFromJsonIfNeeded(db, projectPath);
   dbCache.set(projectPath, db);
@@ -524,12 +565,12 @@ export function countQueuedPlans(projectPath: string): number {
 
 export function writeSdkCost(
   projectPath: string,
-  params: { planId?: string; role: string; model?: string; costUsd: number },
+  params: { planId?: string; role: string; model?: string; costUsd: number; usage?: SdkTokenUsage; goal?: string },
 ): void {
   const db = initDb(projectPath);
   const stmt = db.prepare(`
-    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at)
-    VALUES ($plan_id, $role, $model, $cost_usd, $created_at)
+    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, goal)
+    VALUES ($plan_id, $role, $model, $cost_usd, $created_at, $input_tokens, $output_tokens, $cache_read_input_tokens, $cache_creation_input_tokens, $goal)
   `);
   withBusyRetry(() => {
     stmt.run({
@@ -538,8 +579,25 @@ export function writeSdkCost(
       $model: params.model ?? null,
       $cost_usd: params.costUsd,
       $created_at: new Date().toISOString(),
+      $input_tokens: params.usage?.inputTokens ?? null,
+      $output_tokens: params.usage?.outputTokens ?? null,
+      $cache_read_input_tokens: params.usage?.cacheReadInputTokens ?? null,
+      $cache_creation_input_tokens: params.usage?.cacheCreationInputTokens ?? null,
+      $goal: params.goal ?? null,
     });
   });
+}
+
+/**
+ * 查询指定 goal 下所有 plan（含所有状态）的累计成本。
+ * 涵盖 failed / merged / pushed 等全部状态的记录，用于 goal 维度预算熔断判断。
+ */
+export function getGoalCostSum(projectPath: string, goal: string): number {
+  const db = initDb(projectPath);
+  const row = db
+    .query(`SELECT COALESCE(SUM(cost_usd), 0) AS total FROM plan_states WHERE goal = $goal`)
+    .get({ $goal: goal }) as { total: number } | undefined;
+  return row?.total ?? 0;
 }
 
 /** 写入 diff-critic 检测结果到 plan_states.diff_critic_findings */
@@ -596,4 +654,40 @@ export function recordBackpressureEvent(
       $plan_id: planId,
     });
   });
+}
+
+/** 查询今日/本月成本汇总，含按 goal 维度的归因 */
+export function queryDailyCostSummary(projectPath: string): CostSummary {
+  const db = initDb(projectPath);
+  const today = new Date().toISOString().slice(0, 10);
+  const monthStart = new Date().toISOString().slice(0, 7) + "-01";
+
+  const todayRow = db
+    .query(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS total, COUNT(*) AS cnt FROM sdk_costs WHERE created_at >= $today`,
+    )
+    .get({ $today: today }) as { total: number; cnt: number } | undefined;
+
+  const monthRow = db
+    .query(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS total FROM sdk_costs WHERE created_at >= $month_start`,
+    )
+    .get({ $month_start: monthStart }) as { total: number } | undefined;
+
+  const byGoalRows = db
+    .query(
+      `SELECT goal, COALESCE(SUM(cost_usd), 0) AS total, COUNT(*) AS cnt FROM plan_states WHERE cost_usd > 0 GROUP BY goal ORDER BY total DESC`,
+    )
+    .all() as { goal: string; total: number; cnt: number }[];
+
+  return {
+    todayTotalUsd: todayRow?.total ?? 0,
+    monthTotalUsd: monthRow?.total ?? 0,
+    todayQueryCount: todayRow?.cnt ?? 0,
+    byGoal: byGoalRows.map((r) => ({
+      goal: r.goal,
+      totalCostUsd: r.total,
+      planCount: r.cnt,
+    })),
+  };
 }

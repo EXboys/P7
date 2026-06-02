@@ -22,6 +22,7 @@ export const DevAgentConfigSchema = z.object({
       risks_max: 5,
     }),
   execution_cost_limit: z.number().min(0.5).default(5),
+  goal_cost_limit: z.number().min(0.5).default(5),
   execution_timeout_minutes: z.number().min(1).default(35),
   test_command: z.string().optional(),
   diff_critic: z
@@ -130,6 +131,7 @@ export const DevAgentConfigSchema = z.object({
       allow_template_fallback: false,
       auto_recover_stall: true,
     }),
+  allowed_api_domains: z.array(z.string()).default(["api.anthropic.com"]),
   max_pending_plans: z.number().int().positive().default(5),
   max_consecutive_failures: z.number().int().positive().default(3),
   execution_retry: z
@@ -175,6 +177,7 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         risks_max: 5,
       },
       execution_cost_limit: 5,
+      goal_cost_limit: 5,
       execution_timeout_minutes: 35,
       diff_critic: {
         tolerated_files: [],
@@ -216,6 +219,7 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         allow_template_fallback: false,
         auto_recover_stall: true,
       },
+      allowed_api_domains: ["api.anthropic.com"],
       max_pending_plans: 5,
       max_consecutive_failures: 3,
       execution_retry: {

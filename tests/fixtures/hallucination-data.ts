@@ -723,6 +723,99 @@ export const webApp = new Hono();
  }`,
     expectedBlockers: ["readonly", "push"],
   },
+  // --- Edge cases: side-effect imports, subpath exports, chained APIs, missing return ---
+  {
+    id: "fictional-import-side-effect",
+    category: "fictional-import",
+    description: "Bare side-effect import of fictional npm package 'fictional-polyfill'",
+    setupFiles: {
+      "src/polyfill.ts": `import { Hono } from "hono";
+
+export const app = new Hono();
+`,
+    },
+    diffStat: ` src/polyfill.ts | 1 +++
+@@ -1,3 +1,4 @@
+ import { Hono } from "hono";
++import "fictional-polyfill";
+
+ export const app = new Hono();`,
+    expectedBlockers: ["fictional-polyfill"],
+  },
+  {
+    id: "fictional-import-subpath-nonexistent",
+    category: "fictional-import",
+    description: "Import non-existent subpath export from real package hono/ssr",
+    setupFiles: {
+      "src/ssr.ts": `import { Hono } from "hono";
+
+export const ssrApp = new Hono();
+`,
+    },
+    diffStat: ` src/ssr.ts | 2 +++
+@@ -1,3 +1,5 @@
+ import { Hono } from "hono";
++import { renderToString } from "hono/ssr";
+
+ export const ssrApp = new Hono();
++const html = renderToString("<h1>Hello</h1>");`,
+    expectedBlockers: ["hono/ssr"],
+  },
+  {
+    id: "nonexistent-api-string-capitalize",
+    category: "nonexistent-api",
+    description: "Call .capitalize() on String — no such prototype method exists",
+    setupFiles: {
+      "src/format.ts": `export function formatName(name: string): string {
+  return name.trim();
+}
+`,
+    },
+    diffStat: ` src/format.ts | 2 +++
+@@ -1,3 +1,5 @@
+ export function formatName(name: string): string {
++  return name.capitalize();
+-  return name.trim();
+ }`,
+    expectedBlockers: ["capitalize"],
+  },
+  {
+    id: "nonexistent-api-chained-nonexistent",
+    category: "nonexistent-api",
+    description: "Chain non-existent parseData().transform() — both functions are fictional",
+    setupFiles: {
+      "src/parse.ts": `export async function load(input: string) {
+  return { raw: input };
+}
+`,
+    },
+    diffStat: ` src/parse.ts | 2 +++
+@@ -1,3 +1,5 @@
+ export async function load(input: string) {
++  return parseData(input).transform("json");
+-  return { raw: input };
+ }`,
+    expectedBlockers: ["parseData", "transform"],
+  },
+  {
+    id: "wrong-type-signature-missing-return",
+    category: "wrong-type-signature",
+    description: "Function annotated to return string but has no return statement (returns undefined)",
+    setupFiles: {
+      "src/greet.ts": `export function greet(name: string): string {
+  return \`Hello, \${name}!\`;
+}
+`,
+    },
+    diffStat: ` src/greet.ts | 2 +++
+@@ -1,3 +1,4 @@
+-export function greet(name: string): string {
+-  return \`Hello, \${name}!\`;
++export function greet(name: string): string {
++  console.log(\`Hello, \${name}!\`);
+ }`,
+    expectedBlockers: ["string"],
+  },
 ];
 
 export const HALLUCINATION_CATEGORIES: HallucinationCategory[] = [
