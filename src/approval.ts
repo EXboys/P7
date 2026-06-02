@@ -241,14 +241,10 @@ export function abandonApprovedPlan(
 ): boolean {
   const approval = getApprovalRecord(projectPath, planId);
   if (!approval || approval.status !== "approved") return false;
-  if (decidedBy === "plan-already-delivered") {
-    approval.status = "rejected";
-    approval.decidedAt = new Date().toISOString();
-    approval.decidedBy = decidedBy;
-    writeApprovalRecord(projectPath, approval);
-    return true;
-  }
-  decideApproval(projectPath, planId, "rejected", decidedBy);
+  approval.status = "rejected";
+  approval.decidedAt = new Date().toISOString();
+  approval.decidedBy = decidedBy;
+  writeApprovalRecord(projectPath, approval);
   return true;
 }
 

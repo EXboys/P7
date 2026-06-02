@@ -126,6 +126,8 @@ describe("stuck approved plans", () => {
       });
       expect(reason).toBe("stale-roadmap-goal");
       expect(listApprovedForExecution(root)).toHaveLength(0);
+      expect(getApprovalRecord(root, samplePlan.planId)?.status).toBe("rejected");
+      expect(getPlanState(root, samplePlan.planId)?.status).toBe("failed");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
