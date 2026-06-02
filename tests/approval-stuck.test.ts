@@ -7,6 +7,7 @@ import {
   decideApproval,
   getApprovalRecord,
   listApprovedForExecution,
+  processAutoApprovals,
   savePendingApproval,
   sweepStuckApprovedPlans,
 } from "../src/approval.ts";
@@ -38,6 +39,14 @@ const samplePlan: PlanRecord = {
     estimated_diff_lines: 100,
   },
 };
+
+function testConfig() {
+  return {
+    auto_approve: { enabled: true, diff_lines_max: 300, files_max: 5, risks_max: 5 },
+    diff_critic: { max_files_ceiling: 5, max_diff_ceiling: 300 },
+    max_pending_plans: 5,
+  } as never;
+}
 
 describe("stuck approved plans", () => {
   test("planGoalMatchesRoadmapDone matches completed roadmap entries", () => {
@@ -155,6 +164,40 @@ describe("stuck approved plans", () => {
       expect(getPlanState(root, samplePlan.planId)?.status).toBe("pr_opened");
       expect(getPlanState(root, samplePlan.planId)?.mergeStatus).toBe("merged");
       expect(listApprovedForExecution(root)).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("auto approval does not count its own pending candidates as queue backlog", () => {
+    const root = setupProject(`# Roadmap
+## Active
+- [ ] Next task
+
+## Done
+`);
+    try {
+      const ids = ["split-1", "split-2", "split-3", "split-4"];
+      for (const planId of ids) {
+        savePendingApproval(root, {
+          ...samplePlan,
+          planId,
+          projectPath: root,
+          goal: "Next task",
+          plan: {
+            ...samplePlan.plan,
+            title: `Split ${planId}`,
+            changes: [{ file: `${planId}.ts`, description: "d", estimated_lines: 10 }],
+            risks: ["small"],
+            estimated_diff_lines: 10,
+          },
+        });
+      }
+
+      const batch = processAutoApprovals(root, testConfig(), { planIds: ids });
+      expect(batch.skipped).toHaveLength(0);
+      expect(new Set(batch.approved)).toEqual(new Set(ids));
+      expect(new Set(listApprovedForExecution(root).map((p) => p.planId))).toEqual(new Set(ids));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
