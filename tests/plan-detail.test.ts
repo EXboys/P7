@@ -96,6 +96,53 @@ describe("getPlanDetailView", () => {
     }
   });
 
+  test("shows delivered rejected approval as merged", () => {
+    const root = setupProject();
+    const da = join(root, ".p7");
+    writeFileSync(
+      join(da, "approvals", "delivered-1.json"),
+      JSON.stringify({
+        planId: "delivered-1",
+        projectPath: root,
+        status: "rejected",
+        goal: "g",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        decidedAt: "2026-01-02T00:00:00.000Z",
+        decidedBy: "plan-already-delivered",
+        plan: {
+          title: "Delivered plan",
+          motivation: "m",
+          changes: [{ file: "a.ts", description: "d", estimated_lines: 10 }],
+          risks: [],
+          validation: "tsc",
+          estimated_diff_lines: 10,
+        },
+      }),
+    );
+    writeFileSync(
+      join(da, "state.json"),
+      JSON.stringify([
+        {
+          planId: "delivered-1",
+          projectPath: root,
+          goal: "g",
+          title: "Delivered plan",
+          status: "rejected",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          prUrl: "https://github.com/example/pr/2",
+          mergeStatus: "merged",
+        },
+      ]),
+    );
+    try {
+      const v = getPlanDetailView(root, "delivered-1");
+      expect(v?.status).toBe("merged");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("returns null for unknown id", () => {
     const root = setupProject();
     try {

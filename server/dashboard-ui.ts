@@ -690,6 +690,23 @@ function formatRetryEta(retryAtMs: number | null): string {
   return `${Math.ceil(sec / 60)} 分钟`;
 }
 
+function formatCooldownMs(ms: number): string {
+  if (ms <= 0) return "";
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  if (sec < 60) return `${sec} 秒`;
+  return `${Math.ceil(sec / 60)} 分钟`;
+}
+
+function stallRecoveryEtaLabel(
+  recoveryCooldownMs: number,
+  schedulerIntervalMinutes: number,
+): string {
+  if (recoveryCooldownMs > 0) {
+    return `恢复冷却中，约 ${formatCooldownMs(recoveryCooldownMs)} 后可生成 Plan`;
+  }
+  return `调度器将在约 ${schedulerIntervalMinutes} 分钟内生成 Plan`;
+}
+
 export function renderSidebarActivity(activity: ProjectActivity | null): string {
   if (!activity) return "";
   const { activeJob, failedPlan } = activity;
@@ -710,7 +727,11 @@ export function renderSidebarActivity(activity: ProjectActivity | null): string 
     return `<div class="sidebar-activity idle">调度器已关闭</div>`;
   }
   if (activity.pipelineStall) {
-    return `<div class="sidebar-activity idle-warn"><strong>管道停滞</strong>将自动从 Roadmap 生成 Plan</div>`;
+    const eta = stallRecoveryEtaLabel(
+      activity.pipelineStall.recoveryCooldownMs,
+      activity.schedulerIntervalMinutes,
+    );
+    return `<div class="sidebar-activity idle-warn"><strong>管道停滞</strong>${esc(eta)}</div>`;
   }
   return `<div class="sidebar-activity idle">系统空闲</div>`;
 }
@@ -768,7 +789,11 @@ export function renderActivityStrip(alias: string, activity: ProjectActivity | n
 
   if (activity.pipelineStall) {
     const goal = activity.pipelineStall.suggestedGoal?.slice(0, 72) ?? "下一 Roadmap 步骤";
-    return `<div class="activity-strip idle-warn"><span class="activity-dot warn"></span><div class="activity-main"><strong>管道停滞 · 将自动恢复</strong><span class="muted">Roadmap 尚有 ${activity.pipelineStall.unfinishedSteps} 项未完成；调度器会从「${esc(goal)}」生成 Plan（约 ${esc(intervalLabel)} 内）</span></div><a class="btn sm ghost" href="/project/${encodeURIComponent(alias)}/plan">规划</a></div>`;
+    const eta = stallRecoveryEtaLabel(
+      activity.pipelineStall.recoveryCooldownMs,
+      schedulerIntervalMinutes,
+    );
+    return `<div class="activity-strip idle-warn"><span class="activity-dot warn"></span><div class="activity-main"><strong>管道停滞 · 将自动恢复</strong><span class="muted">Roadmap 尚有 ${activity.pipelineStall.unfinishedSteps} 项未完成；下一目标「${esc(goal)}」；${esc(eta)}</span></div><a class="btn sm ghost" href="/project/${encodeURIComponent(alias)}/plan">规划</a></div>`;
   }
 
   return `<div class="activity-strip idle"><span class="activity-dot ok"></span><div class="activity-main"><strong>系统空闲</strong><span class="muted">调度器每 ${esc(intervalLabel)} 巡检；无 OPEN PR 阻塞且无运行中任务时自动启动</span></div><a class="btn sm ghost" href="/jobs">任务队列</a></div>`;
@@ -839,6 +864,10 @@ export function renderReviewPage(opts: {
     branch?: string;
     error?: string;
   }>;
+  planPrPage: number;
+  planPrPageSize: number;
+  planPrTotal: number;
+  refreshGh?: boolean;
   reviewJobs: Array<{
     id: string;
     kind: string;
@@ -849,6 +878,9 @@ export function renderReviewPage(opts: {
     progress: string | null;
     error: string | null;
   }>;
+  reviewJobPage: number;
+  reviewJobPageSize: number;
+  reviewJobTotal: number;
   ghReady: boolean;
   prListLive?: boolean;
   workGate?: { blocked: boolean; reason: string };
@@ -894,6 +926,27 @@ export function renderReviewPage(opts: {
     )
     .join("");
 
+  const planPrTotalPages = Math.max(1, Math.ceil(opts.planPrTotal / opts.planPrPageSize));
+  const planPrPage = Math.min(Math.max(1, opts.planPrPage), planPrTotalPages);
+  const planPrStart = opts.planPrTotal === 0 ? 0 : (planPrPage - 1) * opts.planPrPageSize + 1;
+  const planPrEnd = Math.min(opts.planPrTotal, planPrPage * opts.planPrPageSize);
+  const pageHref = (page: number) =>
+    `${base}/review?${[
+      opts.refreshGh ? "refresh=1" : "",
+      `prPage=${page}`,
+    ].filter(Boolean).join("&")}`;
+  const planPrPager =
+    opts.planPrTotal > opts.planPrPageSize
+      ? `<div class="pager" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px">
+<span class="muted">第 ${planPrStart}-${planPrEnd} 条 / 共 ${opts.planPrTotal} 条</span>
+${planPrPage > 1 ? `<a class="btn ghost sm" href="${pageHref(planPrPage - 1)}">上一页</a>` : `<button class="btn ghost sm" disabled>上一页</button>`}
+<span class="muted">${planPrPage} / ${planPrTotalPages}</span>
+${planPrPage < planPrTotalPages ? `<a class="btn ghost sm" href="${pageHref(planPrPage + 1)}">下一页</a>` : `<button class="btn ghost sm" disabled>下一页</button>`}
+</div>`
+      : opts.planPrTotal > 0
+        ? `<p class="muted" style="text-align:right;margin:10px 0 0">共 ${opts.planPrTotal} 条</p>`
+        : "";
+
   const jobRows = opts.reviewJobs
     .map(
       (j) =>
@@ -906,6 +959,24 @@ export function renderReviewPage(opts: {
 </tr>`,
     )
     .join("");
+  const reviewJobTotalPages = Math.max(1, Math.ceil(opts.reviewJobTotal / opts.reviewJobPageSize));
+  const reviewJobPage = Math.min(Math.max(1, opts.reviewJobPage), reviewJobTotalPages);
+  const reviewJobPageHref = (page: number) =>
+    `${base}/review?${[
+      opts.refreshGh ? "refresh=1" : "",
+      opts.planPrPage > 1 ? `prPage=${opts.planPrPage}` : "",
+      `reviewJobPage=${page}`,
+    ].filter(Boolean).join("&")}`;
+  const reviewJobPager =
+    opts.reviewJobTotal > opts.reviewJobPageSize
+      ? `<div class="pager" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px">
+<span class="muted">共 ${opts.reviewJobTotal} 条 · 第 ${reviewJobPage} / ${reviewJobTotalPages} 页</span>
+${reviewJobPage > 1 ? `<a class="btn ghost sm" href="${reviewJobPageHref(reviewJobPage - 1)}">上一页</a>` : `<span class="btn ghost sm disabled">上一页</span>`}
+${reviewJobPage < reviewJobTotalPages ? `<a class="btn ghost sm" href="${reviewJobPageHref(reviewJobPage + 1)}">下一页</a>` : `<span class="btn ghost sm disabled">下一页</span>`}
+</div>`
+      : opts.reviewJobTotal > 0
+        ? `<p class="muted" style="text-align:right;margin:10px 0 0">共 ${opts.reviewJobTotal} 条</p>`
+        : "";
 
   const ghWarn = opts.ghReady
     ? ""
@@ -927,10 +998,10 @@ export function renderReviewPage(opts: {
 <p class="muted">${opts.prListLive ? "来自 <code>gh pr list</code>；复查任务会对每个 PR 自动 review，并在开启自动合并时尝试合并、修复冲突。" : "打开页面时不调用 GitHub。点「刷新 PR 列表」获取最新 OPEN PR；执行任务时会自动拉取。"}</p>
 <div class="tbl-wrap"><table><thead><tr><th>PR</th><th>标题</th><th>分支</th><th>标签</th><th>合并状态</th><th></th></tr></thead><tbody>${openRows || `<tr><td colspan="6" class="empty">${opts.prListLive ? "暂无 OPEN PR" : "未刷新 — 点上方「刷新 PR 列表」"}</td></tr>`}</tbody></table></div></div>
 <div class="panel"><h2>Plan 关联的 PR</h2>
-<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>链接</th><th>合并</th><th>备注</th></tr></thead><tbody>${planRows || `<tr><td colspan="6" class="empty">尚无关联 PR</td></tr>`}</tbody></table></div></div>
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>链接</th><th>合并</th><th>备注</th></tr></thead><tbody>${planRows || `<tr><td colspan="6" class="empty">尚无关联 PR</td></tr>`}</tbody></table></div>${planPrPager}</div>
 <div class="panel"><h2>Review 任务</h2>
 <p class="muted"><code>pr-review</code> 运行期间，同项目的 Roadmap（discover-daily）与 Plan 执行会排队等待，避免与修冲突抢仓库。</p>
-<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>进度</th><th>创建</th></tr></thead><tbody>${jobRows || `<tr><td colspan="5" class="empty">暂无 Review 任务</td></tr>`}</tbody></table></div></div>`;
+<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>进度</th><th>创建</th></tr></thead><tbody>${jobRows || `<tr><td colspan="5" class="empty">暂无 Review 任务</td></tr>`}</tbody></table></div>${reviewJobPager}</div>`;
 }
 
 function shortLinkLabel(url: string, kind: "pr" | "issue" | "review"): string {

@@ -5,13 +5,15 @@ import { tmpdir } from "os";
 import {
   abandonStuckApprovedPlan,
   decideApproval,
+  getApprovalRecord,
   listApprovedForExecution,
+  processAutoApprovals,
   savePendingApproval,
   sweepStuckApprovedPlans,
 } from "../src/approval.ts";
 import { planGoalMatchesRoadmapDone } from "../src/roadmap.ts";
 import type { PlanRecord } from "../src/types.ts";
-import { upsertPlanState } from "../src/state.ts";
+import { getPlanState, upsertPlanState } from "../src/state.ts";
 
 function setupProject(roadmap: string): string {
   const root = join(tmpdir(), `p7-stuck-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -37,6 +39,14 @@ const samplePlan: PlanRecord = {
     estimated_diff_lines: 100,
   },
 };
+
+function testConfig() {
+  return {
+    auto_approve: { enabled: true, diff_lines_max: 300, files_max: 5, risks_max: 5 },
+    diff_critic: { max_files_ceiling: 5, max_diff_ceiling: 300 },
+    max_pending_plans: 5,
+  } as never;
+}
 
 describe("stuck approved plans", () => {
   test("planGoalMatchesRoadmapDone matches completed roadmap entries", () => {
@@ -116,6 +126,80 @@ describe("stuck approved plans", () => {
       });
       expect(reason).toBe("stale-roadmap-goal");
       expect(listApprovedForExecution(root)).toHaveLength(0);
+      expect(getApprovalRecord(root, samplePlan.planId)?.status).toBe("rejected");
+      expect(getPlanState(root, samplePlan.planId)?.status).toBe("failed");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("abandon delivered approved plan preserves delivered plan state", () => {
+    const root = setupProject(`# Roadmap
+## Active
+- [x] Shipped task
+
+## Done
+`);
+    try {
+      samplePlan.projectPath = root;
+      samplePlan.goal = "Shipped task";
+      savePendingApproval(root, samplePlan);
+      decideApproval(root, samplePlan.planId, "approved", "test");
+      upsertPlanState(root, {
+        planId: samplePlan.planId,
+        projectPath: root,
+        goal: samplePlan.goal,
+        title: "Shipped",
+        status: "pr_opened",
+        createdAt: samplePlan.createdAt,
+        prUrl: "https://github.com/example/pr/123",
+        mergeStatus: "merged",
+      });
+
+      const reason = abandonStuckApprovedPlan(root, samplePlan.planId, {
+        projectAlias: "demo",
+        goal: samplePlan.goal,
+      });
+      expect(reason).toBe("plan-already-delivered");
+      expect(getApprovalRecord(root, samplePlan.planId)?.status).toBe("rejected");
+      expect(getApprovalRecord(root, samplePlan.planId)?.decidedBy).toBe("plan-already-delivered");
+      expect(getPlanState(root, samplePlan.planId)?.status).toBe("pr_opened");
+      expect(getPlanState(root, samplePlan.planId)?.mergeStatus).toBe("merged");
+      expect(listApprovedForExecution(root)).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("auto approval does not count its own pending candidates as queue backlog", () => {
+    const root = setupProject(`# Roadmap
+## Active
+- [ ] Next task
+
+## Done
+`);
+    try {
+      const ids = ["split-1", "split-2", "split-3", "split-4"];
+      for (const planId of ids) {
+        savePendingApproval(root, {
+          ...samplePlan,
+          planId,
+          projectPath: root,
+          goal: "Next task",
+          plan: {
+            ...samplePlan.plan,
+            title: `Split ${planId}`,
+            changes: [{ file: `${planId}.ts`, description: "d", estimated_lines: 10 }],
+            risks: ["small"],
+            estimated_diff_lines: 10,
+          },
+        });
+      }
+
+      const batch = processAutoApprovals(root, testConfig(), { planIds: ids });
+      expect(batch.skipped).toHaveLength(0);
+      expect(new Set(batch.approved)).toEqual(new Set(ids));
+      expect(new Set(listApprovedForExecution(root).map((p) => p.planId))).toEqual(new Set(ids));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

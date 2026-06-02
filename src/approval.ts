@@ -50,6 +50,12 @@ export function getApprovalRecord(projectPath: string, planId: string): Approval
   return JSON.parse(readFileSync(path, "utf-8")) as ApprovalRecord;
 }
 
+function writeApprovalRecord(projectPath: string, record: ApprovalRecord): void {
+  const dir = projectSubpathForWrite(projectPath, "approvals");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(approvalFilePath(projectPath, record.planId, true), JSON.stringify(record, null, 2));
+}
+
 export function listPendingApprovals(projectPath: string): ApprovalRecord[] {
   const dir = approvalsDir(projectPath);
   if (!existsSync(dir)) return [];
@@ -70,9 +76,7 @@ export function decideApproval(
   record.status = status;
   record.decidedAt = new Date().toISOString();
   record.decidedBy = decidedBy;
-  const dir = projectSubpathForWrite(projectPath, "approvals");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(approvalFilePath(projectPath, planId, true), JSON.stringify(record, null, 2));
+  writeApprovalRecord(projectPath, record);
   transitionPlanState(projectPath, planId, status === "approved" ? "approved" : "rejected");
   return record;
 }
@@ -123,13 +127,17 @@ export function processAutoApprovals(
     enqueueExecute?: (planId: string) => void;
   },
 ): AutoApproveBatchResult {
+  const pending = listPendingApprovals(projectPath).filter((p) =>
+    opts?.planIds ? opts.planIds.includes(p.planId) : true,
+  );
   // 队列深度 ≥ 70% 时暂停所有自动审批，避免已积压时继续产生 approved Plan
   const degradeThreshold = Math.ceil(cfg.max_pending_plans * 0.7);
-  const depth = countQueuedPlans(projectPath);
-  if (depth >= degradeThreshold) {
-    const pending = listPendingApprovals(projectPath).filter((p) =>
-      opts?.planIds ? opts.planIds.includes(p.planId) : true,
-    );
+  const candidateIds = new Set(pending.map((p) => p.planId));
+  const candidateDepth = listPendingApprovals(projectPath).filter((p) =>
+    candidateIds.has(p.planId),
+  ).length;
+  const existingDepth = Math.max(0, countQueuedPlans(projectPath) - candidateDepth);
+  if (existingDepth >= degradeThreshold) {
     return {
       approved: [],
       skipped: pending.map((p) => ({ planId: p.planId, reason: "queue_depth" })),
@@ -138,9 +146,6 @@ export function processAutoApprovals(
 
   const approved: string[] = [];
   const skipped: { planId: string; reason: string }[] = [];
-  const pending = listPendingApprovals(projectPath).filter((p) =>
-    opts?.planIds ? opts.planIds.includes(p.planId) : true,
-  );
 
   for (const rec of pending) {
     const reason = autoApproveBlockReason(rec.plan, cfg);
@@ -236,7 +241,10 @@ export function abandonApprovedPlan(
 ): boolean {
   const approval = getApprovalRecord(projectPath, planId);
   if (!approval || approval.status !== "approved") return false;
-  decideApproval(projectPath, planId, "rejected", decidedBy);
+  approval.status = "rejected";
+  approval.decidedAt = new Date().toISOString();
+  approval.decidedBy = decidedBy;
+  writeApprovalRecord(projectPath, approval);
   return true;
 }
 
@@ -252,7 +260,10 @@ export function abandonStuckApprovedPlan(
   const state = getPlanState(projectPath, planId);
   if (
     state &&
-    (state.status === "merged" || state.status === "pr_opened" || state.status === "pushed")
+    (state.status === "merged" ||
+      state.status === "pr_opened" ||
+      state.status === "pushed" ||
+      state.mergeStatus === "merged")
   ) {
     if (abandonApprovedPlan(projectPath, planId, "plan-already-delivered")) {
       return "plan-already-delivered";

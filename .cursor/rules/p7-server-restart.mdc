@@ -1,0 +1,33 @@
+---
+description: P7 改代码后必须重启本地 server 才会生效
+alwaysApply: true
+---
+
+# P7 本地服务：改代码必重启
+
+本仓库的 P7 控制台/调度器/Worker 是**长驻进程**（默认 `http://127.0.0.1:8765`），**不会**热加载 `server/`、`src/` 等改动。
+
+## 必须重启的场景
+
+完成以下任一操作后，**在同一轮任务结束前**重启服务，并简要告知用户已重启：
+
+- 修改 `server/`、`src/`、`prompts/` 等运行时逻辑
+- 修复调度器、队列、Plan 执行、diff-critic、dashboard 相关 bug
+- 用户说「PR 到线上」「部署」「生效」或抱怨「怎么没跑/没变化」
+
+## 标准命令
+
+```bash
+kill $(lsof -t -i :8765 2>/dev/null) 2>/dev/null; sleep 1
+cd /Users/airlu/Documents/p7 && PORT=8765 bun run server/index.ts &
+sleep 2; curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8765/
+```
+
+## 禁止
+
+- 只改代码、只提 PR、只跑测试，却**不重启**就告诉用户「已修复/应该能跑了」
+- 假设 Bun/Node 会自动加载新代码
+
+## 回复用户时
+
+若本轮涉及服务端改动，明确写一句：**「已重启 P7 服务（8765）」**。

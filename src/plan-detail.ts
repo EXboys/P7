@@ -1,7 +1,7 @@
 import { getApprovalRecord } from "./approval.ts";
 import { loadPlanRecord } from "./planner.ts";
 import { getPlanState } from "./state.ts";
-import type { Plan, PlanState } from "./types.ts";
+import type { ApprovalRecord, Plan, PlanState } from "./types.ts";
 
 export type PlanDetailView = {
   planId: string;
@@ -20,6 +20,29 @@ function canRetryExecuteFor(state: PlanState | null): boolean {
   return true;
 }
 
+function deliveredStatus(state: PlanState | null): string | null {
+  if (!state) return null;
+  if (state.mergeStatus === "merged") return "merged";
+  if (state.status === "merged" || state.status === "pr_opened" || state.status === "pushed") {
+    return state.status;
+  }
+  return null;
+}
+
+/** 已交付 Plan 的 approval 会被 sweep 标为 rejected，展示应跟随 PlanState。 */
+function resolveApprovalDisplayStatus(approval: ApprovalRecord, state: PlanState | null): string {
+  const delivered = deliveredStatus(state);
+  if (delivered) return delivered;
+  if (
+    approval.status === "rejected" &&
+    (approval.decidedBy === "plan-already-delivered" || approval.decidedBy === "roadmap-already-done")
+  ) {
+    return state?.status ?? "merged";
+  }
+  if (state?.status && state.status !== "pending_approval") return state.status;
+  return approval.status;
+}
+
 export function getPlanDetailView(projectPath: string, planId: string): PlanDetailView | null {
   const approval = getApprovalRecord(projectPath, planId);
   const state = getPlanState(projectPath, planId);
@@ -29,7 +52,7 @@ export function getPlanDetailView(projectPath: string, planId: string): PlanDeta
     return {
       planId,
       goal: approval.goal,
-      status: approval.status,
+      status: resolveApprovalDisplayStatus(approval, state),
       plan: approval.plan,
       state,
       canApprove: approval.status === "pending",

@@ -18,6 +18,7 @@ import type { DailyJobPayload, ExecuteJobPayload, JobKind, JobPayload } from "./
 import { loadClaudeSettingsEnv } from "../../src/sdk.ts";
 import { loadConfig } from "../../src/config.ts";
 import { getApprovalRecord } from "../../src/approval.ts";
+import { getPlanState, transitionPlanState } from "../../src/state.ts";
 import { checkPrWorkGate } from "../../src/vcs/pr-work-gate.ts";
 import { ghInstalled, gitRemoteOrigin } from "../../src/gh-status.ts";
 
@@ -221,6 +222,17 @@ function maybeEnqueueExecuteAfterDiscover(
   audit("job.auto_execute", { alias, planId: r.planId });
 }
 
+function syncFailedExecutePlanState(projectPath: string, payload: JobPayload, error: string): void {
+  const planId = (payload as ExecuteJobPayload).planId;
+  if (!planId) return;
+  const state = getPlanState(projectPath, planId);
+  if (!state) return;
+  if (["pushed", "pr_opened", "merged"].includes(state.status)) return;
+  transitionPlanState(projectPath, planId, "failed", {
+    error,
+  });
+}
+
 export function startWorker(cfg: ServerConfig): () => void {
   for (const job of reclaimOrphanedRunningJobs()) {
     audit("job.reclaimed_orphan", { id: job.id, alias: job.project_alias });
@@ -354,6 +366,17 @@ export function startWorker(cfg: ServerConfig): () => void {
         }
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
+        try {
+          const payload = JSON.parse(job.payload) as JobPayload;
+          const projectPath = String(
+            cfg.project_aliases[job.project_alias] ??
+              (payload as DailyJobPayload).projectPath ??
+              (payload as ExecuteJobPayload).projectPath,
+          );
+          if (job.kind === "execute") syncFailedExecutePlanState(projectPath, payload, err);
+        } catch {
+          /* best-effort state sync */
+        }
         finishJob(job.id, "failed", null, err);
         audit("job.failed", { id: job.id, error: err });
       } finally {

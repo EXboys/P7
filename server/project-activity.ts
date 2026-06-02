@@ -6,7 +6,7 @@ import {
   sweepStuckApprovedPlans,
 } from "../src/approval.ts";
 import { getPlanState } from "../src/state.ts";
-import { detectPipelineStall } from "../src/pipeline-stall.ts";
+import { detectPipelineStall, pipelineRecoveryCooldownRemainingMs } from "../src/pipeline-stall.ts";
 import { loadConfig } from "../src/config.ts";
 import { planDisplayTitle } from "../src/plan-i18n.ts";
 import { listJobsForProject } from "./queue/store.ts";
@@ -31,6 +31,8 @@ export type ProjectActivity = {
   pipelineStall: {
     unfinishedSteps: number;
     suggestedGoal: string | null;
+    /** 距下次可自动 stall 恢复还剩多少毫秒；0 表示下一轮调度 tick 可入队 */
+    recoveryCooldownMs: number;
   } | null;
 };
 
@@ -85,11 +87,17 @@ export function getProjectActivity(
     break;
   }
 
+  const stall = detectPipelineStall(projectPath, loadConfig(projectPath), projectAlias);
   return {
     activeJob,
     failedPlan,
     schedulerEnabled,
     schedulerIntervalMinutes,
-    pipelineStall: detectPipelineStall(projectPath, loadConfig(projectPath), projectAlias),
+    pipelineStall: stall
+      ? {
+          ...stall,
+          recoveryCooldownMs: pipelineRecoveryCooldownRemainingMs(projectAlias, projectPath),
+        }
+      : null,
   };
 }

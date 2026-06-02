@@ -8,7 +8,17 @@ import { audit } from "./audit.ts";
 import { queryAuditLogs } from "./audit-log.ts";
 import { listJobsForProject, listAllJobs, listAllJobsUnbounded, enqueueJob, sumTodayJobCostUsd, sumMonthJobCostUsd } from "./queue/store.ts";
 import { paginateJobRows } from "./job-query.ts";
-import { listPlanStates, preparePlanExecuteRetry } from "../src/state.ts";
+import {
+  countPlanStatesByStatuses,
+  countPlanStatesWithDelivery,
+  countPlanStatesWithPr,
+  listPlanStates,
+  listPlanStatesByStatuses,
+  listPlanStatesWithDelivery,
+  listPlanStatesWithPr,
+  preparePlanExecuteRetry,
+} from "../src/state.ts";
+import type { PlanStateStatus } from "../src/types.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
 import {
   autoApproveBlockReason,
@@ -74,6 +84,47 @@ import {
   renderModelSelect,
   type ProjectTab,
 } from "./dashboard-ui.ts";
+
+const LIST_PAGE_SIZE = 20;
+
+function parsePageParam(value: string | undefined): number {
+  const n = Number(value ?? "1");
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
+
+function pageOffset(page: number, perPage = LIST_PAGE_SIZE): number {
+  return (Math.max(1, page) - 1) * perPage;
+}
+
+function renderListPager(opts: {
+  total: number;
+  page: number;
+  perPage?: number;
+  hrefForPage: (page: number) => string;
+}): string {
+  const perPage = opts.perPage ?? LIST_PAGE_SIZE;
+  if (opts.total <= perPage) {
+    return opts.total > 0
+      ? `<p class="muted" style="text-align:right;margin:10px 0 0">共 ${opts.total} 条</p>`
+      : "";
+  }
+  const totalPages = Math.max(1, Math.ceil(opts.total / perPage));
+  const page = Math.min(Math.max(1, opts.page), totalPages);
+  const start = (page - 1) * perPage + 1;
+  const end = Math.min(opts.total, page * perPage);
+  const prev =
+    page > 1
+      ? `<a class="btn ghost sm" href="${esc(opts.hrefForPage(page - 1))}">上一页</a>`
+      : `<span class="btn ghost sm disabled">上一页</span>`;
+  const next =
+    page < totalPages
+      ? `<a class="btn ghost sm" href="${esc(opts.hrefForPage(page + 1))}">下一页</a>`
+      : `<span class="btn ghost sm disabled">下一页</span>`;
+  return `<nav class="pager" aria-label="列表分页">
+<span class="pager-info">第 ${start}-${end} 条 / 共 ${opts.total} 条 · 第 ${page} / ${totalPages} 页</span>
+<div class="pager-links">${prev}${next}</div>
+</nav>`;
+}
 
 function applyVcsConfigFromBody(
   dc: DevAgentConfig,
@@ -539,10 +590,26 @@ ${content ? `<pre class="roadmap-backup-body">${esc(content)}</pre>` : `<p class
       body = `${currentRoadmapPanel}${renderPlanRoadmapRegenForm(alias, hasRadar)}${backupHtml}`;
     } else {
       const dc = loadConfig(proj.path);
+      const page = parsePageParam(c.req.query("page"));
       const suggestedGoal =
         (existsSync(proj.path) ? recommendRoadmapGoal(proj.path) : null) ?? dc.initial_goal;
       const pending = existsSync(proj.path) ? listPendingApprovals(proj.path) : [];
-      const states = existsSync(proj.path) ? listPlanStates(proj.path, 30) : [];
+      const historyStatuses: PlanStateStatus[] = [
+        "planned",
+        "approved",
+        "rejected",
+        "executing",
+        "pushed",
+        "pr_opened",
+        "merged",
+        "failed",
+      ];
+      const historyTotal = existsSync(proj.path)
+        ? countPlanStatesByStatuses(proj.path, historyStatuses)
+        : 0;
+      const states = existsSync(proj.path)
+        ? listPlanStatesByStatuses(proj.path, historyStatuses, LIST_PAGE_SIZE, pageOffset(page))
+        : [];
       const eligible = pending.filter((a) => shouldAutoApprove(a.plan, dc)).length;
       const autoApproveBanner =
         pending.length > 0 && dc.auto_approve.enabled
@@ -569,16 +636,19 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
         })
         .join("");
       const planned = states
-        .filter((s) => !pending.some((p) => p.planId === s.planId))
-        .slice(0, 15)
         .map(
           (s) =>
             `<tr><td><a href="/project/${encodeURIComponent(alias)}/plans/${encodeURIComponent(s.planId)}">${esc(s.planId)}</a></td><td>${statusBadge(s.status)}</td><td>${esc(s.title)}</td></tr>`,
         )
         .join("");
+      const historyPager = renderListPager({
+        total: historyTotal,
+        page,
+        hrefForPage: (p) => `/project/${encodeURIComponent(alias)}/plan?section=plans&page=${p}`,
+      });
       body = `${renderPlanGenerateForm(alias, suggestedGoal)}${autoApproveBanner}<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>标题</th><th>规模</th><th></th></tr></thead><tbody>${approvalRows || `<tr><td colspan="4" class="empty">暂无待审批</td></tr>`}</tbody></table></div>
 <h2 style="margin-top:24px">历史 Plan</h2>
-<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>状态</th><th>标题</th></tr></thead><tbody>${planned || `<tr><td colspan="3" class="empty">无</td></tr>`}</tbody></table></div>`;
+<div class="tbl-wrap"><table><thead><tr><th>ID</th><th>状态</th><th>标题</th></tr></thead><tbody>${planned || `<tr><td colspan="3" class="empty">无</td></tr>`}</tbody></table></div>${historyPager}`;
     }
     const sectionDesc =
       section === "plans"
@@ -605,13 +675,25 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
     const sectionRaw = c.req.query("section");
     const section =
       sectionRaw === "delivery" || sectionRaw === "jobs" ? sectionRaw : "executions";
-    const states = existsSync(proj.path) ? listPlanStates(proj.path, 40) : [];
-    const jobs = listJobsForProject(alias, 30);
+    const page = parsePageParam(c.req.query("page"));
+    const runStatuses: PlanStateStatus[] = ["executing", "pushed", "failed", "approved", "pr_opened", "merged"];
+    const runTotal = existsSync(proj.path)
+      ? countPlanStatesByStatuses(proj.path, runStatuses)
+      : 0;
+    const runStates = existsSync(proj.path)
+      ? listPlanStatesByStatuses(proj.path, runStatuses, LIST_PAGE_SIZE, pageOffset(page))
+      : [];
+    const deliveryTotal = existsSync(proj.path) ? countPlanStatesWithDelivery(proj.path) : 0;
+    const delivered = existsSync(proj.path)
+      ? listPlanStatesWithDelivery(proj.path, LIST_PAGE_SIZE, pageOffset(page))
+      : [];
+    const jobsAll = listJobsForProject(alias, 10_000);
+    const jobs = jobsAll.slice(pageOffset(page), pageOffset(page) + LIST_PAGE_SIZE);
     const todayCost = sumTodayJobCostUsd(alias);
     const monthCost = sumMonthJobCostUsd(alias);
     const dailyCap = getCfg().daily_cost_cap_usd;
     const jobByPlanId = new Map<string, (typeof jobs)[0]>();
-    for (const j of jobs) {
+    for (const j of jobsAll) {
       if (j.kind !== "execute") continue;
       try {
         const planId = (JSON.parse(j.payload) as { planId?: string }).planId;
@@ -620,8 +702,7 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
         /* ignore */
       }
     }
-    const runRows = states
-      .filter((s) => ["executing", "pushed", "failed", "approved", "pr_opened", "merged"].includes(s.status))
+    const runRows = runStates
       .map((s) => {
         const job = jobByPlanId.get(s.planId);
         const startAt = job?.started_at ?? (s.status === "executing" ? s.updatedAt : s.createdAt);
@@ -640,7 +721,6 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
 <td class="muted">${esc((s.error ?? "").slice(0, 60))}</td></tr>`;
       })
       .join("");
-    const delivered = states.filter((s) => s.prUrl || s.issueUrl);
     const prRows = delivered
       .map((s) => {
         const links = [s.prUrl ? `<a href="${esc(s.prUrl)}" target="_blank">PR</a>` : ""].filter(Boolean).join(" ");
@@ -669,6 +749,11 @@ ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-
 <td class="muted">${esc((j.error ?? "").slice(0, 50))}</td></tr>`;
       })
       .join("");
+    const runHref = (p: number) =>
+      `/project/${encodeURIComponent(alias)}/run?section=${encodeURIComponent(section)}&page=${p}`;
+    const executionsPager = renderListPager({ total: runTotal, page, hrefForPage: runHref });
+    const deliveryPager = renderListPager({ total: deliveryTotal, page, hrefForPage: runHref });
+    const jobsPager = renderListPager({ total: jobsAll.length, page, hrefForPage: runHref });
     const metricsHtml = `<div class="cards" style="margin-bottom:20px">
 ${metricCard(formatUsd(todayCost), "今日消耗", todayCost >= dailyCap * 0.8 ? "warn" : undefined)}
 ${metricCard(formatUsd(monthCost.total), "本月累计", undefined)}
@@ -677,11 +762,11 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
 </div>`;
     const hintHtml = `<p class="muted" style="margin-bottom:14px">模型费用来自 Claude SDK 返回的 <code>total_cost_usd</code> 与 token 统计；仅新执行会记录，历史任务显示 —。PR 复查请前往侧栏 <a href="/project/${encodeURIComponent(alias)}/review"><strong>Review</strong></a>。</p>`;
     const executionsPanel = `<div class="panel"><h2>执行记录</h2>
-<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="8" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="8" class="empty">暂无</td></tr>`}</tbody></table></div>${executionsPager}</div>`;
     const deliveryPanel = `<div class="panel"><h2>PR / 交付</h2>
-<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>链接</th><th>合并</th></tr></thead><tbody>${prRows || `<tr><td colspan="4" class="empty">尚无 PR</td></tr>`}</tbody></table></div></div>`;
+<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>链接</th><th>合并</th></tr></thead><tbody>${prRows || `<tr><td colspan="4" class="empty">尚无 PR</td></tr>`}</tbody></table></div>${deliveryPager}</div>`;
     const jobsPanel = `<div class="panel"><h2>后台任务</h2><p class="muted">队列任务；运行中时长随页面刷新更新。</p>
-<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>错误</th></tr></thead><tbody>${jobRows || `<tr><td colspan="7" class="empty">暂无</td></tr>`}</tbody></table></div></div>`;
+<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>错误</th></tr></thead><tbody>${jobRows || `<tr><td colspan="7" class="empty">暂无</td></tr>`}</tbody></table></div>${jobsPager}</div>`;
     const sectionPanel =
       section === "delivery" ? deliveryPanel : section === "jobs" ? jobsPanel : executionsPanel;
     const sectionDesc =
@@ -708,6 +793,9 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
     if (!proj) return c.text("not found", 404);
     const flash = c.req.query("flash");
     const refreshGh = c.req.query("refresh") === "1";
+    const prPageSize = 20;
+    const prPage = Math.max(1, Number(c.req.query("prPage") ?? "1") || 1);
+    const reviewJobPage = parsePageParam(c.req.query("reviewJobPage"));
     const dc = loadConfig(proj.path);
     const vcs = dc.vcs;
     const label =
@@ -719,9 +807,10 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
       refreshGh && ghOk && gitRemoteOrigin(proj.path)
         ? listOpenPullRequests(proj.path, { label, limit: 25 })
         : [];
-    const states = existsSync(proj.path) ? listPlanStates(proj.path, 60) : [];
-    const planPrRows = states
-      .filter((s) => s.prUrl)
+    const planPrTotal = existsSync(proj.path) ? countPlanStatesWithPr(proj.path) : 0;
+    const planPrRows = (existsSync(proj.path)
+      ? listPlanStatesWithPr(proj.path, prPageSize, (prPage - 1) * prPageSize)
+      : [])
       .map((s) => ({
         planId: s.planId,
         title: s.title,
@@ -731,7 +820,11 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
         branch: s.branch,
         error: s.error,
       }));
-    const reviewJobs = listJobsForProject(alias, 30).filter((j) => j.kind === "pr-review");
+    const allReviewJobs = listJobsForProject(alias, 10_000).filter((j) => j.kind === "pr-review");
+    const reviewJobs = allReviewJobs.slice(
+      pageOffset(reviewJobPage),
+      pageOffset(reviewJobPage) + LIST_PAGE_SIZE,
+    );
     const workGate =
       refreshGh && ghOk && gitRemoteOrigin(proj.path)
         ? checkPrWorkGate(proj.path, dc)
@@ -741,7 +834,14 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
       dc,
       openPrs,
       planPrRows,
+      planPrPage: prPage,
+      planPrPageSize: prPageSize,
+      planPrTotal,
+      refreshGh,
       reviewJobs,
+      reviewJobPage,
+      reviewJobPageSize: LIST_PAGE_SIZE,
+      reviewJobTotal: allReviewJobs.length,
       ghReady: ghOk,
       prListLive: refreshGh,
       workGate: workGate.blocked
