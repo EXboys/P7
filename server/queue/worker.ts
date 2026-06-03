@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from "fs";
+import { normalizeJobError } from "../job-error.ts";
 import { join } from "path";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 import type { ServerConfig } from "../config.ts";
@@ -53,6 +54,10 @@ function jobTimeoutMs(projectPath: string, cfg: ServerConfig, kind?: string): nu
   try {
     const dc = loadConfig(projectPath);
     const baseMin = Math.max(dc.execution_timeout_minutes, 10);
+    if (kind === "discover-daily") {
+      // 管道恢复要跑 planner + SDK，默认 35 分钟易 exit 143
+      return Math.max(baseMin, 60) * 60 * 1000;
+    }
     if (dc.vcs.merge_resolve_conflicts !== false) {
       const conflictMin = mergeConflictWaitMinutes(dc.vcs, true);
       if (kind === "pr-review") {
@@ -183,7 +188,15 @@ async function runJob(
     clearInterval(heartbeatIv);
   }
 
-  if (code !== 0) throw new Error(stderr.slice(0, 800) || `exit ${code}`);
+  if (code !== 0) {
+    let blob = stderr;
+    try {
+      blob = `${readFileSync(logPath, "utf-8").slice(-8000)}\n${stderr}`;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(normalizeJobError(blob, code));
+  }
   try {
     const lines = stdout.trim().split("\n");
     return JSON.parse(lines[lines.length - 1]);

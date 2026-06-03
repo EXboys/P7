@@ -79,8 +79,17 @@ function classifyRetryHint(error: string): { retryable: boolean; hint: string } 
   if (/max_pending|queue depth/i.test(e)) {
     return { retryable: false, hint: "先审批或清理积压 Plan" };
   }
-  if (/exit 143|connection refused|timeout|econnreset|rate limit/i.test(e)) {
-    return { retryable: true, hint: "多为瞬时故障，可重试" };
+  if (/exit 143|超时被终止|超时.*终止/i.test(e)) {
+    return {
+      retryable: true,
+      hint: "上次被超时杀掉；已加长 discover 时限，重试前确认 API 可达",
+    };
+  }
+  if (/unable to connect|failedtoopensocket|econnreset|connection refused/i.test(e)) {
+    return { retryable: false, hint: "API 连不上：检查网络、代理、ANTHROPIC_BASE_URL / Key" };
+  }
+  if (/timeout|rate limit/i.test(e)) {
+    return { retryable: true, hint: "多为瞬时故障，可稍后重试" };
   }
   return { retryable: true, hint: "可尝试重试；多次失败请查看任务日志" };
 }
