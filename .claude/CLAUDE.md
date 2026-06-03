@@ -2,46 +2,55 @@
 
 <!-- P7_LESSONS_BEGIN -->
 ## Lessons learned (auto-curated by P7)
-- 2026-05-30 06:43 roadmap:fallback template (Claude Code returned an error result: Not logged in · Please run /login)
-- 2026-05-30 06:43 roadmap:refreshed
-- 2026-05-30 06:49 radar:ok hn+github 27 signals, themes: SQLite 驱动的工作流持久化; AI 辅助开发的代码质量保障; Agent 工具协议（MCP）演进追踪; 代码 Diff 审查体验优化
-- 2026-05-30 06:51 roadmap:refreshed
-- 2026-05-30 14:55 radar:ok hn+github 26 signals, themes: SQLite 驱动的工作流持久化; AI 辅助开发对代码质量的影响; MCP 协议实用化的工程权衡; 构建系统的可维护性演进
-- 2026-05-30 14:57 roadmap:refreshed
-- 2026-05-30 15:03 radar:ok hn+github 27 signals, themes: AI 辅助开发对代码质量的辩证影响; SQLite 驱动的工作流持久化; Agent 协议（MCP）工程权衡; 构建系统可维护性演进; AI 成本管控下的工具选型策略
-- 2026-05-30 15:05 roadmap:refreshed
-- 2026-05-30 15:06 radar:ok hn+github 27 signals, themes: SQLite 驱动的工作流持久化; MCP 协议实用化的工程权衡; 构建系统可维护性演进; AI 成本管控下的工具选型
-- 2026-05-30 15:11 roadmap:refreshed
-- 2026-05-30 15:12 radar:ok hn+github 27 signals, themes: SQLite 驱动的工作流持久化; MCP 协议实用化的工程权衡; 构建系统的可维护性演进; 系统软件重实现中的代码质量把控; AI 成本管控下的工具选型策略
-- 2026-05-30 15:17 roadmap:refreshed
-- 2026-05-30 15:20 radar:ok hn+github 27 signals, themes: SQLite 驱动的工作流持久化; MCP 协议实用化的工程权衡; 构建系统的可维护性演进; 系统软件重实现中的代码质量把控; AI 辅助开发的代码质量保障
-- 2026-05-30 15:24 roadmap:refreshed
-- 2026-05-30 15:27 radar:ok hn+github 27 signals, themes: SQLite 驱动的工作流持久化深化; MCP 协议实用化的工程权衡; AI 辅助开发的代码质量保障; 构建系统的可维护性演进; 系统软件重实现的代码质量标准
-- 2026-05-30 15:30 roadmap:refreshed
-- 2026-05-30 21:33 radar:ok hn+github 27 signals, themes: SQLite 驱动的工作流持久化深化; 构建系统的可维护性演进; 系统软件重实现中的代码质量标准; AI 辅助开发的代码质量保障
-- 2026-05-30 21:35 roadmap:refreshed
-- 2026-05-30 22:08 radar:ok hn+github 27 signals, themes: Pandoc Templates; OpenRouter raises $113M Series B; Zig: Build System Reworked; Openrsync: An implementation of rsync, by the OpenBSD team; EY Canada published a cybersecurity report and most citations were hallucinated
-- 2026-05-30 22:13 roadmap:refreshed
-- 2026-05-30 22:35 radar:ok hn+github 27 signals, themes: Pandoc Templates; OpenRouter raises $113M Series B; Zig: Build System Reworked; Openrsync: An implementation of rsync, by the OpenBSD team; EY Canada published a cybersecurity report and most citations were hallucinated
-- 2026-05-30 22:36 roadmap:refreshed
-- 2026-05-30 22:39 execute:retry pass 2 — no diff vs 965d1ab
-- 2026-05-30 22:43 execute:failed "为 PlanState 建立 SQLite 持久层（JSON 回退兼容）（src/persistence/store.ts）" x executor produced no file changes after 2 attempts; use console「重试执行」or fix plan scope
-- 2026-05-31 00:01 radar:ok hn+github 27 signals, themes: Pandoc Templates; OpenRouter raises $113M Series B; Zig: Build System Reworked; Openrsync: An implementation of rsync, by the OpenBSD team; Voxel Space (2017)
-- 2026-05-31 00:03 roadmap:refreshed
-- 2026-05-31 00:31 execute:failed "扩展 jobs 表 step_states 字段，executor.ts 全量持久化执行步骤状态快照" x Too many files changed: 5 > 4
-- 2026-05-31 00:37 execute:ok "扩展 jobs 表 step_states 列并在 executePlan 各步骤写入执行轨迹快照" -> p7/1780187464523-dh0i3g / 367s / https://github.com/EXboys/P7/pull/1
-- 2026-05-31 00:44 execute:ok "为 executor 执行流程添加 step_states 步骤级轨迹持久化" -> p7/1780187832528-mt4lyp / 412s / https://github.com/EXboys/P7/pull/2
-- 2026-05-31 01:06 pr:review https://github.com/EXboys/P7/pull/2 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
-- 2026-05-31 01:18 pr-review:#2 failed — 等待合并超时（20 分钟）
-- 2026-05-31 01:18 pr:review https://github.com/EXboys/P7/pull/1 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
-- 2026-05-31 01:21 pr:review https://github.com/EXboys/P7/pull/2 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
-- 2026-05-31 01:29 pr-review:#2 failed — 等待合并超时（10 分钟）
-- 2026-05-31 01:29 pr:review https://github.com/EXboys/P7/pull/1 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
-- 2026-05-31 01:31 pr-review:#1 failed — 等待合并超时（20 分钟）
-- 2026-05-31 01:37 pr-review:#1 failed — 等待合并超时（10 分钟）
-- 2026-05-31 01:42 pr:review https://github.com/EXboys/P7/pull/2 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
-- 2026-05-31 01:50 pr-review:#2 failed — 等待合并超时（10 分钟）
-- 2026-05-31 01:50 pr:review https://github.com/EXboys/P7/pull/1 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
-- 2026-05-31 01:58 pr-review:#1 failed — 等待合并超时（10 分钟）
-- 2026-05-31 02:06 pr:review https://github.com/EXboys/P7/pull/2 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
+- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
+- 2026-06-03 06:44 execute:base origin/main @ 8edecdd
+- 2026-06-03 06:44 execute:retry-with-context plan=1780466269156-3 (归档失败记录（2026-06-03 06:41:31）：Permission violations detected during execution:
+- R…)
+- 2026-06-03 06:46 execute:tools pass 1 tools: write/edit=1 read=1 denied=0 errors=0
+- 2026-06-03 06:46 execute:failed "添加 MAI-Code-1-Flash 幻觉检测批量评估（tests/eval-mai-code-hallucination.test.ts）" x Permission violations detected during execution:
+- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
+- 2026-06-03 06:46 execute:base origin/main @ 8edecdd
+- 2026-06-03 06:46 execute:retry-with-context plan=1780466269156-2 (归档失败记录（2026-06-03 06:43:39）：Permission violations detected during execution:
+- R…)
+- 2026-06-03 06:48 execute:tools pass 1 tools: write/edit=1 read=3 denied=0 errors=0
+- 2026-06-03 06:48 execute:failed "添加 MAI-Code-1-Flash 幻觉检测批量评估（src/mai-code.ts）" x Permission violations detected during execution:
+- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
+- 2026-06-03 06:50 plan:abandon 1780466269156-2 auto-exhausted-retries (3 execute failures)
+- 2026-06-03 06:50 execute:base origin/main @ 8edecdd
+- 2026-06-03 06:50 execute:retry-with-context plan=1780466269156-3 (归档失败记录（2026-06-03 06:46:10）：Permission violations detected during execution:
+- R…)
+- 2026-06-03 06:52 execute:tools pass 1 tools: write/edit=1 read=1 denied=0 errors=0
+- 2026-06-03 06:52 execute:failed "添加 MAI-Code-1-Flash 幻觉检测批量评估（tests/eval-mai-code-hallucination.test.ts）" x Permission violations detected during execution:
+- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
+- 2026-06-03 06:54 plan:abandon 1780466269156-3 auto-exhausted-retries (3 execute failures)
+- 2026-06-03 06:55 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; Paseo 编码代理界面与工具链参考; VSCode 凭证窃取与供应链安全审查; RAG 图片索引在代码库中的应用
+- 2026-06-03 06:55 roadmap:refreshed
+- 2026-06-03 06:59 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型与质量评估; Paseo 编码代理界面与工具链; VSCode 凭证窃取与供应链安全审查; RAG 图片索引在代码库文档中的应用
+- 2026-06-03 07:00 roadmap:refreshed
+- 2026-06-03 07:05 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; Paseo 编码代理界面与工具链参考
+- 2026-06-03 07:06 roadmap:refreshed
+- 2026-06-03 07:09 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; VSCode 凭证窃取与供应链安全审查; Paseo 编码代理界面与工具链交互; RAG 图片索引在代码库知识管理中的应用
+- 2026-06-03 07:10 roadmap:refresh skipped
+- 2026-06-03 07:11 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估与质量基线; Paseo 编码代理界面与工具链交互模式参考; VSCode 凭证窃取与供应链安全审查增强; RAG 图片索引在代码知识检索中的应用
+- 2026-06-03 07:11 roadmap:refreshed
+- 2026-06-03 07:11 plan:degrade queue depth 4/5
+- 2026-06-03 07:15 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; VSCode 凭证窃取与供应链安全审查; RAG 图片索引在代码知识检索中的应用; Paseo 编码代理界面与工具链交互
+- 2026-06-03 07:16 roadmap:refreshed
+- 2026-06-03 07:16 execute:base origin/main @ 8edecdd
+- 2026-06-03 07:20 execute:tools pass 1 tools: write/edit=2 read=6 denied=0 errors=0
+- 2026-06-03 07:20 plan:abandon 1780470515229 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
+- 2026-06-03 07:20 execute:failed "在 src/llm-env.ts 模型路由表中注册 MAI-Code-1-Flash 路由" x Permission violations detected during execution:
+- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
+- 2026-06-03 07:22 execute:base origin/main @ 8edecdd
+- 2026-06-03 07:38 plan:abandon 1780470295277 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
+- 2026-06-03 07:38 execute:failed "添加 MAI-Code-1-Flash 凭证链与连通性探测模块" x execution cost exceeded limit: 7.073633000000003 > 5
+- 2026-06-03 07:38 execute:base origin/main @ 8edecdd
+- 2026-06-03 08:02 plan:abandon 1780469953658 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
+- 2026-06-03 08:02 execute:failed "提取 MAI-Code-1-Flash 客户端并修复凭证隔离以运行批量评估" x Claude Code returned an error result: API Error: Unable to connect to API (ConnectionRefused)
+- 2026-06-03 08:32 execute:base origin/main @ 8edecdd
+- 2026-06-03 08:32 plan:abandon 1780470837768 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
+- 2026-06-03 08:32 execute:base origin/main @ 8edecdd
+- 2026-06-03 08:34 execute:tools pass 1 tools: write/edit=1 read=4 denied=0 errors=0
+- 2026-06-03 08:34 execute:failed "添加 MAI-Code-1-Flash 幻觉测试样本集" x Permission violations detected during execution:
+- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
 <!-- P7_LESSONS_END -->
