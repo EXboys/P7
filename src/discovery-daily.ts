@@ -22,27 +22,25 @@ import { queryDailyCostSummary } from "./state.ts";
 import type { CostSummary } from "./state.ts";
 import { notifyPlanReady } from "./notify/sender.ts";
 import { resolveNotifyConfig } from "./notify/env.ts";
-import { checkPrWorkGate } from "./vcs/pr-work-gate.ts";
-import { ghInstalled, gitRemoteOrigin } from "./gh-status.ts";
+import { runPipelinePreflight, formatPreflightIssues } from "./pipeline-preflight.ts";
 
 export async function runDiscoveryDaily(
   projectPath: string,
   opts: { planOnly?: boolean; skipDiscovery?: boolean; projectAlias?: string; recoverStall?: boolean } = {},
 ): Promise<DiscoveryDailyResult> {
   const cfg = loadConfig(projectPath);
-  const gate =
-    ghInstalled() && gitRemoteOrigin(projectPath)
-      ? checkPrWorkGate(projectPath, cfg)
-      : { blocked: false, prs: [], reason: "no_gh" };
-  if (gate.blocked) {
+  const preflight = runPipelinePreflight(projectPath);
+  if (!preflight.ok) {
+    const detail = formatPreflightIssues(preflight.issues);
+    await appendLesson(projectPath, `pipeline:preflight-fail ${detail.slice(0, 120)}`);
     return {
       date: new Date().toISOString().slice(0, 10),
       snapshotPath: "",
       signalCount: 0,
       themes: [],
       roadmapRefreshed: false,
-      phase: "blocked_open_prs",
-      goal: gate.reason,
+      phase: "preflight_failed",
+      goal: detail,
     };
   }
 

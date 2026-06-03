@@ -74,46 +74,39 @@ function composeSystemPrompt(systemPrompt: string, vars?: Record<string, unknown
   return base;
 }
 
+import { apiHostnameFromBaseUrl, resolveAllowedApiDomains } from "./api-domain.ts";
+
+export { apiHostnameFromBaseUrl, resolveAllowedApiDomains } from "./api-domain.ts";
+
 /**
  * Validate that ANTHROPIC_BASE_URL (if set) resolves to an allowed API domain.
- * Reads the whitelist from project config; falls back to ["api.anthropic.com"].
- * Throws if the hostname is not in the allowed list, preventing any outbound
- * request to an unrecognised domain.
+ * Whitelist = project config + current ANTHROPIC_BASE_URL hostname.
  */
 export function validateApiDomain(projectPath?: string): void {
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
-  if (!baseUrl) return; // Default endpoint — no restriction
+  if (!baseUrl) return;
 
-  let hostname: string;
-  try {
-    hostname = new URL(baseUrl).hostname;
-  } catch {
-    // The value may be a bare hostname without protocol
-    try {
-      hostname = new URL(`https://${baseUrl}`).hostname;
-    } catch {
-      throw new Error(
-        `Invalid ANTHROPIC_BASE_URL: "${baseUrl}". Cannot parse hostname.`,
-      );
-    }
+  const hostname = apiHostnameFromBaseUrl(baseUrl);
+  if (!hostname) {
+    throw new Error(`Invalid ANTHROPIC_BASE_URL: "${baseUrl}". Cannot parse hostname.`);
   }
 
-  let allowedDomains: string[];
+  let configured: string[];
   if (projectPath) {
     try {
-      const config = loadConfig(projectPath);
-      allowedDomains = config.allowed_api_domains;
+      configured = loadConfig(projectPath).allowed_api_domains;
     } catch {
-      allowedDomains = ["api.anthropic.com"];
+      configured = ["api.anthropic.com"];
     }
   } else {
-    allowedDomains = ["api.anthropic.com"];
+    configured = ["api.anthropic.com"];
   }
 
+  const allowedDomains = resolveAllowedApiDomains(configured, baseUrl);
   if (!allowedDomains.includes(hostname)) {
     throw new Error(
       `API domain "${hostname}" is not in the allowed list: [${allowedDomains.join(", ")}]. ` +
-      `Add "${hostname}" to allowed_api_domains in your project config, or use a recognised domain.`,
+      `Add "${hostname}" to allowed_api_domains in your project config.`,
     );
   }
 }

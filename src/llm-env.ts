@@ -116,6 +116,10 @@ function aliasProviderKeys(env: Record<string, string>): void {
     const oai = process.env.OPENAI_API_KEY || env.OPENAI_API_KEY;
     if (oai) env.ANTHROPIC_API_KEY = oai;
   }
+  if (!env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY) {
+    const mai = process.env.MAI_CODE_API_KEY || env.MAI_CODE_API_KEY;
+    if (mai) env.ANTHROPIC_API_KEY = mai;
+  }
 }
 
 /**

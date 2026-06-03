@@ -459,11 +459,16 @@ export function overviewNextStep(opts: {
   hasSnapshot: boolean;
   signalCount: number;
   base: string;
+  failureCount?: number;
 }): string {
   let title: string;
   let href: string;
   let btn: string;
-  if (opts.blockers.length > 0) {
+  if ((opts.failureCount ?? 0) > 0) {
+    title = `${opts.failureCount} 项失败需处理（已自动校正僵尸状态）`;
+    href = `${opts.base}/overview#stability`;
+    btn = "查看失败";
+  } else if (opts.blockers.length > 0) {
     title = `先解决环境项：${opts.blockers[0].label}`;
     href = `${opts.base}/overview#health`;
     btn = "查看检查";
@@ -481,6 +486,88 @@ export function overviewNextStep(opts: {
     btn = "打开规划";
   }
   return `<div class="panel next-step"><div class="next-body"><p class="next-label">建议下一步</p><p class="next-title">${esc(title)}</p></div><a class="btn" href="${href}">${esc(btn)}</a></div>`;
+}
+
+export function renderOverviewStabilityPanel(
+  alias: string,
+  base: string,
+  pass: {
+    reconciled: string[];
+    abandoned: string[];
+    failures: Array<{
+      kind: string;
+      id: string;
+      title: string;
+      error: string;
+      updatedAt: string;
+      retryable: boolean;
+      retryHint: string;
+      actions: string[];
+      planId?: string;
+    }>;
+    preflightBlocking: boolean;
+  },
+): string {
+  const notes: string[] = [];
+  if (pass.reconciled.length > 0) {
+    notes.push(`已将 ${pass.reconciled.length} 个假「执行中」标为失败，可重试`);
+  }
+  if (pass.abandoned.length > 0) {
+    notes.push(`已清理 ${pass.abandoned.length} 个过期 approved Plan`);
+  }
+  const noteHtml = notes.length
+    ? `<p class="muted" style="margin:0 0 10px;font-size:12px">${esc(notes.join("；"))}</p>`
+    : "";
+
+  if (pass.failures.length === 0 && !pass.preflightBlocking) {
+    return `<div class="panel" id="stability"><div class="panel-head"><h2>稳定性</h2></div>
+<p class="muted" style="margin:0">无失败 Plan / 任务；环境预检通过。</p>${noteHtml}</div>`;
+  }
+
+  const rows = pass.failures
+    .map((f) => {
+      const btns = f.actions
+        .map((a) => {
+          if (a === "retry_execute" && f.planId) {
+            return `<form class="inline" method="post" action="/trigger/retry-execute"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(f.planId)}"/><button type="submit" class="btn sm">重试执行</button></form>`;
+          }
+          if (a === "retry_discover") {
+            return `<form class="inline" method="post" action="/trigger/retry-discover"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn sm">重试发现</button></form>`;
+          }
+          if (a === "view_job") {
+            return `<a class="btn sm ghost" href="/jobs/${encodeURIComponent(f.id)}/log">日志</a>`;
+          }
+          if (a === "view_plan" && f.planId) {
+            return `<a class="btn sm ghost" href="${base}/plans/${encodeURIComponent(f.planId)}">Plan</a>`;
+          }
+          if (a === "reject" && f.planId) {
+            return `<form class="inline" method="post" action="/reject" onsubmit="return confirm('放弃该 Plan？')"><input type="hidden" name="alias" value="${esc(alias)}"/><input type="hidden" name="planId" value="${esc(f.planId)}"/><button type="submit" class="btn sm ghost">放弃</button></form>`;
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join(" ");
+      const when = formatDateTime(f.updatedAt);
+      return `<tr>
+<td>${esc(f.title)}</td>
+<td>${f.kind === "plan" ? planStatusBadge("failed") : jobStatusBadge("failed")}</td>
+<td class="muted" style="max-width:280px;font-size:12px">${esc(f.error)}</td>
+<td class="muted" style="font-size:12px">${esc(f.retryHint)}</td>
+<td class="muted">${esc(when)}</td>
+<td class="act">${btns}</td>
+</tr>`;
+    })
+    .join("");
+
+  const preflightWarn = pass.preflightBlocking
+    ? `<div class="flash warn-banner" style="margin-bottom:10px"><strong>环境未就绪</strong> — 重试前请先修复下方「环境检查」中的阻塞项。</div>`
+    : "";
+
+  return `<div class="panel" id="stability"><div class="panel-head"><h2>失败与恢复</h2><a class="btn sm ghost" href="${base}/run?status=failed">全部失败任务</a></div>
+${preflightWarn}${noteHtml}
+<div class="tbl-wrap"><table><thead><tr><th>项</th><th>状态</th><th>原因</th><th>建议</th><th>时间</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6" class="empty">无记录</td></tr>`}</tbody></table></div>
+<p class="muted" style="margin:10px 0 0;font-size:12px">调度器对已批准 Plan 最多自动重试 3 次（间隔 2 分钟）。配置/API 类错误需先修环境再点重试。</p>
+</div>`;
 }
 
 export function metricCard(value: number | string, label: string, tone?: "warn" | "alert"): string {
@@ -700,11 +787,16 @@ function formatCooldownMs(ms: number): string {
 function stallRecoveryEtaLabel(
   recoveryCooldownMs: number,
   schedulerIntervalMinutes: number,
+  lastRecoveryError: string | null,
 ): string {
+  if (lastRecoveryError) {
+    const short = lastRecoveryError.replace(/\s+/g, " ").slice(0, 160);
+    return `自动恢复失败：${short}`;
+  }
   if (recoveryCooldownMs > 0) {
     return `恢复冷却中，约 ${formatCooldownMs(recoveryCooldownMs)} 后可生成 Plan`;
   }
-  return `调度器将在约 ${schedulerIntervalMinutes} 分钟内生成 Plan`;
+  return `调度器将在约 ${schedulerIntervalMinutes} 分钟内尝试生成 Plan`;
 }
 
 export function renderSidebarActivity(activity: ProjectActivity | null): string {
@@ -730,6 +822,7 @@ export function renderSidebarActivity(activity: ProjectActivity | null): string 
     const eta = stallRecoveryEtaLabel(
       activity.pipelineStall.recoveryCooldownMs,
       activity.schedulerIntervalMinutes,
+      activity.pipelineStall.lastRecoveryError,
     );
     return `<div class="sidebar-activity idle-warn"><strong>管道停滞</strong>${esc(eta)}</div>`;
   }
@@ -792,8 +885,18 @@ export function renderActivityStrip(alias: string, activity: ProjectActivity | n
     const eta = stallRecoveryEtaLabel(
       activity.pipelineStall.recoveryCooldownMs,
       schedulerIntervalMinutes,
+      activity.pipelineStall.lastRecoveryError,
     );
-    return `<div class="activity-strip idle-warn"><span class="activity-dot warn"></span><div class="activity-main"><strong>管道停滞 · 将自动恢复</strong><span class="muted">Roadmap 尚有 ${activity.pipelineStall.unfinishedSteps} 项未完成；下一目标「${esc(goal)}」；${esc(eta)}</span></div><a class="btn sm ghost" href="/project/${encodeURIComponent(alias)}/plan">规划</a></div>`;
+    const title = activity.pipelineStall.lastRecoveryError
+      ? "管道停滞 · 自动恢复失败"
+      : activity.pipelineStall.blockers.length > 0
+        ? "管道停滞 · 等待条件"
+        : "管道停滞 · 将自动恢复";
+    const blockers =
+      activity.pipelineStall.blockers.length > 0
+        ? `<span class="muted">阻塞：${esc(activity.pipelineStall.blockers.join("；"))}</span>`
+        : "";
+    return `<div class="activity-strip idle-warn"><span class="activity-dot warn"></span><div class="activity-main"><strong>${title}</strong><span class="muted">Roadmap 尚有 ${activity.pipelineStall.unfinishedSteps} 项未完成；下一目标「${esc(goal)}」；${esc(eta)}</span>${blockers}</div><a class="btn sm ghost" href="/project/${encodeURIComponent(alias)}/plan">规划</a></div>`;
   }
 
   return `<div class="activity-strip idle"><span class="activity-dot ok"></span><div class="activity-main"><strong>系统空闲</strong><span class="muted">调度器每 ${esc(intervalLabel)} 巡检；无 OPEN PR 阻塞且无运行中任务时自动启动</span></div><a class="btn sm ghost" href="/jobs">任务队列</a></div>`;

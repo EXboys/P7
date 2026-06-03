@@ -3,6 +3,10 @@ import { join } from "path";
 import type { JobKind, JobRow, JobStatus } from "./types.ts";
 import { PROJECT_MUTEX_KINDS } from "./project-mutex.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
+import {
+  filterActiveDailyToday,
+  filterCompletedFullDailyToday,
+} from "../../src/daily-schedule.ts";
 
 /**
  * Node-safe job store backed by a JSON file. Mirrors the bun:sqlite store API
@@ -167,16 +171,20 @@ export function lastConsecutiveFailures(alias: string, n: number): number {
   return count;
 }
 
+export function hasActiveDailyJob(alias: string): boolean {
+  const jobs = loadAll().filter((r) => r.project_alias === alias);
+  return filterActiveDailyToday(jobs);
+}
+
+/** 今日常规 discover 已成功（recoverStall 不计入，避免阻塞后续恢复） */
+export function hasCompletedFullDailyToday(alias: string): boolean {
+  const jobs = loadAll().filter((r) => r.project_alias === alias);
+  return filterCompletedFullDailyToday(jobs);
+}
+
+/** @deprecated 用 hasActiveDailyJob / hasCompletedFullDailyToday */
 export function hasPendingDailyToday(alias: string): boolean {
-  const day = new Date().toISOString().slice(0, 10);
-  const daily = (r: JobRow) =>
-    r.project_alias === alias &&
-    (r.kind === "daily" || r.kind === "discover-daily") &&
-    r.created_at.startsWith(day);
-  if (loadAll().some((r) => daily(r) && (r.status === "pending" || r.status === "running"))) {
-    return true;
-  }
-  return loadAll().some((r) => daily(r) && r.status === "done");
+  return hasActiveDailyJob(alias) || hasCompletedFullDailyToday(alias);
 }
 
 export function sumTodayJobCostUsd(alias: string): number {

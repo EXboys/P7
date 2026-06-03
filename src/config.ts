@@ -48,6 +48,12 @@ export const DevAgentConfigSchema = z.object({
       auto_review: z.boolean().default(true),
       merge_resolve_conflicts: z.boolean().default(true),
       merge_wait_minutes: z.number().int().positive().default(20),
+      /** 冲突修复 Agent 最大轮次（默认 100，与 executor 同量级偏宽松） */
+      merge_conflict_max_turns: z.number().int().positive().default(100),
+      /** 单轮 merge 内 Agent 重试次数 */
+      merge_conflict_passes: z.number().int().positive().default(3),
+      /** 修冲突时的等待上限（分钟）；默认可跑满 90 分钟 */
+      merge_conflict_wait_minutes: z.number().int().positive().optional(),
       review_open_prs: z.boolean().default(true),
       pr_review_interval_minutes: z.number().int().positive().default(15),
       pr_review_fast_interval_minutes: z.number().int().positive().default(8),
@@ -93,6 +99,8 @@ export const DevAgentConfigSchema = z.object({
       auto_review: true,
       merge_resolve_conflicts: true,
       merge_wait_minutes: 20,
+      merge_conflict_max_turns: 100,
+      merge_conflict_passes: 3,
       review_open_prs: true,
       pr_review_interval_minutes: 15,
       pr_review_fast_interval_minutes: 8,
@@ -194,6 +202,8 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         auto_review: true,
         merge_resolve_conflicts: true,
         merge_wait_minutes: 20,
+        merge_conflict_max_turns: 100,
+        merge_conflict_passes: 3,
         review_open_prs: true,
         pr_review_interval_minutes: 15,
         pr_review_fast_interval_minutes: 8,

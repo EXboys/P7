@@ -6,7 +6,14 @@ import {
   sweepStuckApprovedPlans,
 } from "../src/approval.ts";
 import { getPlanState } from "../src/state.ts";
-import { detectPipelineStall, pipelineRecoveryCooldownRemainingMs } from "../src/pipeline-stall.ts";
+import {
+  detectPipelineStall,
+  lastFailedStallRecovery,
+  pipelineRecoveryCooldownRemainingMs,
+  shouldEnqueuePipelineRecovery,
+} from "../src/pipeline-stall.ts";
+import { runPipelinePreflight, formatPreflightIssues } from "../src/pipeline-preflight.ts";
+import { hasActiveDailyJob } from "./queue/store.ts";
 import { loadConfig } from "../src/config.ts";
 import { planDisplayTitle } from "../src/plan-i18n.ts";
 import { listJobsForProject } from "./queue/store.ts";
@@ -33,6 +40,10 @@ export type ProjectActivity = {
     suggestedGoal: string | null;
     /** 距下次可自动 stall 恢复还剩多少毫秒；0 表示下一轮调度 tick 可入队 */
     recoveryCooldownMs: number;
+    /** 最近一次恢复 job 失败摘要（有则 UI 不应再写「约 2 分钟内恢复」） */
+    lastRecoveryError: string | null;
+    /** 当前阻止调度器入队的原因（配置/PR/预检等） */
+    blockers: string[];
   } | null;
 };
 
@@ -87,7 +98,20 @@ export function getProjectActivity(
     break;
   }
 
-  const stall = detectPipelineStall(projectPath, loadConfig(projectPath), projectAlias);
+  const dc = loadConfig(projectPath);
+  const stall = detectPipelineStall(projectPath, dc, projectAlias);
+  const blockers: string[] = [];
+  if (stall) {
+    const pre = runPipelinePreflight(projectPath);
+    if (!pre.ok) blockers.push(...pre.issues.filter((i) => i.blocking).map((i) => i.message));
+    if (!shouldEnqueuePipelineRecovery(projectPath, projectAlias, dc)) {
+      const cd = pipelineRecoveryCooldownRemainingMs(projectAlias, projectPath);
+      if (cd > 0) blockers.push(`恢复冷却中（约 ${Math.ceil(cd / 60000)} 分钟）`);
+      const fail = lastFailedStallRecovery(projectAlias);
+      if (fail) blockers.push(`上次恢复失败：${fail.error.slice(0, 100)}`);
+    }
+    if (hasActiveDailyJob(projectAlias)) blockers.push("discover 任务运行中，请稍候");
+  }
   return {
     activeJob,
     failedPlan,
@@ -97,6 +121,8 @@ export function getProjectActivity(
       ? {
           ...stall,
           recoveryCooldownMs: pipelineRecoveryCooldownRemainingMs(projectAlias, projectPath),
+          lastRecoveryError: lastFailedStallRecovery(projectAlias)?.error ?? null,
+          blockers,
         }
       : null,
   };

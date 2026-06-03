@@ -20,6 +20,7 @@ import { loadConfig } from "../../src/config.ts";
 import { getApprovalRecord } from "../../src/approval.ts";
 import { getPlanState, transitionPlanState } from "../../src/state.ts";
 import { checkPrWorkGate } from "../../src/vcs/pr-work-gate.ts";
+import { mergeConflictWaitMinutes } from "../../src/vcs/merge-conflict.ts";
 import { ghInstalled, gitRemoteOrigin } from "../../src/gh-status.ts";
 
 const MAX_RUN_MS = 40 * 60 * 1000;
@@ -48,10 +49,20 @@ function mergeEnv(cfg: ServerConfig, projectAlias?: string, jobId?: string): Rec
   return env;
 }
 
-function jobTimeoutMs(projectPath: string, cfg: ServerConfig): number {
+function jobTimeoutMs(projectPath: string, cfg: ServerConfig, kind?: string): number {
   try {
     const dc = loadConfig(projectPath);
-    return Math.max(dc.execution_timeout_minutes, 10) * 60 * 1000;
+    const baseMin = Math.max(dc.execution_timeout_minutes, 10);
+    if (dc.vcs.merge_resolve_conflicts !== false) {
+      const conflictMin = mergeConflictWaitMinutes(dc.vcs, true);
+      if (kind === "pr-review") {
+        return Math.max(conflictMin + 15, baseMin) * 60 * 1000;
+      }
+      if (kind === "execute" && dc.vcs.auto_merge) {
+        return Math.max(baseMin + conflictMin, conflictMin + 15) * 60 * 1000;
+      }
+    }
+    return baseMin * 60 * 1000;
   } catch {
     return 35 * 60 * 1000;
   }
@@ -140,7 +151,7 @@ async function runJob(
     stderr: "pipe",
   });
 
-  const timeoutMs = jobTimeoutMs(projectPath, cfg);
+  const timeoutMs = jobTimeoutMs(projectPath, cfg, kind);
   const started = Date.now();
   const timeout = setTimeout(() => {
     logLine(logPath, `超时 ${Math.round(timeoutMs / 60000)} 分钟，终止进程`);

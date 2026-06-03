@@ -6,6 +6,10 @@ import { jobBlockedByRunning, PROJECT_MUTEX_KINDS } from "./project-mutex.ts";
 
 export { jobBlockedByRunning } from "./project-mutex.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
+import {
+  filterActiveDailyToday,
+  filterCompletedFullDailyToday,
+} from "../../src/daily-schedule.ts";
 
 function dbPath(): string {
   return join(resolveP7HomeDir(), "jobs.db");
@@ -188,22 +192,31 @@ export function lastConsecutiveFailures(alias: string, n: number): number {
   return count;
 }
 
-/** Skip scheduler enqueue if a daily/discover job is active or already succeeded today. Failed jobs allow retry. */
-export function hasPendingDailyToday(alias: string): boolean {
+export function hasActiveDailyJob(alias: string): boolean {
   const day = new Date().toISOString().slice(0, 10);
   const prefix = `${day}%`;
-  const active = getDb()
+  const rows = getDb()
     .query(
-      `SELECT COUNT(*) as c FROM jobs WHERE project_alias = ? AND kind IN ('daily', 'discover-daily') AND created_at LIKE ? AND status IN ('pending', 'running')`,
+      `SELECT * FROM jobs WHERE project_alias = ? AND kind IN ('daily', 'discover-daily') AND created_at LIKE ?`,
     )
-    .get(alias, prefix) as { c: number };
-  if (active.c > 0) return true;
-  const done = getDb()
+    .all(alias, prefix) as JobRow[];
+  return filterActiveDailyToday(rows);
+}
+
+export function hasCompletedFullDailyToday(alias: string): boolean {
+  const day = new Date().toISOString().slice(0, 10);
+  const prefix = `${day}%`;
+  const rows = getDb()
     .query(
-      `SELECT COUNT(*) as c FROM jobs WHERE project_alias = ? AND kind IN ('daily', 'discover-daily') AND created_at LIKE ? AND status = 'done'`,
+      `SELECT * FROM jobs WHERE project_alias = ? AND kind IN ('daily', 'discover-daily') AND created_at LIKE ? AND status = 'done'`,
     )
-    .get(alias, prefix) as { c: number };
-  return done.c > 0;
+    .all(alias, prefix) as JobRow[];
+  return filterCompletedFullDailyToday(rows);
+}
+
+/** @deprecated */
+export function hasPendingDailyToday(alias: string): boolean {
+  return hasActiveDailyJob(alias) || hasCompletedFullDailyToday(alias);
 }
 
 export function sumTodayJobCostUsd(alias: string): number {

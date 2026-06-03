@@ -2,6 +2,12 @@ import { existsSync } from "fs";
 import type { DevAgentConfig } from "../config.ts";
 import { appendLesson } from "../agent-memory.ts";
 import { readPrompt, runSdkQuery } from "../sdk.ts";
+import {
+  buildConflictResolvePrompt,
+  deriveConflictMaxTurns,
+  listUnmergedFiles,
+  mergeConflictWaitMinutes,
+} from "./merge-conflict.ts";
 import { getPlanState } from "../state.ts";
 import { parseFindings } from "../diff-critic.ts";
 import type { Plan } from "../types.ts";
@@ -122,6 +128,7 @@ async function resolveConflictsLocally(
   branch: string,
   baseBranch: string,
   plan: Plan,
+  vcs: DevAgentConfig["vcs"],
 ): Promise<{ ok: boolean; detail: string }> {
   const fetch = git(projectPath, ["fetch", "origin", baseBranch, branch]);
   if (!fetch.ok) return { ok: false, detail: `fetch failed: ${fetch.out}` };
@@ -144,20 +151,38 @@ async function resolveConflictsLocally(
     return { ok: false, detail: merge.out || "merge failed" };
   }
 
-  const status = git(projectPath, ["status", "--porcelain"]);
-  await runSdkQuery({
-    prompt: `解决当前仓库合并冲突并纳入 ${baseBranch}。\n\nPlan：${planDisplayTitle(plan)}\n\ngit status:\n${status.out}`,
-    cwd: projectPath,
-    systemPrompt: readPrompt("merge-conflict.md"),
-    role: "executor",
-    allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
-    maxTurns: 25,
-  });
+  const maxPasses = vcs.merge_conflict_passes ?? 3;
+  for (let pass = 1; pass <= maxPasses; pass++) {
+    const status = git(projectPath, ["status", "--porcelain"]);
+    const conflictFiles = listUnmergedFiles(projectPath);
+    const maxTurns = deriveConflictMaxTurns(conflictFiles.length || 1, vcs);
+    await runSdkQuery({
+      prompt: buildConflictResolvePrompt({
+        projectPath,
+        baseBranch,
+        plan,
+        statusPorcelain: status.out,
+        pass,
+        maxPasses,
+        remainingFiles: pass > 1 ? conflictFiles : undefined,
+      }),
+      cwd: projectPath,
+      systemPrompt: readPrompt("merge-conflict.md"),
+      role: "executor",
+      allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
+      maxTurns,
+      projectPath,
+    });
 
-  if (hasConflictMarkers(projectPath)) {
+    if (!hasConflictMarkers(projectPath)) break;
+    if (pass < maxPasses) continue;
     git(projectPath, ["merge", "--abort"]).ok;
     if (prev.ok) git(projectPath, ["checkout", prev.out]);
-    return { ok: false, detail: "仍存在冲突标记" };
+    const left = listUnmergedFiles(projectPath);
+    return {
+      ok: false,
+      detail: `仍存在冲突标记${left.length ? `（${left.length} 个文件）` : ""}`,
+    };
   }
 
   git(projectPath, ["add", "-A"]);
@@ -246,7 +271,11 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
     }
   }
 
-  const waitMs = (input.mergeWaitMinutes ?? vcs.merge_wait_minutes ?? 20) * 60 * 1000;
+  const defaultWaitMinutes =
+    vcs.merge_resolve_conflicts !== false
+      ? mergeConflictWaitMinutes(vcs, true)
+      : (vcs.merge_wait_minutes ?? 20);
+  const waitMs = (input.mergeWaitMinutes ?? defaultWaitMinutes) * 60 * 1000;
   const deadline = Date.now() + waitMs;
   const baseBranch = defaultBaseBranch(config);
 
@@ -279,7 +308,7 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
             return { mergeStatus: "merged", detail: "主账号 update-branch 后已合并" };
           }
         }
-        const fixed = await resolveConflictsLocally(projectPath, branch, baseBranch, plan);
+        const fixed = await resolveConflictsLocally(projectPath, branch, baseBranch, plan, vcs);
         parts.push(fixed.detail);
         if (fixed.ok) {
           await sleep(6_000);
@@ -305,6 +334,6 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
 
   return {
     mergeStatus: "failed",
-    detail: `等待合并超时（${vcs.merge_wait_minutes ?? 20} 分钟）`,
+    detail: `等待合并超时（${input.mergeWaitMinutes ?? defaultWaitMinutes} 分钟）`,
   };
 }

@@ -122,5 +122,48 @@ export function shouldEnqueuePipelineRecovery(
   const stall = detectPipelineStall(projectPath, dc, projectAlias);
   if (!stall) return null;
   if (hasRecentPipelineRecovery(projectAlias, projectPath)) return null;
+  if (hasRecentFailedStallRecovery(projectAlias, 3 * 60 * 1000)) return null;
   return stall;
+}
+
+const FAILED_RECOVERY_BACKOFF_MS = 3 * 60 * 1000;
+
+/** 最近一次 stall 恢复 job 失败信息（供 UI 展示真实阻塞原因） */
+export function lastFailedStallRecovery(
+  projectAlias: string,
+  lookbackMs = 24 * 60 * 60 * 1000,
+): { error: string; at: string } | null {
+  const cutoff = Date.now() - lookbackMs;
+  for (const job of listJobsForProject(projectAlias, 30)) {
+    if (job.kind !== "discover-daily" || job.status !== "failed") continue;
+    if (new Date(job.created_at).getTime() < cutoff) continue;
+    try {
+      const payload = JSON.parse(job.payload) as { recoverStall?: boolean };
+      if (!payload.recoverStall) continue;
+      const err = job.error?.trim();
+      if (!err) continue;
+      return { error: err.slice(0, 280), at: job.created_at };
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+function hasRecentFailedStallRecovery(
+  projectAlias: string,
+  backoffMs = FAILED_RECOVERY_BACKOFF_MS,
+): boolean {
+  const cutoff = Date.now() - backoffMs;
+  for (const job of listJobsForProject(projectAlias, 15)) {
+    if (job.kind !== "discover-daily" || job.status !== "failed") continue;
+    if (new Date(job.created_at).getTime() < cutoff) continue;
+    try {
+      const payload = JSON.parse(job.payload) as { recoverStall?: boolean };
+      if (payload.recoverStall) return true;
+    } catch {
+      /* ignore */
+    }
+  }
+  return false;
 }

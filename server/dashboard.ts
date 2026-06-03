@@ -39,6 +39,11 @@ import { assertLlmAuth } from "../src/llm-env.ts";
 import { readJobLog } from "./queue/worker.ts";
 import { getJob } from "./queue/store.ts";
 import { applyLlmProbeResult, pipelineReady, runPipelineCheck } from "../src/pipeline-check.ts";
+import { runPipelinePreflight } from "../src/pipeline-preflight.ts";
+import {
+  runOverviewStabilityPass,
+  shouldRecoverStallOnDiscoverRetry,
+} from "./overview-stability.ts";
 import { probeLlmConnection } from "../src/llm-probe.ts";
 import { applyAllLlmEnv, hasLlmAuth, mergeLlmEnv } from "../src/llm-env.ts";
 import { listRoadmapBackups, loadRoadmap, readRoadmapBackup } from "../src/roadmap.ts";
@@ -58,6 +63,7 @@ import {
   layout,
   metricCard,
   overviewNextStep,
+  renderOverviewStabilityPanel,
   planToolbar,
   renderPlanRoadmapRegenForm,
   renderPlanGenerateForm,
@@ -179,6 +185,18 @@ function applyVcsConfigFromBody(
   }
   const waitMin = Number(body.vcs_merge_wait_minutes);
   if (Number.isFinite(waitMin) && waitMin > 0) dc.vcs.merge_wait_minutes = Math.floor(waitMin);
+  const conflictWait = Number(body.vcs_merge_conflict_wait_minutes);
+  if (Number.isFinite(conflictWait) && conflictWait >= 10) {
+    dc.vcs.merge_conflict_wait_minutes = Math.floor(conflictWait);
+  }
+  const conflictTurns = Number(body.vcs_merge_conflict_max_turns);
+  if (Number.isFinite(conflictTurns) && conflictTurns >= 50) {
+    dc.vcs.merge_conflict_max_turns = Math.floor(conflictTurns);
+  }
+  const conflictPasses = Number(body.vcs_merge_conflict_passes);
+  if (Number.isFinite(conflictPasses) && conflictPasses >= 1 && conflictPasses <= 8) {
+    dc.vcs.merge_conflict_passes = Math.floor(conflictPasses);
+  }
   const reviewInterval = Number(body.vcs_pr_review_interval_minutes);
   if (Number.isFinite(reviewInterval) && reviewInterval >= 5) {
     dc.vcs.pr_review_interval_minutes = Math.floor(reviewInterval);
@@ -337,7 +355,11 @@ ${accountRows ? `<div class="tbl-wrap" style="margin-bottom:16px"><table><thead>
 <div class="toggle-item"><span>自动合并 PR</span><select name="vcs_auto_merge">${yesNo(dc.vcs.auto_merge)}</select></div>
 <div class="toggle-item"><span>冲突时自动修复</span><select name="vcs_merge_resolve_conflicts">${yesNo(dc.vcs.merge_resolve_conflicts !== false)}</select></div>
 <div class="toggle-item"><span>合并等待（分钟）</span><input type="number" name="vcs_merge_wait_minutes" min="5" max="120" value="${dc.vcs.merge_wait_minutes ?? 20}" style="width:72px"/></div>
+<div class="toggle-item"><span>冲突修复等待（分钟）</span><input type="number" name="vcs_merge_conflict_wait_minutes" min="15" max="240" value="${dc.vcs.merge_conflict_wait_minutes ?? 90}" style="width:72px" title="execute / pr-review 修冲突时的等待上限"/></div>
+<div class="toggle-item"><span>冲突 Agent 轮次</span><input type="number" name="vcs_merge_conflict_max_turns" min="50" max="150" value="${dc.vcs.merge_conflict_max_turns ?? 100}" style="width:72px"/></div>
+<div class="toggle-item"><span>冲突修复重试</span><input type="number" name="vcs_merge_conflict_passes" min="1" max="8" value="${dc.vcs.merge_conflict_passes ?? 3}" style="width:72px"/></div>
 </div>
+<p class="section-hint muted" style="margin-top:6px">冲突修复走 Claude Code SDK，默认放宽：约 90 分钟等待、最多 100 轮、3 次重试；<code>pr-review</code> job 超时会自动按等待时间加长。</p>
 <div class="gh-section" style="margin-top:16px">
 <h3>历史 PR 定时复查</h3>
 <p class="section-hint">主调度器每 <strong>${schedulerIntervalMinutes}</strong> 分钟巡检；无 OPEN PR 阻塞且无运行中任务时入队 execute / discover。仍有 OPEN PR 时每 <strong>${dc.vcs.pr_review_fast_interval_minutes ?? 8}</strong> 分钟入队 <code>pr-review</code>。</p>
@@ -457,6 +479,9 @@ export function createDashboard(
       checks = applyLlmProbeResult(checks, probe);
     }
     const blockers = checks.filter((x) => !x.ok);
+    const stability = existsSync(proj.path)
+      ? runOverviewStabilityPass(proj.path, alias)
+      : { reconciled: [], abandoned: [], failures: [], preflightBlocking: false };
     const pending = existsSync(proj.path) ? listPendingApprovals(proj.path).length : 0;
     const states = existsSync(proj.path) ? listPlanStates(proj.path, 8) : [];
     const snap = existsSync(proj.path) ? loadSnapshot(proj.path) : null;
@@ -499,19 +524,28 @@ export function createDashboard(
         ? `<p class="muted overview-themes">今日主题：<strong>${esc(snap.themes.join(" · "))}</strong></p>`
         : "";
 
+    const failedCount = stability.failures.length;
     const nextStep = overviewNextStep({
       blockers,
       pending,
       hasSnapshot: Boolean(snap),
       signalCount,
       base,
+      failureCount: failedCount,
     });
+
+    const stabilityHtml = renderOverviewStabilityPanel(alias, base, stability);
+    const reconcileFlash =
+      stability.reconciled.length > 0
+        ? `已校正 ${stability.reconciled.length} 个假「执行中」状态`
+        : flash;
 
     const body = `<div class="overview-page">
 ${pendingBanner}
 ${nextStep}
 ${themes}
-<div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(prCount, "已开 PR")}</div>
+<div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(failedCount, "失败待处理", failedCount ? "alert" : undefined)}${metricCard(prCount, "已开 PR")}</div>
+${stabilityHtml}
 <div class="overview-grid">${roadmapHtml}${recentHtml}</div>
 <div class="panel" id="health" style="margin-bottom:0"><h2 style="margin-bottom:10px">环境检查</h2>${healthHtml}</div>
 </div>`;
@@ -519,12 +553,40 @@ ${themes}
     const html = projectShell(cfg, alias, "overview", {
       title: "工作台",
       description: "项目总览与状态；切换步骤请用左侧菜单。",
-      flash,
+      flash: reconcileFlash,
       toolbar: workbenchToolbar(alias),
       pipelineDone: pending > 0 ? 3 : snap ? 2 : 1,
       body,
     });
     return c.html(html ?? "not found", html ? 200 : 404);
+  });
+
+  app.post("/trigger/retry-discover", async (c) => {
+    const body = (await c.req.parseBody()) as Record<string, string>;
+    const cfg = getCfg();
+    const alias = String(body.alias ?? "");
+    const proj = resolveProject(cfg, alias);
+    if (!proj) return c.text("unknown alias", 400);
+    const pre = runPipelinePreflight(proj.path);
+    if (!pre.ok) {
+      const msg = pre.issues
+        .filter((i) => i.blocking)
+        .map((i) => i.message)
+        .join("；");
+      return c.redirect(
+        `/project/${encodeURIComponent(alias)}/overview?flash=${encodeURIComponent(`无法重试：${msg.slice(0, 180)}`)}#stability`,
+      );
+    }
+    const recover = shouldRecoverStallOnDiscoverRetry(proj.path, alias);
+    enqueueJob({
+      kind: "discover-daily",
+      payload: { projectPath: proj.path, recoverStall: recover },
+      projectAlias: alias,
+    });
+    audit("dashboard.retry_discover", { alias, recoverStall: recover });
+    return c.redirect(
+      `/project/${encodeURIComponent(alias)}/overview?flash=${encodeURIComponent(recover ? "已入队管道恢复" : "已入队趋势发现")}#stability`,
+    );
   });
 
   app.get("/project/:alias/trends", (c) => {

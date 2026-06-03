@@ -2,7 +2,7 @@ import type { DevAgentConfig } from "../config.ts";
 import { listOpenPullRequests, type OpenPr } from "./open-prs.ts";
 import { reviewMergeGhEnv } from "./gh-env.ts";
 
-function prNeedsResolution(pr: OpenPr): boolean {
+export function prNeedsResolution(pr: OpenPr): boolean {
   return (
     pr.mergeable === "CONFLICTING" ||
     pr.mergeStateStatus === "DIRTY" ||

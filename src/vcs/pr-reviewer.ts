@@ -7,6 +7,8 @@ import { listPlanStates, transitionPlanState } from "../state.ts";
 import type { Plan } from "../types.ts";
 import { listOpenPullRequests, type OpenPr } from "./open-prs.ts";
 import { reviewMergeGhEnv } from "./gh-env.ts";
+import { mergeConflictWaitMinutes } from "./merge-conflict.ts";
+import { prNeedsResolution } from "./pr-work-gate.ts";
 import { runPrReviewAndMerge } from "./pr-lifecycle.ts";
 
 export function stubPlanForPrReview(title: string): Plan {
@@ -94,7 +96,7 @@ export async function runPrReviewSweep(
       branch: pr.headRefName,
       plan,
       config,
-      mergeWaitMinutes: Math.min(vcs.merge_wait_minutes ?? 20, 8),
+      mergeWaitMinutes: mergeConflictWaitMinutes(vcs, prNeedsResolution(pr)),
     });
 
     if (planId) {

@@ -221,11 +221,11 @@ describe("validateApiDomain", () => {
     }
   });
 
-  test("blocks unauthorized domain", () => {
+  test("allows ANTHROPIC_BASE_URL hostname even if absent from config whitelist", () => {
     const prev = process.env.ANTHROPIC_BASE_URL;
-    process.env.ANTHROPIC_BASE_URL = "https://evil-proxy.com";
+    process.env.ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
     try {
-      expect(() => validateApiDomain()).toThrow(/not in the allowed list/i);
+      expect(() => validateApiDomain()).not.toThrow();
     } finally {
       if (prev === undefined) delete process.env.ANTHROPIC_BASE_URL;
       else process.env.ANTHROPIC_BASE_URL = prev;

@@ -25,6 +25,8 @@ export interface JobStore {
   countTodayJobs(): number;
   lastConsecutiveFailures(alias: string, n: number): number;
   hasPendingDailyToday(alias: string): boolean;
+  hasActiveDailyJob(alias: string): boolean;
+  hasCompletedFullDailyToday(alias: string): boolean;
   hasActiveJob(alias: string): boolean;
   hasActiveExecuteJob(alias: string): boolean;
   hasProjectMutexInFlight(alias: string, exceptKind?: JobKind): boolean;
@@ -54,6 +56,10 @@ export const listAllJobsUnbounded = impl.listAllJobsUnbounded ?? (() => listAllJ
 export const countTodayJobs = impl.countTodayJobs;
 export const lastConsecutiveFailures = impl.lastConsecutiveFailures;
 export const hasPendingDailyToday = impl.hasPendingDailyToday;
+export const hasActiveDailyJob =
+  impl.hasActiveDailyJob ?? ((_a: string) => hasPendingDailyToday(_a));
+export const hasCompletedFullDailyToday =
+  impl.hasCompletedFullDailyToday ?? (() => false);
 export const hasActiveJob = impl.hasActiveJob;
 export const hasActiveExecuteJob =
   impl.hasActiveExecuteJob ?? ((_alias: string) => false);
