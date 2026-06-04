@@ -197,3 +197,12 @@ export interface DiffCriticFinding {
   line?: number;
   code?: string;
 }
+
+/* ── Gradual type-check config types ── */
+
+/**
+ * Re-exported from `gradual-typecheck-config.ts` for convenience.
+ * Protocol: ordered rules with glob patterns and per-flag strict-mode overrides.
+ * First-match-wins semantics; empty rules = fall back to tsconfig defaults.
+ */
+export type { GradualTypeCheckRule, GradualTypeCheckConfig, TscStrictFlag } from "./gradual-typecheck-config.ts";
