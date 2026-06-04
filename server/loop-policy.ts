@@ -1,5 +1,9 @@
 import type { ServerConfig } from "./config.ts";
-import { lastConsecutiveFailures, sumTodayJobCostUsd } from "./queue/store.ts";
+import {
+  hasCompletedFullDailyToday,
+  lastConsecutiveFailures,
+  sumTodayJobCostUsd,
+} from "./queue/store.ts";
 import { countPendingPlans } from "../src/approval.ts";
 import { loadConfig } from "../src/config.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
@@ -28,6 +32,10 @@ export function maybeContinueLoop(
 
   if (!dc.loop_planning) {
     return { continue: false, reason: "loop_planning_off" };
+  }
+
+  if (hasCompletedFullDailyToday(alias)) {
+    return { continue: false, reason: "daily_done_today" };
   }
 
   if (

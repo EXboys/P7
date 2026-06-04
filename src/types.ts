@@ -23,13 +23,13 @@ export const PlanSchema = z.object({
       }),
     )
     .min(1)
-    .max(5),
+    .max(20),
   /** English — GitHub PR body */
   risks: z.array(z.string()),
   /** Chinese — admin console display */
   risks_zh: z.array(z.string()).optional(),
   validation: z.string().min(1),
-  estimated_diff_lines: z.number().int().nonnegative().max(200),
+  estimated_diff_lines: z.number().int().nonnegative().max(1000),
   critique_notes: z.array(z.string()).optional(),
   baseCommit: z.string().optional(),
 });

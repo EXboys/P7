@@ -15,6 +15,8 @@ export function normalizeJobError(text: string, exitCode: number): string {
   }
 
   const patterns = [
+    /ZodError:\s*\[[\s\S]*?\]/i,
+    /Too big:[^\n]+/i,
     /API Error:[^\n]+/i,
     /Unable to connect[^\n]*/i,
     /FailedToOpenSocket[^\n]*/i,
@@ -25,7 +27,7 @@ export function normalizeJobError(text: string, exitCode: number): string {
   ];
   for (const re of patterns) {
     const m = blob.match(re);
-    if (m) return m[0].replace(/\s+/g, " ").trim().slice(0, 420);
+    if (m) return humanizeKnownError(m[0].replace(/\s+/g, " ").trim()).slice(0, 420);
   }
 
   const lines = blob
@@ -35,4 +37,11 @@ export function normalizeJobError(text: string, exitCode: number): string {
   const tail = lines.slice(-4).join(" · ").slice(0, 420);
   if (tail) return tail;
   return exitCode ? `exit ${exitCode}` : "未知错误";
+}
+
+function humanizeKnownError(msg: string): string {
+  if (/ZodError|Too big/i.test(msg) && /estimated_diff_lines/i.test(msg)) {
+    return "Plan 校验失败：estimated_diff_lines 超出旧上限。请升级到放宽 schema 的版本后重试生成 Plan。";
+  }
+  return msg;
 }

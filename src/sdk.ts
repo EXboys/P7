@@ -120,6 +120,7 @@ export async function runSdkQuery(opts: {
   agents?: Record<string, { description: string; prompt: string; tools?: string[] }>;
   hooks?: Parameters<typeof query>[0]["options"] extends { hooks?: infer H } ? H : never;
   maxTurns?: number;
+  timeoutMs?: number;
   planId?: string;
   projectPath?: string;
   goal?: string;
@@ -146,9 +147,20 @@ export async function runSdkQuery(opts: {
   let usage = parseUsage(undefined);
   const toolTrace = opts.toolTrace ?? emptyToolTrace();
 
+  const timeoutMs = opts.timeoutMs ?? defaultSdkTimeoutMs(opts.role ?? "default");
   await withExponentialBackoff(async () => {
     text = "";
-    for await (const message of query({ prompt: opts.prompt, options: options as never })) {
+    const started = Date.now();
+    for await (const message of withTimeout(
+      query({ prompt: opts.prompt, options: options as never }),
+      timeoutMs,
+      `Claude SDK ${opts.role ?? "default"} timed out after ${Math.round(timeoutMs / 60000)}m`,
+    )) {
+      if (Date.now() - started > timeoutMs) {
+        throw new Error(
+          `Claude SDK ${opts.role ?? "default"} timed out after ${Math.round(timeoutMs / 60000)}m`,
+        );
+      }
       ingestSdkMessageForToolTrace(message, toolTrace);
       if ("type" in message && message.type === "assistant" && "message" in message) {
         const content = (message as { message: { content: unknown[] } }).message.content;
@@ -204,6 +216,33 @@ export async function runSdkQuery(opts: {
 async function withExponentialBackoff<T>(fn: () => Promise<T>): Promise<T> {
   const { withExponentialBackoff: retry } = await import("./retry.ts");
   return retry(fn);
+}
+
+function defaultSdkTimeoutMs(role: ModelRole): number {
+  if (role === "planner" || role === "selector") return 15 * 60 * 1000;
+  if (role === "executor") return 30 * 60 * 1000;
+  return 20 * 60 * 1000;
+}
+
+async function* withTimeout<T>(
+  iterable: AsyncIterable<T>,
+  timeoutMs: number,
+  message: string,
+): AsyncIterable<T> {
+  const iterator = iterable[Symbol.asyncIterator]();
+  while (true) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      iterator.next(),
+      new Promise<IteratorResult<T>>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    if (result.done) return;
+    yield result.value;
+  }
 }
 
 /** @deprecated use applyAllLlmEnv from llm-env.ts */

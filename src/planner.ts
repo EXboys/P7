@@ -127,7 +127,15 @@ export async function generatePlan(
   if (!plan) throw new Error("Failed to generate plan");
 
   const degraded = shouldDegrade(plan);
-  const plansToSave = degraded ? splitPlan(plan) : [plan];
+  const rawPlansToSave = degraded ? splitPlan(plan) : [plan];
+  const availableSlots = Math.max(1, cfg.max_pending_plans - depth);
+  const plansToSave = rawPlansToSave.slice(0, availableSlots);
+  if (plansToSave.length < rawPlansToSave.length) {
+    await appendLesson(
+      projectPath,
+      `plan:degrade truncated ${rawPlansToSave.length}->${plansToSave.length} due to max_pending_plans=${cfg.max_pending_plans}`,
+    );
+  }
   const createdAt = new Date().toISOString();
   let first: PlanRecord | null = null;
   const savedIds: string[] = [];

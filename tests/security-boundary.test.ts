@@ -40,6 +40,20 @@ describe("buildPreToolHook — filesystem whitelist", () => {
     }
   });
 
+  test("Read: allows absolute file path inside worktree", async () => {
+    const root = tempRoot("wt-read-abs-allow");
+    try {
+      const file = join(root, "docs", "note.md");
+      mkdirSync(join(root, "docs"), { recursive: true });
+      writeFileSync(file, "# note");
+      const h = buildHandler([], root);
+      const r = await h({ tool_name: "Read", tool_input: { file_path: file } });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("Read: denies files outside worktree via ../ traversal", async () => {
     const root = tempRoot("wt-read-deny");
     const outsideRaw = join(tmpdir(), `p7-outside-${Date.now()}`);
@@ -66,6 +80,35 @@ describe("buildPreToolHook — filesystem whitelist", () => {
       mkdirSync(join(root, "src"), { recursive: true });
       const h = buildHandler(["src/newfile.ts"], root);
       const r = await h({ tool_name: "Write", tool_input: { file_path: "src/newfile.ts" } });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Write: allows absolute path inside worktree when file is in plan", async () => {
+    const root = tempRoot("wt-write-abs-allow");
+    try {
+      mkdirSync(join(root, "src"), { recursive: true });
+      const h = buildHandler(["src/newfile.ts"], root);
+      const r = await h({
+        tool_name: "Write",
+        tool_input: { file_path: join(root, "src", "newfile.ts") },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Write: allows planned file in a new nested directory under worktree", async () => {
+    const root = tempRoot("wt-write-new-nested");
+    try {
+      const h = buildHandler(["src/generated/newfile.ts"], root);
+      const r = await h({
+        tool_name: "Write",
+        tool_input: { file_path: "src/generated/newfile.ts" },
+      });
       expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
     } finally {
       rmSync(root, { recursive: true, force: true });

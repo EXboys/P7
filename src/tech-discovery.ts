@@ -81,16 +81,32 @@ export function saveSnapshot(projectPath: string, snapshot: TechDiscoverySnapsho
   return path;
 }
 
+const DISCOVERY_SNAPSHOT_FILE = /^\d{4}-\d{2}-\d{2}\.json$/;
+
+function isDiscoverySnapshot(raw: unknown): raw is TechDiscoverySnapshot {
+  if (!raw || typeof raw !== "object") return false;
+  const item = raw as TechDiscoverySnapshot;
+  return (
+    typeof item.date === "string" &&
+    Array.isArray(item.signals) &&
+    typeof item.summary === "string"
+  );
+}
+
 export function listSnapshots(projectPath: string, limit = 14): TechDiscoverySnapshot[] {
   const dir = projectSubpathForRead(projectPath, "discovery");
   if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
-    .sort()
-    .reverse()
-    .slice(0, limit)
-    .map((f) => JSON.parse(readFileSync(join(dir, f), "utf-8")) as TechDiscoverySnapshot)
-    .filter(Boolean);
+  const out: TechDiscoverySnapshot[] = [];
+  for (const f of readdirSync(dir).filter((name) => DISCOVERY_SNAPSHOT_FILE.test(name)).sort().reverse()) {
+    if (out.length >= limit) break;
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, f), "utf-8")) as unknown;
+      if (isDiscoverySnapshot(parsed)) out.push(parsed);
+    } catch {
+      /* skip corrupt snapshot files */
+    }
+  }
+  return out;
 }
 
 function tokenize(text: string): string[] {

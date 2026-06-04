@@ -79,6 +79,15 @@ function classifyRetryHint(error: string): { retryable: boolean; hint: string } 
   if (/max_pending|queue depth/i.test(e)) {
     return { retryable: false, hint: "先审批或清理积压 Plan" };
   }
+  if (/permission violations|outside worktree boundary/i.test(e)) {
+    return {
+      retryable: false,
+      hint: "权限边界拦截：若路径在 worktree 内请先升级到最新修复，否则需重新生成更准确的 Plan",
+    };
+  }
+  if (/file not in plan/i.test(e)) {
+    return { retryable: false, hint: "Plan 范围不完整，请重新生成 Plan" };
+  }
   if (/exit 143|超时被终止|超时.*终止/i.test(e)) {
     return {
       retryable: true,

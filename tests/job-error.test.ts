@@ -13,4 +13,11 @@ describe("normalizeJobError", () => {
 error: Claude Code returned an error result: API Error: Unable to connect to API (FailedToOpenSocket)`;
     expect(normalizeJobError(blob, 1)).toMatch(/Unable to connect/i);
   });
+
+  test("humanizes plan schema line-limit errors", () => {
+    const blob = `ZodError: [
+      {"code":"too_big","path":["estimated_diff_lines"],"message":"Too big: expected number to be <=200"}
+    ]`;
+    expect(normalizeJobError(blob, 1)).toContain("Plan 校验失败");
+  });
 });

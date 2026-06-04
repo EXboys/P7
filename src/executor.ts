@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { devAgentDir } from "./config.ts";
 import type { DevAgentConfig } from "./config.ts";
 import { reviewDiff } from "./diff-critic.ts";
@@ -64,14 +64,12 @@ function scaleLimits(plan: Plan): { maxFiles: number; maxDiffLines: number } {
 }
 
 function normalizeAllowedPath(path: string, cwd: string): string {
-  let normalized = path.replace(/^\.\//, "");
-  const cwdNorm = cwd.replace(/\/$/, "");
-  if (normalized.startsWith(`${cwdNorm}/`)) {
-    normalized = normalized.slice(cwdNorm.length + 1);
-  } else if (normalized === cwdNorm) {
-    normalized = "";
+  const cwdNorm = resolve(cwd);
+  if (isAbsolute(path)) {
+    const rel = relative(cwdNorm, resolve(path));
+    return rel === "" ? "" : rel.replace(/\\/g, "/");
   }
-  return normalized;
+  return path.replace(/^\.\//, "").replace(/\\/g, "/");
 }
 
 /**
@@ -80,21 +78,34 @@ function normalizeAllowedPath(path: string, cwd: string): string {
  * directory instead to determine boundary membership.
  */
 function isPathWithinWorktree(filePath: string, worktreeRoot: string): boolean {
-  const absPath = join(worktreeRoot, filePath);
-  let resolved: string;
+  let rootResolved: string;
   try {
-    resolved = realpathSync(absPath);
+    rootResolved = realpathSync(worktreeRoot);
   } catch {
-    // Path doesn't exist yet — resolve from parent directory
-    try {
-      resolved = realpathSync(dirname(absPath));
-    } catch {
-      // Can't resolve parent either — deny to be safe
-      return false;
-    }
+    return false;
   }
-  const root = worktreeRoot.endsWith("/") ? worktreeRoot : worktreeRoot + "/";
-  return resolved === worktreeRoot || resolved.startsWith(root);
+
+  const absPath = isAbsolute(filePath)
+    ? resolve(filePath)
+    : resolve(rootResolved, filePath);
+  let resolvedPath: string | undefined;
+  try {
+    resolvedPath = realpathSync(absPath);
+  } catch {
+    // Path doesn't exist yet — walk up to the nearest existing parent.
+    let parent = dirname(absPath);
+    while (parent && parent !== dirname(parent)) {
+      try {
+        resolvedPath = realpathSync(parent);
+        break;
+      } catch {
+        parent = dirname(parent);
+      }
+    }
+    if (!resolvedPath!) return false;
+  }
+  const root = rootResolved.endsWith("/") ? rootResolved : rootResolved + "/";
+  return resolvedPath === rootResolved || resolvedPath.startsWith(root);
 }
 
 /**

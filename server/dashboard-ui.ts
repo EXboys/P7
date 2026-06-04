@@ -1689,7 +1689,7 @@ export function renderTrendsPage(opts: {
     .slice(0, 7)
     .map(
       (h) =>
-        `<tr><td>${esc(h.date)}</td><td>${h.signals.length}</td><td>${h.themes.length ? esc(h.themes.slice(0, 3).join("、")) : "—"}</td><td class="muted">${esc(h.summary.slice(0, 80))}${h.summary.length > 80 ? "…" : ""}</td></tr>`,
+        `<tr><td>${esc(h.date)}</td><td>${(h.signals ?? []).length}</td><td>${(h.themes ?? []).length ? esc((h.themes ?? []).slice(0, 3).join("、")) : "—"}</td><td class="muted">${esc((h.summary ?? "").slice(0, 80))}${(h.summary ?? "").length > 80 ? "…" : ""}</td></tr>`,
     )
     .join("");
 
