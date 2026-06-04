@@ -16,6 +16,7 @@ Feature: 自托管开发沙箱预览与 executor 安全边界收敛 (started 202
 ## Backlog
 - Gemma 4 12B 轻量代码模型本地评估集成（依赖：executor 边界收敛完成后可安全拉取模型并注册端点）
 - AI Agent 工具成本治理基线——接入 Uber $1500/月定价基准，实现成本标签分层归因（按模型/plan/阶段）与熔断阈值
+- [x] 分析 Hyper agentic pipeline 动态编排核心模式（条件分支、并行扇出、动态重排），产出对比设计笔记
 - Hyper agentic development 动态 agent 编排对 pipeline 收敛效率的改进潜力评估
 - plan-critic 结构化升级——参照 diff-critic 结构化输出方案改为 FINDINGS + OK 格式，与 PlanState 持久层对接
 
