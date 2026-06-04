@@ -1,24 +1,28 @@
 # Roadmap
 ## Active
-Feature: AI 代码审查幻觉防御收尾与验证 (started 2026-05-31)
-- [ ] 构造覆盖虚构 npm 包导入、不存在 API 调用、错误类型签名的 diff fixture 测试集
-- [x] 在 diff-critic 中新增幻觉检测专用维度并接入 PlanState review 阻断逻辑 (commit: 6596771)
-- [ ] 运行 fixture 测试集验证幻觉捕获率 ≥80%，未达标则迭代 prompt 并重测
-- [ ] 将阻断结果写入 diff-critic findings，阻止幻觉类 PR 自动合并
+Feature: Elixir v1.20 渐进类型门禁代码质量验证 (started 2026-06-04)
+- [x] 提取 Elixir v1.20 渐进类型核心设计模式（按文件粒度启用、逐步严格化、非全有全无）并产出对比分析笔记 (commit: c9a66ae)
+- [x] 定义 diff-critic 渐进类型检查配置协议，按文件/目录粒度声明 tsc 严格模式开关 (commit: 77ab045)
+- [x] 实现 GradualTypeChecker 审查器，复用 executor typecheck 步骤的结构化 JSON 输出 (commit: e323fb8)
+- [x] 编写渐进类型检查 fixture 用例（正例：增量严格化 diff；负例：类型逃逸/any 退化 diff） (commit: e16ddcb)
+- [ ] 集成测试渐进类型检查门禁，验证正负例阻断逻辑正确性
 
-Feature: OpenRouter 融资信号驱动的 AI 基础设施成本可观测性 (started 2026-05-31)
-- [ ] 在 executor runSdkQuery 后记录 token 用量与成本到 sdk_costs 表
-- [ ] 在 PlanState 中新增 costs_summary 字段，聚合单次执行成本数据
-- [ ] 实现按 goal 维度的成本归因与上限熔断逻辑
-- [ ] 在 discovery-daily 中输出成本摘要，辅助工程师感知 AI 成本趋势
+Feature: 自托管开发沙箱预览与 executor 安全边界收敛 (started 2026-06-04)
+- [ ] 将 `.p7/discovery/` 等发现路径纳入 executor 工作树边界白名单，修补外路径权限拒绝故障
+- [ ] 实现自托管开发沙箱预览 URL 生成模块，支持从 executor 状态直接打开本地预览
+- [ ] 编写集成测试覆盖沙箱预览安全域隔离（防止预览 URL 泄露 host 文件系统）
+- [ ] 新增 executor 路径边界审计命令 `p7 audit boundaries`，扫描所有配置路径是否在授权范围内
 
 ## Backlog
-- Openrsync 安全审查模式沉淀——提取 OpenBSD 安全检查清单（内存安全、边界条件、协议合规），转化为 diff-critic 安全维度增强 prompt
-- plan-critic 结构化升级——参照 diff-critic 的结构化输出方案，改为 FINDINGS + OK 格式，与 PlanState 持久层对接
-- Voxel Space 可视化技术调研——评估其体素空间渲染方案在仪表板成本热力图与执行轨迹 3D 可视化中的可借鉴模式
-- 构建门禁扩展——支持 ESLint/Prettier 格式一致性检查接入 executor 预检阶段
+- Gemma 4 12B 轻量代码模型本地评估集成（依赖：executor 边界收敛完成后可安全拉取模型并注册端点）
+- AI Agent 工具成本治理基线——接入 Uber $1500/月定价基准，实现成本标签分层归因（按模型/plan/阶段）与熔断阈值
+- Hyper agentic development 动态 agent 编排对 pipeline 收敛效率的改进潜力评估
+- plan-critic 结构化升级——参照 diff-critic 结构化输出方案改为 FINDINGS + OK 格式，与 PlanState 持久层对接
 
 ## Done
+- 安全边界集成——文件系统路径边界、API 域名白名单、PlanState 权限违规阻断、executor 工具钩子路径校验（PRs #49–#53）
+- 仪表板恢复机制修复 & 分页优化（PR #53）
+- 在 diff-critic 中新增幻觉检测专用维度并接入 PlanState review 阻断逻辑
 - 分析 executor pipeline 各环节的背压缺口——识别无界队列、无限重试、同步阻塞等 10 个反压缺失点，输出可操作治理路线
 - P7 自主开发管线初始化（discovery → Roadmap → Plan → PR 全链路）
 - 基础 diff-critic 实现（regex OK: true/false 判定）

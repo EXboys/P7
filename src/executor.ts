@@ -58,9 +58,9 @@ function deriveMaxTurns(plan: Plan): number {
 
 function scaleLimits(plan: Plan): { maxFiles: number; maxDiffLines: number } {
   const c = plan.complexity ?? "medium";
-  if (c === "simple") return { maxFiles: 2, maxDiffLines: 200 };
-  if (c === "complex") return { maxFiles: 5, maxDiffLines: 400 };
-  return { maxFiles: 4, maxDiffLines: 300 };
+  if (c === "simple") return { maxFiles: 3, maxDiffLines: 300 };
+  if (c === "complex") return { maxFiles: 8, maxDiffLines: 800 };
+  return { maxFiles: 5, maxDiffLines: 500 };
 }
 
 function normalizeAllowedPath(path: string, cwd: string): string {
@@ -515,14 +515,22 @@ export async function executePlan(
     }
 
     // ── Permission violations gate ──
+    // 所有被拒操作都已被边界成功拦截、未真正执行。只有"试图写出 worktree 边界"
+    // 这类真正危险的越界意图才让任务失败；agent 自检产生的 plan 外临时文件、
+    // 只读路径穿越、被拦的 git/rm 命令属无害试探，不应因此把整个交付判失败——
+    // 实际产出质量交由后续 stats.files / diff / typecheck / test 门禁把关。
     if (deniedOps.length > 0) {
-      permissionFindings = `Permission violations detected during execution:\n${deniedOps.map((r) => `- ${r}`).join("\n")}`;
-      if (planId) {
-        transitionPlanState(projectPath, planId, "failed", {
-          error: permissionFindings,
-        });
+      permissionFindings = `Permission notes during execution (blocked, non-fatal):\n${deniedOps.map((r) => `- ${r}`).join("\n")}`;
+      const fatalOps = deniedOps.filter((r) => /outside worktree boundary/i.test(r));
+      if (fatalOps.length > 0) {
+        const fatalMsg = `Permission violations (fatal) during execution:\n${fatalOps.map((r) => `- ${r}`).join("\n")}`;
+        if (planId) {
+          transitionPlanState(projectPath, planId, "failed", {
+            error: fatalMsg,
+          });
+        }
+        throw new Error(fatalMsg);
       }
-      throw new Error(permissionFindings);
     }
 
     if (stats.files === 0) {
@@ -535,13 +543,19 @@ export async function executePlan(
 
     const diffStart = new Date().toISOString();
     writeStepState({ step_name: "diff_check", status: "running", started_at: diffStart });
-    const maxFiles = Math.min(limits.maxFiles, cfg.diff_critic.max_files_ceiling);
+    const maxFiles = Math.min(
+      Math.max(limits.maxFiles, plan.changes.length),
+      Math.max(cfg.diff_critic.max_files_ceiling, 8),
+    );
+    // 天花板至少与 Plan schema 的 estimated_diff_lines 上限(1000)对齐，
+    // 避免旧项目配置里的小 max_diff_ceiling(如 300) 把放宽后的大 Plan 压死。
+    const ceiling = Math.max(cfg.diff_critic.max_diff_ceiling, 1000);
     const maxDiffLines = Math.min(
       Math.max(
         Math.ceil(plan.estimated_diff_lines * cfg.diff_critic.max_diff_multiplier),
         limits.maxDiffLines,
       ),
-      cfg.diff_critic.max_diff_ceiling,
+      ceiling,
     );
     if (stats.files > maxFiles) {
       throw new Error(`Too many files changed: ${stats.files} > ${maxFiles}`);

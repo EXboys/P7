@@ -88,6 +88,12 @@ function classifyRetryHint(error: string): { retryable: boolean; hint: string } 
   if (/file not in plan/i.test(e)) {
     return { retryable: false, hint: "Plan 范围不完整，请重新生成 Plan" };
   }
+  if (/diff too large|too many files/i.test(e)) {
+    return {
+      retryable: false,
+      hint: "改动超过 diff/文件上限：已放宽上限，重试前请让 Plan 拆得更小，或调大 diff_critic 上限",
+    };
+  }
   if (/exit 143|超时被终止|超时.*终止/i.test(e)) {
     return {
       retryable: true,

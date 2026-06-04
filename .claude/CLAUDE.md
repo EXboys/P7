@@ -2,55 +2,54 @@
 
 <!-- P7_LESSONS_BEGIN -->
 ## Lessons learned (auto-curated by P7)
+- 2026-06-04 01:51 execute:failed "产出 Elixir v1.20 渐进类型设计模式对比分析笔记" x Permission violations detected during execution:
 - Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
-- 2026-06-03 06:44 execute:base origin/main @ 8edecdd
-- 2026-06-03 06:44 execute:retry-with-context plan=1780466269156-3 (归档失败记录（2026-06-03 06:41:31）：Permission violations detected during execution:
+- 2026-06-04 01:53 execute:base origin/main @ 91680e2
+- 2026-06-04 01:53 execute:retry-with-context plan=1780536824725 (归档失败记录（2026-06-04 01:49:04）：Permission violations detected during execution:
+- W…)
+- 2026-06-04 01:54 execute:tools pass 1 tools: write/edit=1 read=2 denied=0 errors=0
+- 2026-06-04 01:54 execute:failed "新增 Elixir v1.20 渐进类型核心设计模式分析笔记" x Permission violations detected during execution:
+- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
+- 2026-06-04 01:55 plan:abandon 1780536824725 auto-exhausted-retries (3 execute failures)
+- 2026-06-04 01:55 execute:base origin/main @ 91680e2
+- 2026-06-04 01:55 execute:retry-with-context plan=1780531999464 (归档失败记录（2026-06-04 01:51:31）：Permission violations detected during execution:
 - R…)
-- 2026-06-03 06:46 execute:tools pass 1 tools: write/edit=1 read=1 denied=0 errors=0
-- 2026-06-03 06:46 execute:failed "添加 MAI-Code-1-Flash 幻觉检测批量评估（tests/eval-mai-code-hallucination.test.ts）" x Permission violations detected during execution:
+- 2026-06-04 01:57 execute:tools pass 1 tools: write/edit=1 read=1 denied=0 errors=0
+- 2026-06-04 01:57 execute:failed "产出 Elixir v1.20 渐进类型设计模式对比分析笔记" x Permission violations detected during execution:
 - Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
-- 2026-06-03 06:46 execute:base origin/main @ 8edecdd
-- 2026-06-03 06:46 execute:retry-with-context plan=1780466269156-2 (归档失败记录（2026-06-03 06:43:39）：Permission violations detected during execution:
+- 2026-06-04 01:58 execute:base origin/main @ 91680e2
+- 2026-06-04 02:01 execute:tools pass 1 tools: write/edit=6 read=7 denied=0 errors=0
+- 2026-06-04 02:03 execute:base origin/main @ c9a66ae
+- 2026-06-04 02:03 execute:retry-with-context plan=1780531999464 (归档失败记录（2026-06-04 01:57:46）：Permission violations detected during execution:
 - R…)
-- 2026-06-03 06:48 execute:tools pass 1 tools: write/edit=1 read=3 denied=0 errors=0
-- 2026-06-03 06:48 execute:failed "添加 MAI-Code-1-Flash 幻觉检测批量评估（src/mai-code.ts）" x Permission violations detected during execution:
-- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
-- 2026-06-03 06:50 plan:abandon 1780466269156-2 auto-exhausted-retries (3 execute failures)
-- 2026-06-03 06:50 execute:base origin/main @ 8edecdd
-- 2026-06-03 06:50 execute:retry-with-context plan=1780466269156-3 (归档失败记录（2026-06-03 06:46:10）：Permission violations detected during execution:
-- R…)
-- 2026-06-03 06:52 execute:tools pass 1 tools: write/edit=1 read=1 denied=0 errors=0
-- 2026-06-03 06:52 execute:failed "添加 MAI-Code-1-Flash 幻觉检测批量评估（tests/eval-mai-code-hallucination.test.ts）" x Permission violations detected during execution:
-- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
-- 2026-06-03 06:54 plan:abandon 1780466269156-3 auto-exhausted-retries (3 execute failures)
-- 2026-06-03 06:55 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; Paseo 编码代理界面与工具链参考; VSCode 凭证窃取与供应链安全审查; RAG 图片索引在代码库中的应用
-- 2026-06-03 06:55 roadmap:refreshed
-- 2026-06-03 06:59 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型与质量评估; Paseo 编码代理界面与工具链; VSCode 凭证窃取与供应链安全审查; RAG 图片索引在代码库文档中的应用
-- 2026-06-03 07:00 roadmap:refreshed
-- 2026-06-03 07:05 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; Paseo 编码代理界面与工具链参考
-- 2026-06-03 07:06 roadmap:refreshed
-- 2026-06-03 07:09 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; VSCode 凭证窃取与供应链安全审查; Paseo 编码代理界面与工具链交互; RAG 图片索引在代码库知识管理中的应用
-- 2026-06-03 07:10 roadmap:refresh skipped
-- 2026-06-03 07:11 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估与质量基线; Paseo 编码代理界面与工具链交互模式参考; VSCode 凭证窃取与供应链安全审查增强; RAG 图片索引在代码知识检索中的应用
-- 2026-06-03 07:11 roadmap:refreshed
-- 2026-06-03 07:11 plan:degrade queue depth 4/5
-- 2026-06-03 07:15 radar:ok hn+github 27 signals, themes: MAI-Code-1-Flash 代码模型幻觉评估; VSCode 凭证窃取与供应链安全审查; RAG 图片索引在代码知识检索中的应用; Paseo 编码代理界面与工具链交互
-- 2026-06-03 07:16 roadmap:refreshed
-- 2026-06-03 07:16 execute:base origin/main @ 8edecdd
-- 2026-06-03 07:20 execute:tools pass 1 tools: write/edit=2 read=6 denied=0 errors=0
-- 2026-06-03 07:20 plan:abandon 1780470515229 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
-- 2026-06-03 07:20 execute:failed "在 src/llm-env.ts 模型路由表中注册 MAI-Code-1-Flash 路由" x Permission violations detected during execution:
-- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
-- 2026-06-03 07:22 execute:base origin/main @ 8edecdd
-- 2026-06-03 07:38 plan:abandon 1780470295277 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
-- 2026-06-03 07:38 execute:failed "添加 MAI-Code-1-Flash 凭证链与连通性探测模块" x execution cost exceeded limit: 7.073633000000003 > 5
-- 2026-06-03 07:38 execute:base origin/main @ 8edecdd
-- 2026-06-03 08:02 plan:abandon 1780469953658 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
-- 2026-06-03 08:02 execute:failed "提取 MAI-Code-1-Flash 客户端并修复凭证隔离以运行批量评估" x Claude Code returned an error result: API Error: Unable to connect to API (ConnectionRefused)
-- 2026-06-03 08:32 execute:base origin/main @ 8edecdd
-- 2026-06-03 08:32 plan:abandon 1780470837768 stale-roadmap-goal active="新建 `.p7/discovery/mai-code-eval-config.json`，声明 "
-- 2026-06-03 08:32 execute:base origin/main @ 8edecdd
-- 2026-06-03 08:34 execute:tools pass 1 tools: write/edit=1 read=4 denied=0 errors=0
-- 2026-06-03 08:34 execute:failed "添加 MAI-Code-1-Flash 幻觉测试样本集" x Permission violations detected during execution:
-- Read: File path outside worktree boundary: /Users/airlu/Documents/p7/
+- 2026-06-04 02:04 execute:ok "将 .p7/discovery/ 写入路径纳入 executor worktree 边界白名单" -> p7/dev / 336s
+- 2026-06-04 02:06 execute:tools pass 1 tools: write/edit=2 read=6 denied=0 errors=0
+- 2026-06-04 02:06 plan:abandon 1780531999464 stale-roadmap-goal active="定义 diff-critic 渐进类型检查配置协议，按文件/目录粒度声明 tsc 严格模式开关"
+- 2026-06-04 02:06 execute:failed "产出 Elixir v1.20 渐进类型设计模式对比分析笔记" x git diff failed: fatal: cannot change to '/Users/airlu/Documents/p7/.p7/worktrees/active': No such file or directory
+- 2026-06-04 02:11 pipeline:recover-stall plan=1780539119169 goal="定义 diff-critic 渐进类型检查配置协议，按文件/目录粒度声明 tsc 严格模式开关" phase=awaiting_approval
+- 2026-06-04 02:13 execute:base origin/main @ c9a66ae
+- 2026-06-04 02:15 execute:tools pass 1 tools: write/edit=3 read=20 denied=0 errors=0
+- 2026-06-04 02:17 pr:review https://github.com/EXboys/P7/pull/54 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
+- 2026-06-04 02:17 execute:ok "定义渐进类型检查配置协议，支持文件级 tsc 严格模式开关（src/gradual-typecheck-config.ts）" -> p7/dev / 252s / https://github.com/EXboys/P7/pull/54
+- 2026-06-04 02:19 execute:base origin/main @ 5f38d1e
+- 2026-06-04 02:20 execute:tools pass 1 tools: write/edit=2 read=4 denied=0 errors=0
+- 2026-06-04 02:20 plan:abandon 1780539119172-3 stale-roadmap-goal active="实现 GradualTypeChecker 审查器，复用 executor typecheck "
+- 2026-06-04 02:20 execute:failed "定义渐进类型检查配置协议，支持文件级 tsc 严格模式开关（tests/gradual-typecheck-config.test.ts）" x Diff too large: 249 lines > 200
+- 2026-06-04 02:21 execute:base origin/main @ 5f38d1e
+- 2026-06-04 02:24 execute:tools pass 1 tools: write/edit=6 read=9 denied=0 errors=0
+- 2026-06-04 02:26 pr:review https://github.com/EXboys/P7/pull/55 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
+- 2026-06-04 02:26 execute:ok "定义渐进类型检查配置协议，支持文件级 tsc 严格模式开关（src/config.ts）" -> p7/dev / 285s / https://github.com/EXboys/P7/pull/55
+- 2026-06-04 02:28 pipeline:recover-stall plan=1780540117314 goal="编写渐进类型检查 fixture 用例（正例：增量严格化 diff；负例：类型逃逸/any 退化 diff）" phase=awaiting_approval
+- 2026-06-04 02:29 execute:base origin/main @ 28863e9
+- 2026-06-04 02:30 execute:tools pass 1 tools: write/edit=2 read=3 denied=0 errors=0
+- 2026-06-04 02:30 execute:failed "新增渐进类型检查 fixture 用例：增量严格化与类型退化" x Permission violations detected during execution:
+- Bash: Path traversal detected in Bash command — filesystem boundary e
+- 2026-06-04 02:31 execute:base origin/main @ 28863e9
+- 2026-06-04 02:32 execute:tools pass 1 tools: write/edit=1 read=6 denied=0 errors=0
+- 2026-06-04 02:33 pr:review https://github.com/EXboys/P7/pull/56 — review 备注已发（approve 跳过：accepts at most 1 arg(s), received 2）
+- 2026-06-04 02:34 execute:ok "定义渐进类型检查配置协议，支持文件级 tsc 严格模式开关（src/types.ts）" -> p7/dev / 126s / https://github.com/EXboys/P7/pull/56
+- 2026-06-04 02:35 plan:abandon 1780540117314 stale-roadmap-goal active="集成测试渐进类型检查门禁，验证正负例阻断逻辑正确性"
+- 2026-06-04 02:47 pipeline:recover-stall plan=1780541261183 goal="集成测试渐进类型检查门禁，验证正负例阻断逻辑正确性" phase=awaiting_approval
+- 2026-06-04 02:48 execute:base origin/main @ 859caa8
+- 2026-06-04 02:50 execute:tools pass 1 tools: write/edit=5 read=11 denied=0 errors=0
 <!-- P7_LESSONS_END -->

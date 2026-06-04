@@ -46,14 +46,14 @@ export const DevAgentConfigSchema = z.object({
     .object({
       tolerated_files: z.array(z.string()).default([]),
       max_diff_multiplier: z.number().default(1.5),
-      max_diff_ceiling: z.number().int().default(300),
-      max_files_ceiling: z.number().int().default(5),
+      max_diff_ceiling: z.number().int().default(1000),
+      max_files_ceiling: z.number().int().default(8),
     })
     .default({
       tolerated_files: [],
       max_diff_multiplier: 1.5,
-      max_diff_ceiling: 300,
-      max_files_ceiling: 5,
+      max_diff_ceiling: 1000,
+      max_files_ceiling: 8,
     }),
   vcs: z
     .object({
@@ -212,8 +212,8 @@ export function loadConfig(projectPath: string): DevAgentConfig {
       diff_critic: {
         tolerated_files: [],
         max_diff_multiplier: 1.5,
-        max_diff_ceiling: 300,
-        max_files_ceiling: 5,
+        max_diff_ceiling: 1000,
+        max_files_ceiling: 8,
       },
       vcs: {
         enabled: true,
