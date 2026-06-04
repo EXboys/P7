@@ -2,6 +2,8 @@
 // Gemma 4 12B local inference via Ollama REST API
 // Usage: bun run src/gemma-local.ts [check]
 
+import type { GemmaClient, GemmaClientOutput } from "./gemma-bridge.ts";
+
 const DEFAULT = { baseUrl: "http://localhost:11434", model: "gemma4:12b" };
 
 export interface GemmaLocalConfig {
@@ -98,6 +100,51 @@ export async function firstInference(cfg: GemmaLocalConfig = {}): Promise<{
   if (!res.ok) throw new Error(`inference failed: ${res.status}`);
   const body = (await res.json()) as { response: string };
   return { latencyMs: performance.now() - t0, output: body.response ?? "" };
+}
+
+/* ── GemmaClient implementation ─────────────────────────────────────────── */
+
+/**
+ * Concrete GemmaClient implementation routing inference requests through the
+ * local Ollama REST API (`/api/generate`).
+ *
+ * Encapsulates model name, base URL, and HTTP transport behind the abstract
+ * `GemmaClient` interface so the diff-critic bridge pipeline can invoke it
+ * without depending on Ollama-specific details.
+ *
+ * @example
+ * ```ts
+ * const client = new GemmaLocalClient({ model: "gemma4:12b" });
+ * const { text, latencyMs } = await client.generate("review this diff…");
+ * ```
+ */
+export class GemmaLocalClient implements GemmaClient {
+  private cfg: GemmaLocalConfig;
+
+  constructor(cfg: GemmaLocalConfig = {}) {
+    this.cfg = cfg;
+  }
+
+  /**
+   * Send a prompt to the Ollama `/api/generate` endpoint and return the
+   * generated text together with end-to-end latency.
+   *
+   * Uses `stream: false` for simplicity (blocking single-response mode) and
+   * sets `keep_alive: "5m"` to keep the model warm for subsequent calls.
+   *
+   * @throws {Error} If the HTTP response status is not 2xx.
+   */
+  async generate(prompt: string): Promise<GemmaClientOutput> {
+    const { model = DEFAULT.model } = this.cfg;
+    const t0 = performance.now();
+    const res = await ollamaFetch("/api/generate", {
+      method: "POST",
+      body: { model, prompt, stream: false, keep_alive: "5m" },
+    }, this.cfg);
+    if (!res.ok) throw new Error(`Gemma generate failed: ${res.status}`);
+    const body = (await res.json()) as { response: string };
+    return { text: body.response ?? "", latencyMs: performance.now() - t0 };
+  }
 }
 
 // ── Standalone ──────────────────────────────────────────────────────────────
