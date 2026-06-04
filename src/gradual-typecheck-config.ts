@@ -148,3 +148,70 @@ export function buildTypeCoverageFromConfig(
     files,
   };
 }
+
+/* ── Coverage summary (dashboard helpers) ── */
+
+/**
+ * Computed percentage-based summary derived from a `TypeCoverageReport`.
+ *
+ * Used by the dashboard to render metric cards, sparklines, and progress
+ * indicators. All percentages are 0–100 integers (rounded).
+ */
+export interface TypeCoverageSummary {
+  totalFiles: number;
+  /** Percentage of files covered by any rule (strict + partial). */
+  coveredPct: number;
+  /** Percentage of files with full strict mode (all flags true). */
+  strictPct: number;
+  /** Percentage of files with partial strict mode (mixed flags). */
+  partialPct: number;
+  /** Percentage of files falling back to tsconfig defaults. */
+  defaultPct: number;
+  breakouts: {
+    /** Per-flag percentage of files that have this flag enabled. */
+    byFlag: Record<string, number>;
+  };
+}
+
+/**
+ * Compute a percentage-based `TypeCoverageSummary` from a `TypeCoverageReport`.
+ *
+ * Pure function — no side effects. Handles the zero-total-files edge case
+ * by returning zero for all percentages.
+ *
+ * @param report - A `TypeCoverageReport` returned by `buildTypeCoverageFromConfig`.
+ * @returns A `TypeCoverageSummary` with 0–100 integer percentages.
+ */
+export function summarizeTypeCoverage(
+  report: TypeCoverageReport,
+): TypeCoverageSummary {
+  const { totalFiles, strictFiles, partialFiles, defaultFiles, perFlagCounts } =
+    report.stats;
+
+  if (totalFiles === 0) {
+    return {
+      totalFiles: 0,
+      coveredPct: 0,
+      strictPct: 0,
+      partialPct: 0,
+      defaultPct: 0,
+      breakouts: { byFlag: {} },
+    };
+  }
+
+  const pct = (n: number) => Math.round((n / totalFiles) * 100);
+
+  const byFlag: Record<string, number> = {};
+  for (const [flag, count] of Object.entries(perFlagCounts)) {
+    byFlag[flag] = pct(count);
+  }
+
+  return {
+    totalFiles,
+    coveredPct: pct(strictFiles + partialFiles),
+    strictPct: pct(strictFiles),
+    partialPct: pct(partialFiles),
+    defaultPct: pct(defaultFiles),
+    breakouts: { byFlag },
+  };
+}
