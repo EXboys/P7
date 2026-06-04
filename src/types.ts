@@ -84,6 +84,8 @@ export interface ExecutionResult {
   branch?: string;
   commitSha?: string;
   reviewUrl?: string;
+  /** Sandbox preview URL pointing to the dashboard server serving worktree content */
+  previewUrl?: string;
   prUrl?: string;
   issueUrl?: string;
   mergeStatus?: "not_requested" | "queued" | "merged" | "failed" | "skipped";
