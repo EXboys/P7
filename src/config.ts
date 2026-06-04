@@ -2,6 +2,23 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { z } from "zod";
 import { p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
+import { TSC_STRICT_FLAGS } from "./gradual-typecheck-config.ts";
+
+/* ── Gradual type-check config schema ── */
+
+const tscStrictFlagValues = Object.keys(TSC_STRICT_FLAGS) as [string, ...string[]];
+const TscStrictFlagEnum = z.enum(tscStrictFlagValues);
+
+/**
+ * Zod schema for a single gradual type-check rule.
+ * Declares a glob pattern with strict-flag overrides (first-match-wins).
+ */
+export const GradualTypeCheckRuleSchema = z.object({
+  pattern: z.string().min(1),
+  flags: z.record(TscStrictFlagEnum, z.boolean()).optional().default({}),
+});
+
+export type GradualTypeCheckRule = z.infer<typeof GradualTypeCheckRuleSchema>;
 
 export const DevAgentConfigSchema = z.object({
   initial_goal: z.string().min(1),
@@ -157,6 +174,11 @@ export const DevAgentConfigSchema = z.object({
       pass_retry_delay_ms: 10000,
       max_concurrency: 2,
     }),
+  gradual_type_checking: z
+    .object({
+      rules: z.array(GradualTypeCheckRuleSchema).default([]),
+    })
+    .default({ rules: [] }),
 });
 
 export type DevAgentConfig = z.infer<typeof DevAgentConfigSchema>;
@@ -238,6 +260,9 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         max_delay_ms: 60000,
         pass_retry_delay_ms: 10000,
         max_concurrency: 2,
+      },
+      gradual_type_checking: {
+        rules: [],
       },
     };
     saveConfig(projectPath, defaults);
