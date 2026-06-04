@@ -1,4 +1,5 @@
 import { Glob } from "bun";
+import type { TypeCoverageFileEntry, TypeCoverageReport } from "./types.ts";
 
 /* ── TypeScript strict-mode flag registry ── */
 
@@ -67,4 +68,83 @@ export function resolveTypeCheckStrictness(
     }
   }
   return null;
+}
+
+/* ── Type coverage builder ── */
+
+/**
+ * Build a `TypeCoverageReport` from a `GradualTypeCheckConfig` and a list of
+ * project source file paths.
+ *
+ * Scans each file path through `resolveTypeCheckStrictness`, collects per-file
+ * resolved flags, and aggregates statistics (strict/partial/default counts,
+ * per-flag enablement counts). Pure function — no side effects, testable.
+ *
+ * @param config - The gradual type-check configuration with ordered rules.
+ * @param projectFiles - List of source file paths (relative or absolute) to evaluate.
+ * @returns A `TypeCoverageReport` with `source="config"`.
+ */
+export function buildTypeCoverageFromConfig(
+  config: GradualTypeCheckConfig,
+  projectFiles: string[],
+): TypeCoverageReport {
+  const files: TypeCoverageFileEntry[] = [];
+  const perFlagCounts: Record<string, number> = {};
+  let strictFiles = 0;
+  let partialFiles = 0;
+  let defaultFiles = 0;
+
+  for (const filePath of projectFiles) {
+    const rule = resolveTypeCheckStrictness(filePath, config);
+
+    if (rule === null) {
+      files.push({ filePath, matchedRule: null, resolvedFlags: {} });
+      defaultFiles++;
+      continue;
+    }
+
+    // Collect only explicitly-set flags from the matched rule.
+    const resolvedFlags: Record<string, boolean> = {};
+    for (const [key, val] of Object.entries(rule.flags)) {
+      if (val !== undefined) resolvedFlags[key] = val;
+    }
+
+    const flagValues = Object.values(resolvedFlags);
+    const allTrue = flagValues.length > 0 && flagValues.every(Boolean);
+    const hasFalse = flagValues.some((v) => !v);
+
+    files.push({
+      filePath,
+      matchedRule: rule.pattern,
+      resolvedFlags,
+    });
+
+    if (allTrue) {
+      strictFiles++;
+    } else if (hasFalse) {
+      partialFiles++;
+    } else {
+      // Rule matched but no flags explicitly set — treat as default-like.
+      defaultFiles++;
+    }
+
+    // Accumulate per-flag enablement counts.
+    for (const [flag, enabled] of Object.entries(resolvedFlags)) {
+      if (enabled) {
+        perFlagCounts[flag] = (perFlagCounts[flag] ?? 0) + 1;
+      }
+    }
+  }
+
+  return {
+    source: "config",
+    stats: {
+      totalFiles: projectFiles.length,
+      strictFiles,
+      partialFiles,
+      defaultFiles,
+      perFlagCounts,
+    },
+    files,
+  };
 }
