@@ -4,8 +4,15 @@ import {
   summarizeTypeCoverage,
   computeTypeSafetyMetrics,
   TSC_STRICT_FLAGS,
+  resolveStrictnessTarget,
+  resolveAchievedLevel,
+  computeStrictnessGap,
+  STRICTNESS_LEVELS,
 } from "../src/gradual-typecheck-config.ts";
-import type { GradualTypeCheckConfig } from "../src/gradual-typecheck-config.ts";
+import type {
+  GradualTypeCheckConfig,
+  TypeStrictnessTarget,
+} from "../src/gradual-typecheck-config.ts";
 import type { TypeCoverageReport } from "../src/types.ts";
 
 /* ── Inline config fixtures ── */
@@ -191,5 +198,249 @@ describe("computeTypeSafetyMetrics", () => {
     expect(metrics.strictFiles).toBe(0);
     expect(metrics.anyEscapePaths).toBe(2);
     expect(metrics.coveragePercent).toBe(0);
+  });
+});
+
+/* ── Target config fixtures ── */
+
+const targetConfig: GradualTypeCheckConfig = {
+  rules: [],
+  targets: [
+    {
+      pattern: "src/new/**/*.ts",
+      targetLevel: "full",
+      milestone: "Q3 2026",
+      note: "New code must be fully strict",
+    },
+    {
+      pattern: "src/migration/**/*.ts",
+      targetLevel: "strict",
+      milestone: "Q2 2026",
+    },
+    {
+      pattern: "src/**/*.ts",
+      targetLevel: "moderate",
+      note: "All source code baseline",
+    },
+  ],
+};
+
+const targetFilePaths = [
+  "src/new/module.ts",
+  "src/migration/helper.ts",
+  "src/legacy/old-file.ts",
+  "other/config.ts",
+];
+
+/* ── resolveStrictnessTarget ── */
+
+describe("resolveStrictnessTarget", () => {
+  test("first-match-wins when multiple targets match", () => {
+    // src/new/module.ts matches both 'src/new/**/*.ts' (index 0) and 'src/**/*.ts' (index 2)
+    const result = resolveStrictnessTarget("src/new/module.ts", targetConfig);
+
+    expect(result).not.toBeNull();
+    expect(result!.targetLevel).toBe("full");
+    expect(result!.pattern).toBe("src/new/**/*.ts");
+    expect(result!.milestone).toBe("Q3 2026");
+    expect(result!.note).toBe("New code must be fully strict");
+  });
+
+  test("returns second target when first does not match", () => {
+    const result = resolveStrictnessTarget(
+      "src/migration/helper.ts",
+      targetConfig,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.targetLevel).toBe("strict");
+    expect(result!.pattern).toBe("src/migration/**/*.ts");
+    expect(result!.milestone).toBe("Q2 2026");
+  });
+
+  test("returns last fallback target for broader match", () => {
+    const result = resolveStrictnessTarget(
+      "src/legacy/old-file.ts",
+      targetConfig,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.targetLevel).toBe("moderate");
+    expect(result!.pattern).toBe("src/**/*.ts");
+  });
+
+  test("returns null when targets is undefined", () => {
+    const configWithoutTargets: GradualTypeCheckConfig = { rules: [] };
+    expect(
+      resolveStrictnessTarget("src/new/module.ts", configWithoutTargets),
+    ).toBeNull();
+  });
+
+  test("returns null when targets is empty array", () => {
+    const configEmptyTargets: GradualTypeCheckConfig = {
+      rules: [],
+      targets: [],
+    };
+    expect(
+      resolveStrictnessTarget("src/new/module.ts", configEmptyTargets),
+    ).toBeNull();
+  });
+
+  test("returns null when no target matches the file path", () => {
+    expect(
+      resolveStrictnessTarget("other/config.ts", targetConfig),
+    ).toBeNull();
+  });
+});
+
+/* ── resolveAchievedLevel ── */
+
+describe("resolveAchievedLevel", () => {
+  test("returns 'full' when all 15 full-level flags are enabled", () => {
+    const fullFlags: Record<string, boolean> = {};
+    for (const key of Object.keys(STRICTNESS_LEVELS.full)) {
+      fullFlags[key] = true;
+    }
+    expect(resolveAchievedLevel(fullFlags)).toBe("full");
+  });
+
+  test("returns 'strict' when only strict-level flags are enabled (not full)", () => {
+    const strictOnlyFlags: Record<string, boolean> = {};
+    for (const key of Object.keys(STRICTNESS_LEVELS.strict)) {
+      strictOnlyFlags[key] = true;
+    }
+    // Has all strict flags but none of the additional full-level flags
+    expect(resolveAchievedLevel(strictOnlyFlags)).toBe("strict");
+  });
+
+  test("returns 'moderate' when only moderate-level flags are enabled", () => {
+    const moderateFlags: Record<string, boolean> = {};
+    for (const key of Object.keys(STRICTNESS_LEVELS.moderate)) {
+      moderateFlags[key] = true;
+    }
+    expect(resolveAchievedLevel(moderateFlags)).toBe("moderate");
+  });
+
+  test("returns 'loose' when no strict-mode flags are enabled", () => {
+    expect(resolveAchievedLevel({})).toBe("loose");
+  });
+
+  test("returns 'loose' when flags are insufficient for moderate", () => {
+    // Only one of four moderate flags enabled → not enough for moderate
+    expect(resolveAchievedLevel({ noImplicitAny: true })).toBe("loose");
+  });
+});
+
+/* ── computeStrictnessGap ── */
+
+describe("computeStrictnessGap", () => {
+  test("returns isMet=true and empty missingFlags when target is fully met", () => {
+    const strictFlags: Record<string, boolean> = {};
+    for (const key of Object.keys(STRICTNESS_LEVELS.strict)) {
+      strictFlags[key] = true;
+    }
+
+    const target: TypeStrictnessTarget = {
+      pattern: "src/**/*.ts",
+      targetLevel: "strict",
+    };
+
+    const gap = computeStrictnessGap(strictFlags, target);
+
+    expect(gap.targetLevel).toBe("strict");
+    expect(gap.achievedLevel).toBe("strict");
+    expect(gap.isMet).toBe(true);
+    expect(gap.missingFlags).toEqual({});
+  });
+
+  test("returns isMet=false when achieved is below target and lists missing flags", () => {
+    const moderateFlags: Record<string, boolean> = {};
+    for (const key of Object.keys(STRICTNESS_LEVELS.moderate)) {
+      moderateFlags[key] = true;
+    }
+
+    const target: TypeStrictnessTarget = {
+      pattern: "src/**/*.ts",
+      targetLevel: "strict",
+    };
+
+    const gap = computeStrictnessGap(moderateFlags, target);
+
+    expect(gap.targetLevel).toBe("strict");
+    expect(gap.achievedLevel).toBe("moderate");
+    expect(gap.isMet).toBe(false);
+    // Missing: alwaysStrict, strictFunctionTypes, strictPropertyInitialization, useUnknownInCatchVariables
+    expect(Object.keys(gap.missingFlags).length).toBe(4);
+    expect(gap.missingFlags.alwaysStrict).toBe(true);
+    expect(gap.missingFlags.strictFunctionTypes).toBe(true);
+    expect(gap.missingFlags.strictPropertyInitialization).toBe(true);
+    expect(gap.missingFlags.useUnknownInCatchVariables).toBe(true);
+  });
+
+  test("returns isMet=false with all target flags missing when no flags match", () => {
+    const target: TypeStrictnessTarget = {
+      pattern: "src/**/*.ts",
+      targetLevel: "moderate",
+    };
+
+    const gap = computeStrictnessGap({}, target);
+
+    expect(gap.targetLevel).toBe("moderate");
+    expect(gap.achievedLevel).toBe("loose");
+    expect(gap.isMet).toBe(false);
+    // All 4 moderate flags are missing
+    expect(Object.keys(gap.missingFlags).length).toBe(4);
+    expect(gap.missingFlags.noImplicitAny).toBe(true);
+    expect(gap.missingFlags.noImplicitThis).toBe(true);
+    expect(gap.missingFlags.strictNullChecks).toBe(true);
+    expect(gap.missingFlags.strictBindCallApply).toBe(true);
+  });
+
+  test("respects per-target targetFlags that add requirements beyond level preset", () => {
+    const flags: Record<string, boolean> = {};
+    for (const key of Object.keys(STRICTNESS_LEVELS.moderate)) {
+      flags[key] = true;
+    }
+    // Extra flags beyond the moderate preset that are required by this target
+    flags.noUnusedLocals = true;
+
+    const target: TypeStrictnessTarget = {
+      pattern: "src/**/*.ts",
+      targetLevel: "moderate",
+      // Require noUnusedLocals on top of the moderate preset
+      targetFlags: { noUnusedLocals: true },
+    };
+
+    const gap = computeStrictnessGap(flags, target);
+
+    expect(gap.targetLevel).toBe("moderate");
+    expect(gap.achievedLevel).toBe("moderate");
+    // All moderate + noUnusedLocals are present → fully met
+    expect(gap.isMet).toBe(true);
+    expect(gap.missingFlags).toEqual({});
+  });
+
+  test("respects per-target targetFlags - detects missing extra flag", () => {
+    const flags: Record<string, boolean> = {};
+    for (const key of Object.keys(STRICTNESS_LEVELS.moderate)) {
+      flags[key] = true;
+    }
+    // noUnusedLocals is NOT in flags
+
+    const target: TypeStrictnessTarget = {
+      pattern: "src/**/*.ts",
+      targetLevel: "moderate",
+      // Require noUnusedLocals and noUnusedParameters on top of moderate
+      targetFlags: { noUnusedLocals: true, noUnusedParameters: true },
+    };
+
+    const gap = computeStrictnessGap(flags, target);
+
+    expect(gap.targetLevel).toBe("moderate");
+    expect(gap.achievedLevel).toBe("moderate");
+    expect(gap.isMet).toBe(false);
+    // Both extra flags are missing
+    expect(gap.missingFlags.noUnusedLocals).toBe(true);
+    expect(gap.missingFlags.noUnusedParameters).toBe(true);
   });
 });
