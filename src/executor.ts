@@ -416,6 +416,19 @@ export async function executePlan(
     writeStepState({ step_name: "worktree_create", status: "running", started_at: wtStart });
     wt = createWorktree(projectPath, baseCommit, cfg);
     writeStepState({ step_name: "worktree_create", status: "completed", started_at: wtStart, finished_at: new Date().toISOString() });
+
+    // ── Sandbox preview URL ──
+    const dashboardBaseUrl = process.env.DASHBOARD_BASE_URL ?? process.env.P7_DASHBOARD_URL;
+    const projectAlias = process.env.P7_PROJECT_ALIAS;
+    const previewUrl = dashboardBaseUrl && projectAlias
+      ? `${dashboardBaseUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(projectAlias)}`
+      : "";
+    if (previewUrl) {
+      const spStart = new Date().toISOString();
+      writeStepState({ step_name: "sandbox_preview", status: "completed", started_at: spStart, finished_at: spStart });
+    }
+    // ───────────────────────
+
     const system = readPrompt("executor-system.md");
     const planText = JSON.stringify(plan, null, 2);
     const maxTurns = deriveMaxTurns(plan);
@@ -730,6 +743,7 @@ export async function executePlan(
 
     return {
       ok: true,
+      previewUrl: previewUrl || undefined,
       branch,
       commitSha: sha,
       reviewUrl: vcs.reviewUrl,
