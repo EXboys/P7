@@ -208,3 +208,48 @@ export interface DiffCriticFinding {
  * First-match-wins semantics; empty rules = fall back to tsconfig defaults.
  */
 export type { GradualTypeCheckRule, GradualTypeCheckConfig, TscStrictFlag } from "./gradual-typecheck-config.ts";
+
+/* ── Type coverage dashboard types ── */
+
+/**
+ * Per-file resolved type-check strictness information for dashboard display.
+ * `matchedRule` is the glob pattern of the matched GradualTypeCheckRule,
+ * or `null` if no rule matched (tsconfig defaults apply).
+ * `resolvedFlags` maps each strict-mode flag to its effective boolean value
+ * for this file based on the matched rule's overrides.
+ */
+export interface TypeCoverageFileEntry {
+  filePath: string;
+  matchedRule: string | null;
+  resolvedFlags: Record<string, boolean>;
+}
+
+/**
+ * Aggregated type coverage statistics across all scanned source files.
+ *
+ * - strictFiles: count of files whose matched rule has all flags set to `true`
+ * - partialFiles: count of files whose matched rule has a mix of `true`/`false`
+ * - defaultFiles: count of files matching no rule (tsconfig defaults apply)
+ * - perFlagCounts: how many files have each flag enabled (value === true)
+ */
+export interface TypeCoverageStats {
+  totalFiles: number;
+  strictFiles: number;
+  partialFiles: number;
+  defaultFiles: number;
+  perFlagCounts: Record<string, number>;
+}
+
+/**
+ * Type coverage report combining config-derived strictness with optional
+ * typecheck execution error data. `source` identifies the data origin.
+ */
+export interface TypeCoverageReport {
+  source: "config" | "execution" | "merged";
+  stats: TypeCoverageStats;
+  files: TypeCoverageFileEntry[];
+  /** Per-file type error counts from tsc execution output */
+  perFileErrors?: Record<string, number>;
+  /** Total number of type errors across all files */
+  totalErrors?: number;
+}

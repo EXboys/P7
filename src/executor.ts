@@ -238,7 +238,50 @@ function commandExists(name: string): boolean {
   return proc.exitCode === 0;
 }
 
-async function runTypecheck(wtPath: string): Promise<{ ok: boolean; out: string }> {
+/* ── Type-check execution types and parsers ── */
+
+/**
+ * Extended type-check result with parsed per-file error counts.
+ * Backward compatible — existing callers accessing only `ok`/`out` continue to work.
+ */
+export interface TypecheckOutput {
+  ok: boolean;
+  out: string;
+  /** Total number of type errors across all files. */
+  totalErrors: number;
+  /** Per-file error counts extracted from tsc output. */
+  perFileErrors: Record<string, number>;
+}
+
+/** Regex matching standard tsc error lines: `<file>(<line>,<col>): error TS<code>: ...` */
+const TSC_ERROR_RE = /^([^(]+)\(\d+,\s*\d+\):\s+error TS\d+:/gm;
+
+/**
+ * Parse tsc text output and extract per-file type error counts.
+ * Handles the standard tsc error format (non-pretty mode).
+ * Returns an empty report if no errors are found or the format doesn't match.
+ *
+ * @param out - Raw stdout/stderr text from a tsc invocation.
+ */
+export function parseTypecheckErrors(out: string): {
+  perFileErrors: Record<string, number>;
+  totalErrors: number;
+} {
+  const perFileErrors: Record<string, number> = {};
+  let match: RegExpExecArray | null;
+  TSC_ERROR_RE.lastIndex = 0;
+  while ((match = TSC_ERROR_RE.exec(out)) !== null) {
+    const filePath = match[1];
+    perFileErrors[filePath] = (perFileErrors[filePath] ?? 0) + 1;
+  }
+  const totalErrors = Object.values(perFileErrors).reduce(
+    (sum, c) => sum + c,
+    0,
+  );
+  return { perFileErrors, totalErrors };
+}
+
+async function runTypecheck(wtPath: string): Promise<TypecheckOutput> {
   if (existsSync(join(wtPath, "package.json"))) {
     const pkg = JSON.parse(readFileSync(join(wtPath, "package.json"), "utf-8"));
     if (pkg.scripts?.typecheck) {
@@ -248,24 +291,22 @@ async function runTypecheck(wtPath: string): Promise<{ ok: boolean; out: string 
           ? ["pnpm", "run", "typecheck"]
           : ["npm", "run", "typecheck"];
       const proc = Bun.spawnSync(runner, { cwd: wtPath, stdout: "pipe", stderr: "pipe" });
-      return {
-        ok: proc.exitCode === 0,
-        out:
-          new TextDecoder().decode(proc.stdout) +
-          "\n" +
-          new TextDecoder().decode(proc.stderr),
-      };
+      const out =
+        new TextDecoder().decode(proc.stdout) +
+        "\n" +
+        new TextDecoder().decode(proc.stderr);
+      const { perFileErrors, totalErrors } = parseTypecheckErrors(out);
+      return { ok: proc.exitCode === 0, out, perFileErrors, totalErrors };
     }
   }
   const runner = commandExists("bunx") ? ["bunx", "tsc", "--noEmit"] : ["npx", "tsc", "--noEmit"];
   const proc = Bun.spawnSync(runner, { cwd: wtPath, stdout: "pipe", stderr: "pipe" });
-  return {
-    ok: proc.exitCode === 0,
-    out:
-      new TextDecoder().decode(proc.stdout) +
-      "\n" +
-      new TextDecoder().decode(proc.stderr),
-  };
+  const out =
+    new TextDecoder().decode(proc.stdout) +
+    "\n" +
+    new TextDecoder().decode(proc.stderr);
+  const { perFileErrors, totalErrors } = parseTypecheckErrors(out);
+  return { ok: proc.exitCode === 0, out, perFileErrors, totalErrors };
 }
 
 export function diffStatsAgainstBase(wtPath: string, baseCommit: string): { files: number; lines: number } {
