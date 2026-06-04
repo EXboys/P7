@@ -64,7 +64,6 @@ import {
   layout,
   metricCard,
   overviewNextStep,
-  renderOverviewStabilityPanel,
   planToolbar,
   renderPlanRoadmapRegenForm,
   renderPlanGenerateForm,
@@ -551,7 +550,7 @@ export function createDashboard(
       .join("");
 
     const recentHtml = `<div class="panel"><div class="panel-head"><h2>最近动态</h2><a href="${base}/run">执行记录</a></div>
-<p class="muted" style="margin:0 0 10px;font-size:12px">成功、失败和进行中状态按更新时间倒序混排；失败详情见下方「失败与恢复」。</p>
+<p class="muted" style="margin:0 0 10px;font-size:12px">成功、失败和进行中状态按更新时间倒序混排；失败详情可到运行页查看。</p>
 <div class="tbl-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>更新</th></tr></thead><tbody>${recentRows || `<tr><td colspan="3" class="empty">暂无记录，从趋势或一键发现开始</td></tr>`}</tbody></table></div></div>`;
 
     const pendingBanner =
@@ -564,17 +563,14 @@ export function createDashboard(
         ? `<p class="muted overview-themes">今日主题：<strong>${esc(snap.themes.join(" · "))}</strong></p>`
         : "";
 
-    const failedCount = stability.failures.length;
     const nextStep = overviewNextStep({
       blockers,
       pending,
       hasSnapshot: Boolean(snap),
       signalCount,
       base,
-      failureCount: failedCount,
     });
 
-    const stabilityHtml = renderOverviewStabilityPanel(alias, base, stability);
     const reconcileFlash =
       stability.reconciled.length > 0
         ? `已校正 ${stability.reconciled.length} 个假「执行中」状态`
@@ -584,9 +580,8 @@ export function createDashboard(
 ${pendingBanner}
 ${nextStep}
 ${themes}
-<div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(failedCount, "失败待处理", failedCount ? "alert" : undefined)}${metricCard(prCount, "已开 PR")}${metricCard(metrics.strictFiles, "严格文件")}${metricCard(metrics.anyEscapePaths, "any 逃逸", metrics.anyEscapePaths > 0 ? "warn" : undefined)}${metricCard(metrics.coveragePercent + "%", "覆盖率")}</div>
+<div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(prCount, "已开 PR")}${metricCard(metrics.strictFiles, "严格文件")}${metricCard(metrics.anyEscapePaths, "any 逃逸", metrics.anyEscapePaths > 0 ? "warn" : undefined)}${metricCard(metrics.coveragePercent + "%", "覆盖率")}</div>
 <div class="overview-grid">${roadmapHtml}${recentHtml}</div>
-${stabilityHtml}
 <div class="panel" id="health" style="margin-bottom:0"><h2 style="margin-bottom:10px">环境检查</h2>${healthHtml}</div>
 </div>`;
 

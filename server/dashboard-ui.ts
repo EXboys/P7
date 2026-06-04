@@ -1561,14 +1561,18 @@ export function projectShell(
     cfg.scheduler_enabled !== false,
     cfg.scheduler_interval_minutes ?? 2,
   );
+  const visibleActivity =
+    tab === "overview" && activity.failedPlan
+      ? { ...activity, failedPlan: null }
+      : activity;
   return layout({
     ...opts,
     activeProject: alias,
     project: { alias, tab, section: opts.section },
     cfg,
     projectPath: proj.path,
-    activity,
-    autoRefresh: activity.activeJob?.status === "running",
+    activity: visibleActivity,
+    autoRefresh: visibleActivity.activeJob?.status === "running",
   });
 }
 

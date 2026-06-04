@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { buildPreToolHook } from "../src/executor.ts";
+import { fatalExecutorPermissionViolations, buildPreToolHook } from "../src/executor.ts";
 import { validateApiDomain } from "../src/sdk.ts";
 
 // ── Helper: create a temp worktree root path resolved through realpathSync ──
@@ -330,5 +330,23 @@ describe("buildPreToolHook — onDeny callback", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("fatalExecutorPermissionViolations", () => {
+  test("treats read boundary denials as non-fatal notes", () => {
+    const fatal = fatalExecutorPermissionViolations([
+      "Read: File path outside worktree boundary: /repo/src/types.ts",
+      "Write: File not in plan: src/rogue.ts",
+    ]);
+    expect(fatal).toEqual([]);
+  });
+
+  test("keeps write/edit boundary denials fatal", () => {
+    const fatal = fatalExecutorPermissionViolations([
+      "Edit: File path outside worktree boundary: /repo/src/types.ts",
+      "Write: File path outside worktree boundary: /repo/src/secret.ts",
+    ]);
+    expect(fatal).toHaveLength(2);
   });
 });

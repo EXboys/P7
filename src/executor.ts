@@ -230,6 +230,10 @@ export function buildPreToolHook(
   };
 }
 
+export function fatalExecutorPermissionViolations(deniedOps: string[]): string[] {
+  return deniedOps.filter((r) => /^(Write|Edit): .*outside worktree boundary/i.test(r));
+}
+
 function commandExists(name: string): boolean {
   const proc = Bun.spawnSync(["sh", "-c", `command -v ${name}`], {
     stdout: "pipe",
@@ -593,7 +597,7 @@ export async function executePlan(
     // 实际产出质量交由后续 stats.files / diff / typecheck / test 门禁把关。
     if (deniedOps.length > 0) {
       permissionFindings = `Permission notes during execution (blocked, non-fatal):\n${deniedOps.map((r) => `- ${r}`).join("\n")}`;
-      const fatalOps = deniedOps.filter((r) => /outside worktree boundary/i.test(r));
+      const fatalOps = fatalExecutorPermissionViolations(deniedOps);
       if (fatalOps.length > 0) {
         const fatalMsg = `Permission violations (fatal) during execution:\n${fatalOps.map((r) => `- ${r}`).join("\n")}`;
         if (planId) {

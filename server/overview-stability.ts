@@ -80,9 +80,16 @@ function classifyRetryHint(error: string): { retryable: boolean; hint: string } 
     return { retryable: false, hint: "先审批或清理积压 Plan" };
   }
   if (/permission violations|outside worktree boundary/i.test(e)) {
+    const fatalBoundary = /(?:^|\n)-\s*(Write|Edit): .*outside worktree boundary/i.test(error);
+    if (!fatalBoundary) {
+      return {
+        retryable: true,
+        hint: "只读路径边界误判已降级为非致命，可直接重试执行",
+      };
+    }
     return {
       retryable: false,
-      hint: "权限边界拦截：若路径在 worktree 内请先升级到最新修复，否则需重新生成更准确的 Plan",
+      hint: "权限边界拦截：写入路径越过 worktree，请重新生成更准确的 Plan",
     };
   }
   if (/file not in plan/i.test(e)) {
