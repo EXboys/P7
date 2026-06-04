@@ -215,3 +215,76 @@ export function summarizeTypeCoverage(
     breakouts: { byFlag },
   };
 }
+
+/* ── Type safety metrics (dashboard overview) ── */
+
+/**
+ * Aggregate metrics for the dashboard overview cards.
+ *
+ * - `strictFiles`: files whose matched rule explicitly enables all strict flags.
+ * - `anyEscapePaths`: files where `noImplicitAny` is NOT explicitly enabled
+ *   (falls back to tsconfig default, potentially allowing implicit `any`).
+ * - `coveragePercent`: percentage of files matched by any rule (0–100 integer).
+ * - `totalFiles`: total source files evaluated.
+ */
+export interface TypeSafetyMetrics {
+  strictFiles: number;
+  anyEscapePaths: number;
+  coveragePercent: number;
+  totalFiles: number;
+}
+
+/**
+ * Compute `TypeSafetyMetrics` from a `GradualTypeCheckConfig` and a list of
+ * project source file paths.
+ *
+ * Pure function — no side effects, testable.
+ *
+ * @param filePaths - List of source file paths (relative or absolute) to evaluate.
+ * @param config - The gradual type-check configuration with ordered rules.
+ * @returns A `TypeSafetyMetrics` summary.
+ */
+export function computeTypeSafetyMetrics(
+  filePaths: string[],
+  config: GradualTypeCheckConfig,
+): TypeSafetyMetrics {
+  let strictFiles = 0;
+  let anyEscapePaths = 0;
+  let matchedFiles = 0;
+
+  for (const filePath of filePaths) {
+    const rule = resolveTypeCheckStrictness(filePath, config);
+
+    if (rule === null) {
+      // No rule matched — file inherits tsconfig defaults; count as any-escape
+      anyEscapePaths++;
+      continue;
+    }
+
+    matchedFiles++;
+
+    // Strict: all explicitly-set flags are enabled
+    const flagValues = Object.values(rule.flags);
+    if (flagValues.length > 0 && flagValues.every(Boolean)) {
+      strictFiles++;
+    }
+
+    // Any-escape: noImplicitAny not explicitly enabled
+    if (rule.flags.noImplicitAny !== true) {
+      anyEscapePaths++;
+    }
+  }
+
+  const totalFiles = filePaths.length;
+  const coveragePercent = totalFiles > 0
+    ? Math.round((matchedFiles / totalFiles) * 100)
+    : 0;
+
+  return {
+    strictFiles,
+    anyEscapePaths,
+    coveragePercent,
+    totalFiles,
+  };
+}
+

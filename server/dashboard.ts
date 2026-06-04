@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, readdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, relative } from "path";
 import type { ServerConfig } from "./config.ts";
 import { saveServerConfig, writeClaudeSettings } from "./config.ts";
 import { audit } from "./audit.ts";
@@ -51,6 +51,7 @@ import { listOpenPullRequests } from "../src/vcs/open-prs.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
 import type { DevAgentConfig } from "../src/config.ts";
+import { computeTypeSafetyMetrics, type TypeSafetyMetrics } from "../src/gradual-typecheck-config.ts";
 import {
   checkGhAuth,
   collectGhAuthChecks,
@@ -130,6 +131,31 @@ function renderListPager(opts: {
 <span class="pager-info">第 ${start}-${end} 条 / 共 ${opts.total} 条 · 第 ${page} / ${totalPages} 页</span>
 <div class="pager-links">${prev}${next}</div>
 </nav>`;
+}
+
+/**
+ * Recursively collect .ts / .tsx source files from a directory,
+ * excluding node_modules and hidden directories.
+ * Returns absolute paths; caller should relativize against the project root.
+ */
+function collectProjectFiles(dir: string, depth = 0): string[] {
+  if (depth > 12) return [];
+  const files: string[] = [];
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...collectProjectFiles(fullPath, depth + 1));
+      } else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
+        files.push(fullPath);
+      }
+    }
+  } catch {
+    /* permission denied or transient error — skip silently */
+  }
+  return files;
 }
 
 function applyVcsConfigFromBody(
@@ -489,6 +515,19 @@ export function createDashboard(
     const prCount = states.filter((s) => s.prUrl).length;
     const signalCount = snap?.signals.length ?? 0;
 
+    // Compute type safety metrics for dashboard overview cards.
+    let metrics: TypeSafetyMetrics = { strictFiles: 0, anyEscapePaths: 0, coveragePercent: 0, totalFiles: 0 };
+    try {
+      const dc = loadConfig(proj.path);
+      const sourceFiles = collectProjectFiles(proj.path);
+      if (sourceFiles.length > 0) {
+        const relFiles = sourceFiles.map((f) => relative(proj.path, f));
+        metrics = computeTypeSafetyMetrics(relFiles, dc.gradual_type_checking ?? { rules: [] });
+      }
+    } catch {
+      /* non-blocking — dashboard should not crash on file walk errors */
+    }
+
     const healthHtml = checks.length
       ? renderPipelineChecksPanel(alias, checks)
       : `<p class="muted">项目路径不可用</p>`;
@@ -545,7 +584,7 @@ export function createDashboard(
 ${pendingBanner}
 ${nextStep}
 ${themes}
-<div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(failedCount, "失败待处理", failedCount ? "alert" : undefined)}${metricCard(prCount, "已开 PR")}</div>
+<div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(failedCount, "失败待处理", failedCount ? "alert" : undefined)}${metricCard(prCount, "已开 PR")}${metricCard(metrics.strictFiles, "严格文件")}${metricCard(metrics.anyEscapePaths, "any 逃逸", metrics.anyEscapePaths > 0 ? "warn" : undefined)}${metricCard(metrics.coveragePercent + "%", "覆盖率")}</div>
 <div class="overview-grid">${roadmapHtml}${recentHtml}</div>
 ${stabilityHtml}
 <div class="panel" id="health" style="margin-bottom:0"><h2 style="margin-bottom:10px">环境检查</h2>${healthHtml}</div>
