@@ -20,6 +20,25 @@ export const GradualTypeCheckRuleSchema = z.object({
 
 export type GradualTypeCheckRule = z.infer<typeof GradualTypeCheckRuleSchema>;
 
+/** Predefined strictness levels for progressive milestones. */
+export const StrictnessLevelEnum = z.enum(["loose", "moderate", "strict", "full"]);
+export type StrictnessLevel = z.infer<typeof StrictnessLevelEnum>;
+
+/**
+ * Zod schema for a single strictness target milestone.
+ * Declares a glob pattern with target level, optional per-flag overrides,
+ * and optional milestone/note annotations.
+ */
+export const TypeStrictnessTargetSchema = z.object({
+  pattern: z.string().min(1),
+  targetLevel: StrictnessLevelEnum,
+  targetFlags: z.record(TscStrictFlagEnum, z.boolean()).optional(),
+  milestone: z.string().optional(),
+  note: z.string().optional(),
+});
+
+export type TypeStrictnessTarget = z.infer<typeof TypeStrictnessTargetSchema>;
+
 export const DevAgentConfigSchema = z.object({
   initial_goal: z.string().min(1),
   auto_select_goal: z.boolean().default(false),
@@ -177,8 +196,9 @@ export const DevAgentConfigSchema = z.object({
   gradual_type_checking: z
     .object({
       rules: z.array(GradualTypeCheckRuleSchema).default([]),
+    targets: z.array(TypeStrictnessTargetSchema).optional(),
     })
-    .default({ rules: [] }),
+    .default({ rules: [], targets: undefined }),
 });
 
 export type DevAgentConfig = z.infer<typeof DevAgentConfigSchema>;
