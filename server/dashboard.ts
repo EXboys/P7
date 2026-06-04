@@ -483,7 +483,7 @@ export function createDashboard(
       ? runOverviewStabilityPass(proj.path, alias)
       : { reconciled: [], abandoned: [], failures: [], preflightBlocking: false };
     const pending = existsSync(proj.path) ? listPendingApprovals(proj.path).length : 0;
-    const states = existsSync(proj.path) ? listPlanStates(proj.path, 8) : [];
+    const states = existsSync(proj.path) ? listPlanStates(proj.path, 12) : [];
     const snap = existsSync(proj.path) ? loadSnapshot(proj.path) : null;
     const executing = states.filter((s) => s.status === "executing").length;
     const prCount = states.filter((s) => s.prUrl).length;
@@ -504,7 +504,7 @@ export function createDashboard(
 <p class="muted" style="margin:0">尚无 Active 项。先抓取趋势，再 AI 刷新 Roadmap。</p></div>`;
 
     const recentRows = states
-      .slice(0, 6)
+      .slice(0, 10)
       .map(
         (s) =>
           `<tr><td><a href="${base}/plans/${encodeURIComponent(s.planId)}">${esc(s.title || s.planId)}</a></td><td>${statusBadge(s.status)}</td><td class="muted recent-row">${esc(new Date(s.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }))}</td></tr>`,
@@ -512,6 +512,7 @@ export function createDashboard(
       .join("");
 
     const recentHtml = `<div class="panel"><div class="panel-head"><h2>最近动态</h2><a href="${base}/run">执行记录</a></div>
+<p class="muted" style="margin:0 0 10px;font-size:12px">成功、失败和进行中状态按更新时间倒序混排；失败详情见下方「失败与恢复」。</p>
 <div class="tbl-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>更新</th></tr></thead><tbody>${recentRows || `<tr><td colspan="3" class="empty">暂无记录，从趋势或一键发现开始</td></tr>`}</tbody></table></div></div>`;
 
     const pendingBanner =
@@ -545,8 +546,8 @@ ${pendingBanner}
 ${nextStep}
 ${themes}
 <div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(failedCount, "失败待处理", failedCount ? "alert" : undefined)}${metricCard(prCount, "已开 PR")}</div>
-${stabilityHtml}
 <div class="overview-grid">${roadmapHtml}${recentHtml}</div>
+${stabilityHtml}
 <div class="panel" id="health" style="margin-bottom:0"><h2 style="margin-bottom:10px">环境检查</h2>${healthHtml}</div>
 </div>`;
 
