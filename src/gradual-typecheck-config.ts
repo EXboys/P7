@@ -47,9 +47,89 @@ export interface GradualTypeCheckRule {
 /** Ordered set of rules. First match wins; empty array = use tsconfig defaults. */
 export interface GradualTypeCheckConfig {
   rules: GradualTypeCheckRule[];
+
+  /** Ordered set of strictness targets for progressive milestones. First match wins; undefined when no targets declared. */
+  targets?: TypeStrictnessTarget[];
 }
 
-/* ── Resolver ── */
+/* ── Strictness level presets ── */
+
+/**
+ * Predefined strictness levels for progressive type-check milestones.
+ * Each level is a superset of the previous.
+ */
+export type StrictnessLevel = 'loose' | 'moderate' | 'strict' | 'full';
+
+/**
+ * Predefined flag sets for each `StrictnessLevel`.
+ * - `loose`: no flags enforced (tsconfig defaults only)
+ * - `moderate`: core safety flags
+ * - `strict`: TypeScript `--strict` preset (8 flags)
+ * - `full`: all 15 known strict-mode flags
+ */
+export const STRICTNESS_LEVELS = {
+  loose: {},
+  moderate: {
+    noImplicitAny: true,
+    noImplicitThis: true,
+    strictNullChecks: true,
+    strictBindCallApply: true,
+  },
+  strict: {
+    alwaysStrict: true,
+    noImplicitAny: true,
+    noImplicitThis: true,
+    strictBindCallApply: true,
+    strictFunctionTypes: true,
+    strictNullChecks: true,
+    strictPropertyInitialization: true,
+    useUnknownInCatchVariables: true,
+  },
+  full: {
+    alwaysStrict: true,
+    noImplicitAny: true,
+    noImplicitThis: true,
+    strictBindCallApply: true,
+    strictFunctionTypes: true,
+    strictNullChecks: true,
+    strictPropertyInitialization: true,
+    useUnknownInCatchVariables: true,
+    exactOptionalPropertyTypes: true,
+    noFallthroughCasesInSwitch: true,
+    noImplicitReturns: true,
+    noUncheckedIndexedAccess: true,
+    noUnusedLocals: true,
+    noUnusedParameters: true,
+    noPropertyAccessFromIndexSignature: true,
+  },
+} as const satisfies Record<StrictnessLevel, Partial<Record<TscStrictFlag, boolean>>>;
+
+/* ── Strictness target declaration ── */
+
+/**
+ * A strictness milestone target for a set of files matched by a glob pattern.
+ *
+ * Declares a target `StrictnessLevel` (and optional per-flag overrides)
+ * that the matched files should achieve by a given milestone.
+ */
+export interface TypeStrictnessTarget {
+  /** Glob pattern matching source paths to target (e.g. `src/new/**.ts`). */
+  pattern: string;
+  /** Predefined strictness level milestone to achieve. */
+  targetLevel: StrictnessLevel;
+  /**
+   * Optional per-flag overrides for the target level.
+   * When specified, these flags take precedence over the level preset,
+   * enabling custom strictness configurations for legacy-adapted targets.
+   */
+  targetFlags?: Partial<Record<TscStrictFlag, boolean>>;
+  /** Optional milestone label (e.g. `'Q3 2026'`, `'v2.0'`). */
+  milestone?: string;
+  /** Optional human-readable annotation. */
+  note?: string;
+}
+
+/* ── Rule resolver ── */
 
 /**
  * Resolve the first matching `GradualTypeCheckRule` for a source file path.
@@ -285,6 +365,100 @@ export function computeTypeSafetyMetrics(
     anyEscapePaths,
     coveragePercent,
     totalFiles,
+  };
+}
+
+/* ── Strictness target resolvers ── */
+
+/**
+ * Resolve the first matching `TypeStrictnessTarget` for a source file path.
+ *
+ * Returns `null` when `config.targets` is undefined/empty, or when no
+ * target's glob pattern matches `filePath`.
+ */
+export function resolveStrictnessTarget(
+  filePath: string,
+  config: GradualTypeCheckConfig,
+): TypeStrictnessTarget | null {
+  if (!config.targets) return null;
+  for (const target of config.targets) {
+    if (new Glob(target.pattern).match(filePath)) {
+      return target;
+    }
+  }
+  return null;
+}
+
+/**
+ * Determine the highest `StrictnessLevel` achieved by a set of resolved flags.
+ *
+ * Checks levels from highest (`full`) to lowest (`loose`) and returns the
+ * first whose entire flag set is satisfied. Falls back to `loose` when
+ * no level's flags are fully met.
+ */
+export function resolveAchievedLevel(
+  resolvedFlags: Partial<Record<TscStrictFlag, boolean>>,
+): StrictnessLevel {
+  const levels: StrictnessLevel[] = ['full', 'strict', 'moderate', 'loose'];
+  for (const level of levels) {
+    const required = STRICTNESS_LEVELS[level];
+    const allMet = Object.keys(required).every(
+      (flag) => resolvedFlags[flag as TscStrictFlag] === true,
+    );
+    if (allMet) return level;
+  }
+  return 'loose';
+}
+
+/**
+ * Result of comparing achieved strictness against a target milestone.
+ */
+export interface StrictnessGap {
+  /** The target level declared in the milestone. */
+  targetLevel: StrictnessLevel;
+  /** Level actually achieved by the current configuration. */
+  achievedLevel: StrictnessLevel;
+  /** Whether the target is fully met. */
+  isMet: boolean;
+  /** Flags not yet enabled to reach the target. Empty when `isMet` is true. */
+  missingFlags: Partial<Record<TscStrictFlag, boolean>>;
+}
+
+/**
+ * Compute the strictness gap between resolved flags and a target.
+ *
+ * Merges `STRICTNESS_LEVELS[target.targetLevel]` with optional
+ * `target.targetFlags` to determine the effective target flag set,
+ * then compares against `resolvedFlags` to identify missing flags.
+ */
+export function computeStrictnessGap(
+  resolvedFlags: Partial<Record<TscStrictFlag, boolean>>,
+  target: TypeStrictnessTarget,
+): StrictnessGap {
+  const achievedLevel = resolveAchievedLevel(resolvedFlags);
+
+  // Merge level preset with per-target overrides
+  const effectiveTarget: Record<string, boolean> = {
+    ...STRICTNESS_LEVELS[target.targetLevel],
+  };
+  if (target.targetFlags) {
+    for (const [flag, val] of Object.entries(target.targetFlags)) {
+      if (val !== undefined) effectiveTarget[flag] = val;
+    }
+  }
+
+  const missingFlags: Partial<Record<TscStrictFlag, boolean>> = {};
+  for (const [flag, val] of Object.entries(effectiveTarget)) {
+    if (resolvedFlags[flag as TscStrictFlag] !== val) {
+      missingFlags[flag as TscStrictFlag] = val;
+    }
+  }
+
+  return {
+    targetLevel: target.targetLevel,
+    achievedLevel,
+    isMet: Object.keys(missingFlags).length === 0,
+    missingFlags,
   };
 }
 
