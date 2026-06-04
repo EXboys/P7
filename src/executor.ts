@@ -140,7 +140,17 @@ export function buildPreToolHook(
   allowedFiles: Set<string>,
   cwd: string,
   onDeny?: (reason: string) => void,
+  extraReadPaths?: string[],
 ) {
+  // Resolve extra read paths to canonical absolute dirs at creation time.
+  // If a path doesn't exist yet, fall back to resolve() for prefix matching.
+  const resolvedExtraReadPaths = (extraReadPaths ?? []).map((p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  });
   const dangerousBash = /\b(git\s+(add|commit|push|reset|checkout|clean|merge|rebase)|rm\s+-|mv\s+|cp\s+|chmod\s+|chown\s+|sed\s+-i|perl\s+-pi|dd\s+|truncate\s+)/i;
   return {
     PreToolUse: [
@@ -188,6 +198,14 @@ export function buildPreToolHook(
 
             // Filesystem boundary check (Read/Write/Edit)
             if (!isPathWithinWorktree(path, cwd)) {
+              // Before denying, check if this is a Read operation within extraReadPaths
+              if (input.tool_name === "Read" && resolvedExtraReadPaths.length > 0) {
+                const absPath = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
+                const withinExtra = resolvedExtraReadPaths.some(
+                  (ep) => absPath === ep || absPath.startsWith(ep.endsWith("/") ? ep : ep + "/"),
+                );
+                if (withinExtra) return allow();
+              }
               return deny(`File path outside worktree boundary: ${path}`);
             }
 
@@ -456,7 +474,7 @@ export async function executePlan(
           systemPrompt: system,
           role: "executor",
           allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
-          hooks: buildPreToolHook(allowedFiles, wt!.path, onDeny) as never,
+          hooks: buildPreToolHook(allowedFiles, wt!.path, onDeny, [join(projectPath, '.p7', 'discovery')]) as never,
           maxTurns,
           toolTrace,
           projectPath,
