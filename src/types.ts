@@ -253,3 +253,17 @@ export interface TypeCoverageReport {
   /** Total number of type errors across all files */
   totalErrors?: number;
 }
+
+/* ── Gemma bridge types ── */
+
+/**
+ * Re-exported from `gemma-bridge.ts` for cross-module consumption by the
+ * diff-critic pipeline, executor, and decision-routing code.
+ *
+ * GemmaEvalConfig  — latency budget, context-window budget, confidence floor,
+ *                    and fallback-enable flag for Gemma 4 12B evaluation.
+ * GemmaEvalResult  — aggregate evaluation result containing per-slice findings,
+ *                    raw output, latency telemetry, token estimate, aggregate
+ *                    confidence, and a fallback flag for downstream routing.
+ */
+export type { GemmaEvalConfig, GemmaEvalResult } from "./gemma-bridge.ts";
