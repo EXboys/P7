@@ -118,3 +118,226 @@ export function validateBranchCoverage(
   const covered = new Set(branches.map((b) => b.key));
   return expectedKeys.filter((k) => !covered.has(k));
 }
+
+// ---------------------------------------------------------------------------
+// ParallelStep: concurrent sub-step execution with aggregation strategies
+// ---------------------------------------------------------------------------
+
+/** Strategy for aggregating parallel sub-step results. */
+export type ParallelStrategy = "all" | "any" | "race" | "quorum";
+
+/** A single sub-step within a ParallelStep. */
+export interface SubstepConfig<T = unknown> {
+  /** Unique name for this sub-step within the parallel group. */
+  name: string;
+  /** Execute the sub-step logic. */
+  execute: (ctx: PipelineContext) => Promise<T>;
+  /**
+   * Optional per-sub-step timeout in milliseconds.
+   * When exceeded the sub-step is reported as `"timeout"` and continues
+   * running in the background (no cancellation).
+   */
+  timeoutMs?: number;
+}
+
+/** Result envelope for a single parallel sub-step. */
+export interface SubstepResult<T = unknown> {
+  name: string;
+  status: "success" | "failure" | "timeout";
+  /** Payload produced on success; undefined on failure/timeout. */
+  output?: T;
+  /** Error message on failure or timeout description. */
+  error?: string;
+  /** Wall-clock duration in milliseconds. */
+  durationMs: number;
+}
+
+/** Aggregate result produced by executeParallel(). */
+export interface ParallelStepResult<T = unknown> {
+  /** The strategy used for aggregation. */
+  strategy: ParallelStrategy;
+  /** Results of every sub-step (completed or abandoned). */
+  substepResults: SubstepResult<T>[];
+  /** Whether the parallel execution as a whole is considered successful. */
+  success: boolean;
+  /** Quorum metadata — only present when strategy is "quorum". */
+  quorum?: { required: number; achieved: number };
+  /** Total wall-clock duration across all sub-steps (wait + execution). */
+  durationMs: number;
+}
+
+/** A pipeline step that executes sub-steps concurrently with aggregation. */
+export interface ParallelStep<TRoutes extends string = string> {
+  name: string;
+  strategy: ParallelStrategy;
+  substeps: SubstepConfig[];
+  quorum?: number;
+  branches: StepRoute[];
+  defaultBranch?: string;
+  execute: (ctx: PipelineContext) => Promise<ParallelStepResult>;
+}
+
+// ---------------------------------------------------------------------------
+// executeParallel — run sub-steps concurrently, aggregate by strategy
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute an array of sub-steps concurrently and aggregate results according
+ * to the chosen strategy.
+ *
+ * @param ctx      - Pipeline context (passed to each sub-step's execute).
+ * @param substeps - Sub-step configurations to run in parallel.
+ * @param strategy - Aggregation strategy (default: "all").
+ * @param quorum   - Required success count for "quorum" strategy; defaults
+ *                   to ceil(N/2)+1 (simple majority+1) when omitted.
+ * @returns An aggregated ParallelStepResult covering all sub-steps.
+ */
+export async function executeParallel<T = unknown>(
+  ctx: PipelineContext,
+  substeps: SubstepConfig<T>[],
+  strategy: ParallelStrategy = "all",
+  quorum?: number,
+): Promise<ParallelStepResult<T>> {
+  const start = performance.now();
+
+  if (substeps.length === 0) {
+    return {
+      strategy,
+      substepResults: [],
+      success: true,
+      durationMs: 0,
+    };
+  }
+
+  // Fire all sub-steps concurrently with per-step timeout protection
+  const executions = substeps.map((s) =>
+    executeOneSubstep(s.name, s.execute as (ctx: PipelineContext) => Promise<T>, ctx, s.timeoutMs),
+  );
+
+  switch (strategy) {
+    case "all": {
+      const substepResults = await Promise.all(executions);
+      return {
+        strategy,
+        substepResults,
+        success: substepResults.every((r) => r.status === "success"),
+        durationMs: performance.now() - start,
+      };
+    }
+
+    case "any": {
+      const substepResults = await Promise.all(executions);
+      return {
+        strategy,
+        substepResults,
+        success: substepResults.some((r) => r.status === "success"),
+        durationMs: performance.now() - start,
+      };
+    }
+
+    case "race": {
+      // First completed sub-step (by wall-clock) determines overall result.
+      // Race FIRST (while sub-steps are still running), then gather all results.
+      const raceWinner = await Promise.race(
+        executions.map((p) => p.then((r) => r)),
+      );
+      const substepResults = await Promise.all(executions);
+      return {
+        strategy,
+        substepResults,
+        success: raceWinner.status === "success",
+        durationMs: performance.now() - start,
+      };
+    }
+
+    case "quorum": {
+      const substepResults = await Promise.all(executions);
+      const achieved = substepResults.filter((r) => r.status === "success").length;
+      const required = quorum ?? Math.ceil(substeps.length / 2) + 1;
+      return {
+        strategy,
+        substepResults,
+        success: achieved >= required,
+        quorum: { required, achieved },
+        durationMs: performance.now() - start,
+      };
+    }
+
+    default:
+      throw new Error(
+        `executeParallel: unknown strategy "${String(strategy)}" — ` +
+        `expected one of: all, any, race, quorum`,
+      );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: execute a single sub-step with optional timeout
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute one sub-step and return a SubstepResult.
+ *
+ * The returned promise **never rejects**: errors and timeouts are captured
+ * as structured result fields. The `settled` flag guards against races
+ * between the sub-step completing and its timeout firing, preventing
+ * double-resolution and unhandled rejection leaks.
+ */
+async function executeOneSubstep<T>(
+  name: string,
+  fn: (ctx: PipelineContext) => Promise<T>,
+  ctx: PipelineContext,
+  timeoutMs?: number,
+): Promise<SubstepResult<T>> {
+  const start = performance.now();
+
+  if (timeoutMs === undefined || timeoutMs <= 0) {
+    try {
+      const output = await fn(ctx);
+      return { name, status: "success", output, durationMs: performance.now() - start };
+    } catch (error) {
+      return {
+        name,
+        status: "failure",
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: performance.now() - start,
+      };
+    }
+  }
+
+  // With timeout — use a settled flag to avoid double-resolution
+  return new Promise<SubstepResult<T>>((resolve) => {
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        name,
+        status: "timeout",
+        error: `Sub-step "${name}" timed out after ${timeoutMs}ms`,
+        durationMs: performance.now() - start,
+      });
+    }, timeoutMs);
+
+    fn(ctx).then(
+      (output) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ name, status: "success", output, durationMs: performance.now() - start });
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({
+          name,
+          status: "failure",
+          error: error instanceof Error ? error.message : String(error),
+          durationMs: performance.now() - start,
+        });
+      },
+    );
+  });
+}

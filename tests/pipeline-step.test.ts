@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   resolveBranchRoute,
   validateBranchCoverage,
+  executeParallel,
   type StepRoute,
   type PipelineContext,
   type StepResult,
   type ConditionalStep,
+  type SubstepConfig,
 } from "../src/pipeline-step.ts";
 
 // ---------------------------------------------------------------------------
@@ -164,5 +166,223 @@ describe("SDK pass routing integration scenario", () => {
   test("validateBranchCoverage for SDK pass scenario", () => {
     const expectedKeys = ["has_diff", "empty"];
     expect(validateBranchCoverage(expectedKeys, branches)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executeParallel — concurrent sub-step execution
+// ---------------------------------------------------------------------------
+
+describe("executeParallel", () => {
+  const ctx: PipelineContext = {
+    planId: "test-plan",
+    stepName: "parallel_test",
+    results: {},
+  };
+
+  // -----------------------------------------------------------------------
+  // Strategy: all
+  // -----------------------------------------------------------------------
+
+  describe("strategy 'all'", () => {
+    test("returns success when every sub-step succeeds", async () => {
+      const substeps: SubstepConfig[] = [
+        { name: "a", execute: async () => "ok_a" },
+        { name: "b", execute: async () => "ok_b" },
+        { name: "c", execute: async () => "ok_c" },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "all");
+      expect(result.strategy).toBe("all");
+      expect(result.success).toBe(true);
+      expect(result.substepResults).toHaveLength(3);
+      expect(result.substepResults.every((r) => r.status === "success")).toBe(true);
+      expect(result.substepResults[0].output).toBe("ok_a");
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    test("returns failure when any sub-step fails", async () => {
+      const substeps: SubstepConfig[] = [
+        { name: "good", execute: async () => "ok" },
+        { name: "bad", execute: async () => { throw new Error("boom"); } },
+        { name: "also_good", execute: async () => "ok" },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "all");
+      expect(result.success).toBe(false);
+      const badResult = result.substepResults.find((r) => r.name === "bad")!;
+      expect(badResult.status).toBe("failure");
+      expect(badResult.error).toContain("boom");
+      expect(result.substepResults.filter((r) => r.status === "success")).toHaveLength(2);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Strategy: any
+  // -----------------------------------------------------------------------
+
+  describe("strategy 'any'", () => {
+    test("returns success when at least one sub-step succeeds", async () => {
+      const substeps: SubstepConfig[] = [
+        { name: "fail1", execute: async () => { throw new Error("err1"); } },
+        { name: "winner", execute: async () => "win" },
+        { name: "fail2", execute: async () => { throw new Error("err2"); } },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "any");
+      expect(result.strategy).toBe("any");
+      expect(result.success).toBe(true);
+      expect(result.substepResults.some((r) => r.status === "success")).toBe(true);
+    });
+
+    test("returns failure when every sub-step fails", async () => {
+      const substeps: SubstepConfig[] = [
+        { name: "fail1", execute: async () => { throw new Error("err1"); } },
+        { name: "fail2", execute: async () => { throw new Error("err2"); } },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "any");
+      expect(result.success).toBe(false);
+      expect(result.substepResults.every((r) => r.status === "failure")).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Strategy: race
+  // -----------------------------------------------------------------------
+
+  describe("strategy 'race'", () => {
+    test("honours the first completed sub-step (success)", async () => {
+      const substeps: SubstepConfig[] = [
+        {
+          name: "slow_fail",
+          execute: async () => {
+            await new Promise((r) => setTimeout(r, 50));
+            throw new Error("too late");
+          },
+        },
+        {
+          name: "fast_win",
+          execute: async () => "first_past",
+        },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "race");
+      // fast_win completes first, so overall is success
+      expect(result.success).toBe(true);
+    });
+
+    test("honours the first completed sub-step (failure)", async () => {
+      const substeps: SubstepConfig[] = [
+        {
+          name: "fast_fail",
+          execute: async () => {
+            throw new Error("immediate");
+          },
+        },
+        {
+          name: "slow_win",
+          execute: async () => {
+            await new Promise((r) => setTimeout(r, 50));
+            return "late_success";
+          },
+        },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "race");
+      // fast_fail completes first, so overall is failure
+      expect(result.success).toBe(false);
+      const failResult = result.substepResults.find((r) => r.name === "fast_fail")!;
+      expect(failResult.status).toBe("failure");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Strategy: quorum
+  // -----------------------------------------------------------------------
+
+  describe("strategy 'quorum'", () => {
+    test("returns success when quorum is met", async () => {
+      const substeps: SubstepConfig[] = [
+        { name: "a", execute: async () => "ok" },
+        { name: "b", execute: async () => "ok" },
+        { name: "c", execute: async () => { throw new Error("fail"); } },
+      ];
+
+      // Require 2 of 3 — two succeed → quorum met
+      const result = await executeParallel(ctx, substeps, "quorum", 2);
+      expect(result.strategy).toBe("quorum");
+      expect(result.success).toBe(true);
+      expect(result.quorum).toEqual({ required: 2, achieved: 2 });
+    });
+
+    test("returns failure when quorum is not met", async () => {
+      const substeps: SubstepConfig[] = [
+        { name: "a", execute: async () => "ok" },
+        { name: "b", execute: async () => { throw new Error("fail"); } },
+        { name: "c", execute: async () => { throw new Error("fail"); } },
+      ];
+
+      // Require 2 of 3 — only one succeeds → quorum missed
+      const result = await executeParallel(ctx, substeps, "quorum", 2);
+      expect(result.success).toBe(false);
+      expect(result.quorum).toEqual({ required: 2, achieved: 1 });
+    });
+
+    test("defaults quorum to ceil(N/2)+1 when argument omitted", async () => {
+      // For 3 substeps: ceil(3/2)+1 = 2+1 = 3. So all 3 must pass.
+      const substeps: SubstepConfig[] = [
+        { name: "a", execute: async () => "ok" },
+        { name: "b", execute: async () => "ok" },
+        { name: "c", execute: async () => { throw new Error("fail"); } },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "quorum");
+      expect(result.success).toBe(false);
+      expect(result.quorum).toEqual({ required: 3, achieved: 2 });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Edge cases
+  // -----------------------------------------------------------------------
+
+  describe("edge cases", () => {
+    test("empty sub-steps list returns immediate success", async () => {
+      const result = await executeParallel(ctx, [], "all");
+      expect(result.success).toBe(true);
+      expect(result.substepResults).toHaveLength(0);
+      expect(result.durationMs).toBe(0);
+    });
+
+    test("per-sub-step timeout triggers 'timeout' status", async () => {
+      const substeps: SubstepConfig[] = [
+        {
+          name: "tardy",
+          execute: async () => {
+            await new Promise((r) => setTimeout(r, 200));
+            return "too_late";
+          },
+          timeoutMs: 20,
+        },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "all");
+      const tardy = result.substepResults[0];
+      expect(tardy.status).toBe("timeout");
+      expect(tardy.error).toContain("timed out");
+      expect(tardy.name).toBe("tardy");
+      expect(tardy.output).toBeUndefined();
+    });
+
+    test("single sub-step with all strategy", async () => {
+      const substeps: SubstepConfig[] = [
+        { name: "solo", execute: async () => 42 },
+      ];
+
+      const result = await executeParallel(ctx, substeps, "all");
+      expect(result.success).toBe(true);
+      expect(result.substepResults[0].output).toBe(42);
+    });
   });
 });
