@@ -882,3 +882,54 @@ export interface EarlyStopDecision {
   triggeredAt: string;
   trendAnalysis: ConvergenceTrendAnalysis;
 }
+
+/* ── Calibration dataset types ── */
+
+/**
+ * Heuristic label assigned to a single finding for calibration dataset building.
+ *
+ * - `fp` (false positive): finding likely incorrect — plan was merged/pushed
+ *   despite blocker-level finding, suggesting the critic over-flagged.
+ * - `tp` (true positive): finding likely correct — plan failed with blocker-level
+ *   finding, suggesting the critic correctly identified a real issue.
+ * - `unlabeled`: no heuristic confidence; requires manual review.
+ */
+export type CalibrationLabelValue = "fp" | "tp" | "unlabeled";
+
+/**
+ * A single finding within the calibration dataset with its heuristic label.
+ */
+export interface CalibrationLabel {
+  planId: string;
+  finding: DiffCriticFinding;
+  label: CalibrationLabelValue;
+  planStatus: PlanStateStatus;
+}
+
+/**
+ * Aggregated sample from one plan record, containing all parsed findings
+ * and per-finding heuristic labels.
+ */
+export interface CalibrationSample {
+  planId: string;
+  status: PlanStateStatus;
+  totalFindings: number;
+  labels: CalibrationLabel[];
+}
+
+/**
+ * Full calibration dataset with aggregated label counts.
+ *
+ * - `samples`: per-plan calibration samples with labelled findings
+ * - `labelCounts`: aggregated counts for quick overview
+ * - `generatedAt`: ISO-8601 timestamp of extraction
+ */
+export interface CalibrationDataset {
+  samples: CalibrationSample[];
+  labelCounts: {
+    truePositive: number;
+    falsePositive: number;
+    unlabeled: number;
+  };
+  generatedAt: string;
+}
