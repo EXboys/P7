@@ -31,7 +31,7 @@ const FAILED_PLANS_DIR = "failed-plans";
  *   3. Ultimate fallback: regex-based OK: true/false extraction (same as
  *      old parseCriticOk behaviour).
  */
-function parsePlanCriticFindings(text: string): {
+export function parsePlanCriticFindings(text: string): {
   ok: boolean;
   findings: Array<{
     severity: string;
@@ -80,7 +80,7 @@ function parsePlanCriticFindings(text: string): {
  * Attempt to parse and validate a raw JSON string as PlanCriticResult.
  * Returns null on complete failure.
  */
-function tryParseCriticJson(raw: string): ReturnType<typeof parsePlanCriticFindings> | null {
+export function tryParseCriticJson(raw: string): ReturnType<typeof parsePlanCriticFindings> | null {
   try {
     const parsed = JSON.parse(raw);
     const obj = parsed as Record<string, unknown>;
