@@ -17,6 +17,7 @@ import {
   listPlanStatesWithDelivery,
   listPlanStatesWithPr,
   preparePlanExecuteRetry,
+  queryEvalRouteStats,
 } from "../src/state.ts";
 import type { PlanStateStatus } from "../src/types.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
@@ -860,6 +861,22 @@ ${metricCard(formatUsd(monthCost.total), "本月累计", undefined)}
 ${metricCard(String(monthCost.jobs), "本月计费任务")}
 ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
 </div>`;
+    // ── Evaluator route stats metric cards ──
+    const routeStats = existsSync(proj.path) ? queryEvalRouteStats(proj.path, 7) : [];
+    const totalEvalCount = routeStats.reduce((s, r) => s + r.callCount, 0);
+    const routeStatsCards = routeStats.length > 0
+      ? routeStats.map((r) =>
+        metricCard(
+          String(r.callCount),
+          `${r.selectedEvaluator} · avg ${formatUsd(r.avgCostUsd)} · avg ${Math.round(r.avgLatencyMs)}ms · p50 ${r.p50LatencyMs}ms / p95 ${r.p95LatencyMs}ms`,
+        ),
+      ).join("")
+      : "";
+    const routeStatsHtml = routeStatsCards
+      ? `<div class="cards" style="margin-bottom:20px">${metricCard(String(totalEvalCount), "总路由评估数")}${routeStatsCards}</div>`
+      : "";
+    // ────────────────────────────────────────
+
     const hintHtml = `<p class="muted" style="margin-bottom:14px">模型费用来自 Claude SDK 返回的 <code>total_cost_usd</code> 与 token 统计；仅新执行会记录，历史任务显示 —。PR 复查请前往侧栏 <a href="/project/${encodeURIComponent(alias)}/review"><strong>Review</strong></a>。</p>`;
     const executionsPanel = `<div class="panel"><h2>执行记录</h2>
 <div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>状态</th><th>标题</th><th>开始时间</th><th>执行时长</th><th>成本 / Token</th><th>分支</th><th>错误</th></tr></thead><tbody>${runRows || `<tr><td colspan="8" class="empty">暂无</td></tr>`}</tbody></table></div>${executionsPager}</div>`;
@@ -875,7 +892,7 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
         : section === "jobs"
           ? "discover / execute / pr-review 等队列任务。"
           : "Plan 执行进度、耗时与成本。";
-    const body = `${metricsHtml}${pageTabs(alias, "run", section)}${hintHtml}${sectionPanel}`;
+    const body = `${metricsHtml}${routeStatsHtml}${pageTabs(alias, "run", section)}${hintHtml}${sectionPanel}`;
     const html = projectShell(cfg, alias, "run", {
       title: "运行与交付",
       description: sectionDesc,

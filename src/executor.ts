@@ -664,7 +664,7 @@ export async function executePlan(
 
     const criticStart = new Date().toISOString();
     writeStepState({ step_name: "diff_critic", status: "running", started_at: criticStart });
-    const critic = await reviewDiffWithRouting(wt.path, diffStatOut, plan.title, stats, plan);
+    const critic = await reviewDiffWithRouting(projectPath, wt.path, diffStatOut, plan.title, stats, plan);
     if (critic.cost) sdkCost = addSdkCost(sdkCost, critic.cost);
 
     if (!critic.ok) {
