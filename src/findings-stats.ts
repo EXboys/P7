@@ -8,6 +8,9 @@ import type {
   FindingsDimensionStats,
   PromptTuningInput,
 } from "./types.ts";
+import { extractCalibrationDataset } from "./calibration-extractor.ts";
+import { searchOptimalCutoffs } from "./threshold-calibrator.ts";
+import type { CalibratedThresholds } from "./threshold-calibrator.ts";
 
 /**
  * Security-relevant file path pattern categories for threat model preamble
@@ -269,6 +272,35 @@ function computeCweBreakdown(
   return entries;
 }
 
+// ── Calibrated thresholds formatting ──
+
+/**
+ * Render CalibratedThresholds as a compact markdown table for injection
+ * into the dynamic_rules section of critic prompt templates.
+ *
+ * Columns: severity, cutoff, F1, TP, FP, total labeled samples.
+ * Returns an empty array when no severity has labeled data (all cutoffs zero).
+ */
+function formatCalibratedThresholds(thresholds: CalibratedThresholds): string[] {
+  const lines: string[] = [];
+  lines.push("校准严重度阈值（基于历史标注数据）：");
+  lines.push("| 严重度 | cutoff | F1 | TP | FP | 标注样本 |");
+  lines.push("|--------|--------|----|----|----|---------|");
+
+  const severities: DcSeverity[] = ["blocker", "warning", "info"];
+  for (const sev of severities) {
+    const t = thresholds[sev];
+    lines.push(
+      `| ${t.severity} | ${t.cutoff.toFixed(3)} | ${t.f1.toFixed(3)} | ${t.truePositives} | ${t.falsePositives} | ${t.totalLabeled} |`,
+    );
+  }
+  lines.push("");
+  lines.push(`> 基于 ${thresholds.totalSamplesUsed} 个标注样本校准`);
+  lines.push("");
+
+  return lines;
+}
+
 /**
  * Build a formatted markdown string of historical findings patterns
  * for injection into critic prompt templates as `{{dynamic_rules}}`.
@@ -327,6 +359,19 @@ export function buildDynamicRules(projectPath: string): string | null {
       );
     }
     lines.push("");
+  }
+
+  // ── Calibrated severity thresholds (empirical, from historical data) ──
+  try {
+    const calibrationDataset = extractCalibrationDataset(db);
+    const labeledCount =
+      calibrationDataset.labelCounts.truePositive + calibrationDataset.labelCounts.falsePositive;
+    if (labeledCount > 0) {
+      const thresholds = searchOptimalCutoffs(calibrationDataset);
+      lines.push(...formatCalibratedThresholds(thresholds));
+    }
+  } catch {
+    /* skip calibration section on malformed DB records */
   }
 
   return lines.join("\n");
