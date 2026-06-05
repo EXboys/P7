@@ -147,6 +147,7 @@ export interface PlanState {
   error?: string;
   findings?: string;
   diffCriticFindings?: string;
+  planCriticFindings?: string;
 }
 
 export interface VcsAccountPublishResult {
