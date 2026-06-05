@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { legacyProjectDir, p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
-import type { PlanState, PlanStateStatus, VcsAccountPublishResult } from "./types.ts";
+import type { PlanState, PlanStateStatus, VcsAccountPublishResult, ConvergenceMetrics } from "./types.ts";
 import type { SdkTokenUsage } from "./sdk-cost.ts";
 
 /** 按 goal 维度归因的成本明细 */
@@ -273,6 +273,22 @@ export function initDb(projectPath: string): Database {
   } catch {
     /* exists */
   }
+
+  /* convergence_snapshots table: time-series storage for RuleEntropy / FPR drift / coverage stability metrics */
+  db.run(`
+    CREATE TABLE IF NOT EXISTS convergence_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_path TEXT NOT NULL,
+      plan_id TEXT,
+      metrics TEXT NOT NULL,
+      iteration_round INTEGER,
+      computed_at TEXT NOT NULL
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_convergence_snapshots_project_time
+    ON convergence_snapshots(project_path, computed_at DESC)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_convergence_snapshots_project_iteration
+    ON convergence_snapshots(project_path, iteration_round DESC)`);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS sdk_costs (
@@ -751,4 +767,123 @@ export function queryDailyCostSummary(projectPath: string): CostSummary {
       planCount: r.cnt,
     })),
   };
+}
+
+/**
+ * Persist a computed convergence snapshot to the convergence_snapshots table.
+ *
+ * Stores the full ConvergenceMetrics payload as a JSON TEXT column alongside
+ * optional planId and iterationRound for time-series queryability.
+ *
+ * @param projectPath - Scoping project path
+ * @param metrics - Computed ConvergenceMetrics to persist
+ * @param planId - Optional plan ID to associate with this snapshot
+ * @param iterationRound - Optional 0-based iteration round number
+ */
+export function recordConvergenceSnapshot(
+  projectPath: string,
+  metrics: ConvergenceMetrics,
+  planId?: string,
+  iterationRound?: number,
+): void {
+  const db = initDb(projectPath);
+  const stmt = db.prepare(`
+    INSERT INTO convergence_snapshots (project_path, plan_id, metrics, iteration_round, computed_at)
+    VALUES ($project_path, $plan_id, $metrics, $iteration_round, $computed_at)
+  `);
+  withBusyRetry(() => {
+    stmt.run({
+      $project_path: projectPath,
+      $plan_id: planId ?? null,
+      $metrics: JSON.stringify(metrics),
+      $iteration_round: iterationRound != null ? iterationRound : null,
+      $computed_at: metrics.computedAt,
+    });
+  });
+}
+
+/**
+ * Query convergence snapshots within a time window.
+ *
+ * Returns raw ConvergenceMetrics without planId/iterationRound metadata.
+ * Consumers needing that context should extend the return type or join
+ * on computedAt.
+ *
+ * @param projectPath - Scoping project path
+ * @param opts - Query options with optional since, until, limit, offset
+ * @returns Array of ConvergenceMetrics matching the time window
+ */
+export function listConvergenceSnapshots(
+  projectPath: string,
+  opts: { since?: string; until?: string; limit?: number; offset?: number } = {},
+): ConvergenceMetrics[] {
+  const db = initDb(projectPath);
+  const conditions: string[] = ["project_path = $project_path"];
+  const binds: Record<string, unknown> = { $project_path: projectPath };
+
+  if (opts.since) {
+    conditions.push("computed_at >= $since");
+    binds.$since = opts.since;
+  }
+  if (opts.until) {
+    conditions.push("computed_at <= $until");
+    binds.$until = opts.until;
+  }
+
+  const limit = opts.limit ?? 50;
+  const offset = opts.offset ?? 0;
+  binds.$limit = limit;
+  binds.$offset = offset;
+
+  const sql = `SELECT metrics FROM convergence_snapshots
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY computed_at DESC
+    LIMIT $limit OFFSET $offset`;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = db.query(sql).all(binds as any) as { metrics: string }[];
+  return rows.map((r) => JSON.parse(r.metrics) as ConvergenceMetrics);
+}
+
+/**
+ * Query convergence snapshots by iteration round range.
+ *
+ * @param projectPath - Scoping project path
+ * @param roundMin - Minimum iteration round (inclusive, optional)
+ * @param roundMax - Maximum iteration round (inclusive, optional)
+ * @param limit - Max rows to return (default 50)
+ * @param offset - Rows to skip (default 0)
+ * @returns Array of ConvergenceMetrics matching the iteration range
+ */
+export function listConvergenceSnapshotsByIteration(
+  projectPath: string,
+  roundMin?: number,
+  roundMax?: number,
+  limit = 50,
+  offset = 0,
+): ConvergenceMetrics[] {
+  const db = initDb(projectPath);
+  const conditions: string[] = ["project_path = $project_path"];
+  const binds: Record<string, unknown> = { $project_path: projectPath };
+
+  if (roundMin != null) {
+    conditions.push("iteration_round >= $round_min");
+    binds.$round_min = roundMin;
+  }
+  if (roundMax != null) {
+    conditions.push("iteration_round <= $round_max");
+    binds.$round_max = roundMax;
+  }
+
+  binds.$limit = limit;
+  binds.$offset = offset;
+
+  const sql = `SELECT metrics FROM convergence_snapshots
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY iteration_round DESC
+    LIMIT $limit OFFSET $offset`;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = db.query(sql).all(binds as any) as { metrics: string }[];
+  return rows.map((r) => JSON.parse(r.metrics) as ConvergenceMetrics);
 }
