@@ -302,6 +302,46 @@ function formatCalibratedThresholds(thresholds: CalibratedThresholds): string[] 
 }
 
 /**
+ * Identify CWE vulnerability patterns that recur across multiple plan runs
+ * for known_bugs steering injection.
+ *
+ * Groups vulnerability-dimension findings with CWE IDs by CWE identifier and
+ * counts how many distinct plans each CWE appears in. Only returns entries
+ * where the CWE pattern appears in ≥2 plans — single-occurrence findings are
+ * not "known bugs" but isolated incidents that don't warrant steering.
+ *
+ * Returns an empty array when no recurring vulnerability patterns exist —
+ * callers should check length before rendering the known_bugs heading.
+ */
+function computeKnownBugs(
+  plans: Array<{ planId: string; findings: DiffCriticFinding[] }>,
+): Array<{ cweId: string; planCount: number; totalFindings: number }> {
+  const vulnPlans = new Map<string, Set<string>>();
+  const vulnCounts = new Map<string, number>();
+
+  for (const plan of plans) {
+    for (const f of plan.findings) {
+      if (f.dimension === "漏洞发现" && f.cweId) {
+        if (!vulnPlans.has(f.cweId)) {
+          vulnPlans.set(f.cweId, new Set());
+        }
+        vulnPlans.get(f.cweId)!.add(plan.planId);
+        vulnCounts.set(f.cweId, (vulnCounts.get(f.cweId) ?? 0) + 1);
+      }
+    }
+  }
+
+  const known: Array<{ cweId: string; planCount: number; totalFindings: number }> = [];
+  for (const [cweId, planSet] of vulnPlans) {
+    if (planSet.size >= 2) {
+      known.push({ cweId, planCount: planSet.size, totalFindings: vulnCounts.get(cweId) ?? 0 });
+    }
+  }
+  known.sort((a, b) => b.planCount - a.planCount);
+  return known;
+}
+
+/**
  * Build a formatted markdown string of historical findings patterns
  * for injection into critic prompt templates as `{{dynamic_rules}}`.
  *
@@ -356,6 +396,18 @@ export function buildDynamicRules(projectPath: string): string | null {
     for (const entry of cweBreakdown) {
       lines.push(
         `| ${entry.cweId} | ${entry.total} | ${entry.bySeverity.info ?? 0} | ${entry.bySeverity.warning ?? 0} | ${entry.bySeverity.blocker ?? 0} |`,
+      );
+    }
+    lines.push("");
+  }
+
+  // ── Known bugs steering (CWE patterns recurring across multiple plan runs) ──
+  const knownBugs = computeKnownBugs(plans);
+  if (knownBugs.length > 0) {
+    lines.push("已知反复出现的漏洞模式（跨多次评审的 CWE 类别）：");
+    for (const kb of knownBugs) {
+      lines.push(
+        `- ${kb.cweId} — 在 ${kb.planCount} 次评审中出现（共 ${kb.totalFindings} 条发现），请重点审查相关代码路径。`,
       );
     }
     lines.push("");
