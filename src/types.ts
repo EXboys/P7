@@ -275,6 +275,19 @@ export interface TypeCoverageReport {
  */
 export type { GemmaEvalConfig, GemmaEvalResult } from "./gemma-bridge.ts";
 
+/* ── Evaluator router types ── */
+
+/**
+ * Re-exported from `evaluator-router.ts` for cross-module consumption by the
+ * executor and diff-critic pipeline.
+ *
+ * DiffComplexityTier  — trivial / small / medium / large
+ * CriticUrgency       — blocker / advisory
+ * SelectedEvaluator   — gemma / gemma_with_fallback / claude
+ * EvaluatorRouteDecision — route decision result with cost estimate and reason
+ */
+export type { DiffComplexityTier, CriticUrgency, SelectedEvaluator, EvaluatorRouteDecision } from "./evaluator-router.ts";
+
 /* ── Findings aggregation types ── */
 
 /**
