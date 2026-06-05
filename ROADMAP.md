@@ -13,12 +13,23 @@ Feature: 自托管开发沙箱预览与 executor 安全边界收敛 (started 202
 - [ ] 编写集成测试覆盖沙箱预览安全域隔离（防止预览 URL 泄露 host 文件系统）
 - [ ] 新增 executor 路径边界审计命令 `p7 audit boundaries`，扫描所有配置路径是否在授权范围内
 
+Feature: 漏洞发现维度管线增强 — 基于 Anthropic v2 框架差异分析 (started 2026-06-05)
+- [ ] G3: 接入 `buildThreatModelPreamble()` 至 `reviewDiff()` 管线，填充 `{{$if threat_model}}` 模板变量 (effort: 1d, priority: P1)
+- [ ] G8: 实现 `remediation` 字段在 `parseFindings()` 中的正则提取，建立 critic→patch 数据通道 (effort: 0.5d, priority: P2)
+- [ ] G9: 清理 `prompts/diff-critic.md` 幻影模板变量 (`history_window`, `total_findings` 等) (effort: 0.5d, priority: P2)
+- [ ] G1: 实现 SQLite 跨运行去重存储 (`finding_hashes` 表 + 确定性哈希)，降低模式提取噪音 (effort: 3d, priority: P1)
+- [ ] G4: 实现 `src/vulnerability-pipeline.ts`（verify→dedupe→report 三阶段后处理），门禁后可选执行 (effort: 4d, priority: P2)
+- [ ] G6: `known_bugs` 引导注入 `buildDynamicRules()`，差异化注意力机制避免重复标记 (effort: 2d, priority: P2)
+
 ## Backlog
 - Gemma 4 12B 轻量代码模型本地评估集成（依赖：executor 边界收敛完成后可安全拉取模型并注册端点）
 - AI Agent 工具成本治理基线——接入 Uber $1500/月定价基准，实现成本标签分层归因（按模型/plan/阶段）与熔断阈值
 - [x] 分析 Hyper agentic pipeline 动态编排核心模式（条件分支、并行扇出、动态重排），产出对比设计笔记
 - Hyper agentic development 动态 agent 编排对 pipeline 收敛效率的改进潜力评估
 - plan-critic 结构化升级——参照 diff-critic 结构化输出方案改为 FINDINGS + OK 格式，与 PlanState 持久层对接
+- 并行维度审查：quality/security 分组双 agent 调度，消除跨维度 token 竞争 (G7, P3)
+- 外循环编排器：跨 Plan 收敛循环（扫描波次 → 跨运行 triage → patch → repeat）(G5, P3)
+- 跨运行路径覆盖追踪：review_coverage SQLite 表 + 热度图注入 critic prompt (G8, P3)
 
 ## Done
 - 安全边界集成——文件系统路径边界、API 域名白名单、PlanState 权限违规阻断、executor 工具钩子路径校验（PRs #49–#53）
