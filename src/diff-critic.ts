@@ -47,7 +47,16 @@ export function parseFindings(text: string): DiffCriticFinding[] {
       const dimension = prefix.startsWith("AI 生成代码特征-")
         ? prefix.slice("AI 生成代码特征-".length)
         : prefix;
-      findings.push({ dimension, severity, message, prefix });
+      // Extract optional CWE identifier and confidence from vulnerability findings
+      let cweId: string | undefined;
+      let confidence: number | undefined;
+      if (dimension === "漏洞发现") {
+        const cweMatch = message.match(/\[CWE-(\d+)\]/);
+        if (cweMatch) cweId = `CWE-${cweMatch[1]}`;
+        const confMatch = message.match(/\[confidence:(\d+(?:\.\d+)?)\]/);
+        if (confMatch) confidence = parseFloat(confMatch[1]);
+      }
+      findings.push({ dimension, severity, message, prefix, cweId, confidence });
       continue;
     }
     // 降级兜底：只要行内包含 [severity] 就捕获剩余文本
