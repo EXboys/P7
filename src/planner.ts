@@ -6,7 +6,7 @@ import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
 import { shouldDegrade, splitPlan } from "./degrade.ts";
 import { appendLesson } from "./agent-memory.ts";
-import { countQueuedPlans, recordBackpressureEvent, upsertPlanState } from "./state.ts";
+import { countQueuedPlans, recordBackpressureEvent, updatePlanCriticFindings, upsertPlanState } from "./state.ts";
 import { processAutoApprovals, savePendingApproval } from "./approval.ts";
 import { loadConfig } from "./config.ts";
 import { planDisplayTitle } from "./plan-i18n.ts";
@@ -206,6 +206,14 @@ export async function generatePlan(
 
   let plan: Plan | null = null;
   let lastCritic = "";
+  let lastCriticFindings: Array<{
+    severity: string;
+    category: string;
+    target: string;
+    description: string;
+    recommendation: string;
+    code?: string;
+  }> = [];
 
   for (let round = 0; round < 3; round++) {
     const revision =
@@ -240,6 +248,7 @@ export async function generatePlan(
     }
 
     const criticResult = parsePlanCriticFindings(text);
+    lastCriticFindings = criticResult.findings;
     lastCritic = formatCriticFindings(criticResult);
     if (criticResult.ok) {
       plan = parsed;
@@ -291,6 +300,12 @@ export async function generatePlan(
     savePendingApproval(projectPath, record);
     savedIds.push(record.planId);
     if (!first) first = record;
+  }
+
+  // Persist plan-critic findings to each saved plan
+  const findingsJson = JSON.stringify(lastCriticFindings);
+  for (const id of savedIds) {
+    updatePlanCriticFindings(projectPath, id, findingsJson);
   }
 
   processAutoApprovals(projectPath, cfg, { planIds: savedIds });

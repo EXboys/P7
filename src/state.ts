@@ -92,6 +92,7 @@ function rowToPlanState(row: Record<string, unknown>): PlanState {
   if (row.error) state.error = String(row.error);
   if (row.findings) state.findings = String(row.findings);
   if (row.diff_critic_findings) state.diffCriticFindings = String(row.diff_critic_findings);
+  if (row.plan_critic_findings) state.planCriticFindings = String(row.plan_critic_findings);
   if (row.cost_usd != null && row.cost_usd !== "") {
     const cost = Number(row.cost_usd);
     if (Number.isFinite(cost)) state.costUsd = cost;
@@ -137,6 +138,7 @@ function planStateBinds(state: PlanState): Record<string, string | null> {
     $token_usage: state.tokenUsage ? JSON.stringify(state.tokenUsage) : null,
     $findings: state.findings ?? null,
     $diff_critic_findings: state.diffCriticFindings ?? null,
+    $plan_critic_findings: state.planCriticFindings ?? null,
     $backpressure_events: (state as PlanStateWithBp).backpressureEvents?.length
       ? JSON.stringify((state as PlanStateWithBp).backpressureEvents)
       : null,
@@ -266,6 +268,11 @@ export function initDb(projectPath: string): Database {
   } catch {
     /* exists */
   }
+  try {
+    db.run("ALTER TABLE plan_states ADD COLUMN plan_critic_findings TEXT");
+  } catch {
+    /* exists */
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS sdk_costs (
@@ -351,11 +358,11 @@ export function upsertPlanState(
     INSERT INTO plan_states (
       plan_id, project_path, goal, title, status, created_at, updated_at,
       branch, commit_sha, review_url, pr_url, issue_url, merge_status,
-      account_results, cost_usd, token_usage, findings, diff_critic_findings, backpressure_events, error
+      account_results, cost_usd, token_usage, findings, diff_critic_findings, backpressure_events, plan_critic_findings, error
     ) VALUES (
       $plan_id, $project_path, $goal, $title, $status, $created_at, $updated_at,
       $branch, $commit_sha, $review_url, $pr_url, $issue_url, $merge_status,
-      $account_results, $cost_usd, $token_usage, $findings, $diff_critic_findings, $backpressure_events, $error
+      $account_results, $cost_usd, $token_usage, $findings, $diff_critic_findings, $backpressure_events, $plan_critic_findings, $error
     )
     ON CONFLICT(plan_id) DO UPDATE SET
       project_path = excluded.project_path,
@@ -375,6 +382,7 @@ export function upsertPlanState(
       findings = COALESCE(excluded.findings, plan_states.findings),
       diff_critic_findings = COALESCE(excluded.diff_critic_findings, plan_states.diff_critic_findings),
       backpressure_events = COALESCE(excluded.backpressure_events, plan_states.backpressure_events),
+      plan_critic_findings = COALESCE(excluded.plan_critic_findings, plan_states.plan_critic_findings),
       error = excluded.error
   `);
 
@@ -429,6 +437,7 @@ export function transitionPlanState(
         account_results = $account_results,
         findings = $findings,
         diff_critic_findings = $diff_critic_findings,
+        plan_critic_findings = $plan_critic_findings,
         error = $error
       WHERE plan_id = $plan_id
     `);
@@ -617,6 +626,37 @@ export function updatePlanDiffCriticFindings(
       $updated_at: new Date().toISOString(),
     });
   });
+}
+
+/** 写入 plan-critic 检测结果到 plan_states.plan_critic_findings */
+export function updatePlanCriticFindings(
+  projectPath: string,
+  planId: string,
+  findings: string,
+): void {
+  const db = initDb(projectPath);
+  const stmt = db.prepare(
+    `UPDATE plan_states SET plan_critic_findings = $plan_critic_findings, updated_at = $updated_at WHERE plan_id = $plan_id`,
+  );
+  withBusyRetry(() => {
+    stmt.run({
+      $plan_id: planId,
+      $plan_critic_findings: findings,
+      $updated_at: new Date().toISOString(),
+    });
+  });
+}
+
+/** 读取 plan-critic 检测结果（JSON 字符串） */
+export function getPlanCriticFindings(
+  projectPath: string,
+  planId: string,
+): string | null {
+  const db = initDb(projectPath);
+  const row = db
+    .query(`SELECT plan_critic_findings FROM plan_states WHERE plan_id = $plan_id`)
+    .get({ $plan_id: planId }) as { plan_critic_findings: string | null } | undefined;
+  return row?.plan_critic_findings ?? null;
 }
 
 /**

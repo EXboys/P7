@@ -8,9 +8,18 @@
 - 是否与近期失败标题高度重复（见 planner 提供的上下文）
 - `risks` 是否回避了明显技术债或破坏性变更
 
-## 输出（结构化 JSON）
+## 输出（结构化文本 + JSON）
 
-在回复的**最后一个内容块**中输出以下 JSON fenced code block。不允许在前置推理中包含输出内容（含部分字段）。
+在回复的**最后一个内容块**中输出 JSON 结构（使用无 json 标签的纯文本代码块以保持 backward compatibility）。不允许在前置推理中包含输出内容（含部分字段）。
+
+每条 FINDINGS 行须包含 `[dimension][severity]` 标签，例如：
+```
+FINDINGS:
+- [scope_creep][warning] (target: changes[1].file): plans to modify unrelated module for goals outside scope
+  → remove changes[1] from plan
+- [optimistic_lines][info] (target: estimated_diff_lines): 55 lines too low for 3 new interfaces
+  → raise to 80-100
+```
 
 ### JSON Schema
 
