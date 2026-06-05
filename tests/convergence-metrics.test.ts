@@ -13,7 +13,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { computeVulnDimensionWeight } from "../src/convergence-metrics.ts";
 import type {
+  DimensionWeights,
   DynamicRule,
   RuleEntropyMetric,
   FprTrendDriftMetric,
@@ -22,20 +24,35 @@ import type {
 
 /* ── Inline SUT: metric computation helpers ──────────────────────── */
 
-function computeRuleEntropy(rules: DynamicRule[]): RuleEntropyMetric {
+function computeRuleEntropy(
+  rules: DynamicRule[],
+  dimensionWeights?: DimensionWeights,
+): RuleEntropyMetric {
   const dimCounts = new Map<string, number>();
   for (const r of rules) {
     dimCounts.set(r.dimension, (dimCounts.get(r.dimension) ?? 0) + 1);
   }
   const dimensionCount = dimCounts.size;
-  const total = rules.length;
 
-  if (total === 0 || dimensionCount === 0) {
+  if (dimensionCount === 0) {
     return { entropy: 0, maxEntropy: 0, normalizedEntropy: 0, dimensionCount: 0 };
   }
 
+  let total: number;
+  const weightedCounts = new Map<string, number>();
+  if (dimensionWeights) {
+    for (const [dim, count] of dimCounts) {
+      const w = dimensionWeights[dim] ?? 1;
+      weightedCounts.set(dim, count * w);
+    }
+    total = [...weightedCounts.values()].reduce((s, c) => s + c, 0);
+  } else {
+    total = rules.length;
+  }
+
+  const working = dimensionWeights ? weightedCounts : dimCounts;
   let entropy = 0;
-  for (const count of dimCounts.values()) {
+  for (const count of working.values()) {
     const p = count / total;
     entropy -= p * Math.log2(p);
   }
@@ -63,13 +80,22 @@ function computeFprTrendDrift(
 function computeCoverageStability(
   rules: DynamicRule[],
   cvThreshold = 0.5,
+  dimensionWeights?: DimensionWeights,
 ): CoverageStabilityMetric {
   const dimCounts = new Map<string, number>();
   for (const r of rules) {
     dimCounts.set(r.dimension, (dimCounts.get(r.dimension) ?? 0) + 1);
   }
   const dimensionCount = dimCounts.size;
-  const counts = [...dimCounts.values()];
+
+  let counts: number[];
+  if (dimensionWeights) {
+    counts = [...dimCounts.entries()].map(
+      ([dim, count]) => count * (dimensionWeights[dim] ?? 1),
+    );
+  } else {
+    counts = [...dimCounts.values()];
+  }
 
   if (dimensionCount === 0) {
     return {
@@ -265,5 +291,107 @@ describe("computeCoverageStability", () => {
     expect(m.standardDeviation).toBe(0);
     expect(m.coefficientOfVariation).toBe(0);
     expect(m.isUnstable).toBe(false);
+  });
+});
+
+/* ── Weighted metric computation (dimensionWeights) ────────────────── */
+
+describe("weighted computeRuleEntropy", () => {
+  test("vuln dimension with 2x weight shifts entropy toward concentration", () => {
+    // 3 dimensions, 1 rule each: type-safety, complexity, 漏洞发现
+    // Without weight: uniform → H=log2(3)≈1.585, normalized=1
+    // With vuln 2x: counts become [1, 1, 2], total=4
+    //   p_type-safety=0.25, p_complexity=0.25, p_vuln=0.5
+    //   H = -(0.25*log2(0.25) + 0.25*log2(0.25) + 0.5*log2(0.5))
+    //     = -(0.25*(-2) + 0.25*(-2) + 0.5*(-1)) = 1.5
+    //   normalized = 1.5 / log2(3) ≈ 1.5 / 1.585 ≈ 0.946
+    const weights: DimensionWeights = { 漏洞发现: 2 };
+    const rules = [
+      r("type-safety", 5, 1),
+      r("complexity", 3, 0),
+      r("漏洞发现", 4, 1),
+    ];
+
+    const m = computeRuleEntropy(rules, weights);
+    expect(m.dimensionCount).toBe(3);
+    expect(m.entropy).toBeCloseTo(1.5, 5);
+    expect(m.normalizedEntropy).toBeCloseTo(0.946, 2);
+  });
+
+  test("dimension not in weights map defaults to 1.0 multiplier", () => {
+    const weights: DimensionWeights = { 漏洞发现: 3 };
+    const rules = [
+      r("complexity", 5, 1),
+      r("security", 3, 0),
+    ];
+
+    const m = computeRuleEntropy(rules, weights);
+    expect(m.dimensionCount).toBe(2);
+    expect(m.entropy).toBeCloseTo(1, 5);
+    expect(m.normalizedEntropy).toBeCloseTo(1, 5);
+  });
+
+  test("empty weights map behaves as unweighted", () => {
+    const rules = [
+      r("complexity", 5, 1),
+      r("type-safety", 3, 0),
+    ];
+    const unweighted = computeRuleEntropy(rules);
+    const weighted = computeRuleEntropy(rules, {});
+    expect(weighted.entropy).toBeCloseTo(unweighted.entropy, 10);
+    expect(weighted.normalizedEntropy).toBeCloseTo(unweighted.normalizedEntropy, 10);
+  });
+});
+
+describe("weighted computeCoverageStability", () => {
+  test("weighted CV reflects dimension importance", () => {
+    // 3 dimensions: complexity(4 rules), type-safety(1), 漏洞发现(1)
+    // Unweighted counts: [4, 1, 1] → μ=2, σ≈1.414, CV≈0.707 (unstable)
+    // With vuln 2x: counts become [4, 1, 2] → μ≈2.333, σ²≈1.556, σ≈1.247, CV≈0.535
+    const weights: DimensionWeights = { 漏洞发现: 2 };
+    const rules = [
+      r("complexity", 5, 1),
+      r("complexity", 3, 0),
+      r("complexity", 4, 0),
+      r("complexity", 2, 1),
+      r("type-safety", 3, 0),
+      r("漏洞发现", 4, 1),
+    ];
+
+    const m = computeCoverageStability(rules, 0.5, weights);
+    expect(m.dimensionCount).toBe(3);
+    // weighted counts: [4, 1, 2] → μ = 7/3 ≈ 2.333
+    expect(m.mean).toBeCloseTo(7 / 3, 5);
+    // σ² = ((4-2.333)² + (1-2.333)² + (2-2.333)²) / 3
+    //     = (2.778 + 1.778 + 0.111) / 3 ≈ 1.556
+    // σ ≈ 1.247
+    expect(m.standardDeviation).toBeCloseTo(1.247, 2);
+    // CV = 1.247 / 2.333 ≈ 0.535
+    expect(m.coefficientOfVariation).toBeCloseTo(0.535, 2);
+    expect(m.isUnstable).toBe(true);
+  });
+
+  test("weighted all-equal 1x → CV=0 regardless of weights specified", () => {
+    // Uniform counts with equal per-dimension weight of 1
+    // Actually each count is 1 for each dimension, and weight of 1 → still [1,1,1] → CV=0
+    const weights: DimensionWeights = { 漏洞发现: 1, complexity: 1 };
+    const rules = [
+      r("complexity", 5, 1),
+      r("type-safety", 3, 0),
+      r("漏洞发现", 4, 1),
+    ];
+
+    const m = computeCoverageStability(rules, 0.5, weights);
+    // weighted counts: [1, 1, 1] (type-safety not in weights, defaults to 1)
+    expect(m.dimensionCount).toBe(3);
+    expect(m.coefficientOfVariation).toBeCloseTo(0, 5);
+    expect(m.isUnstable).toBe(false);
+  });
+});
+
+describe("computeVulnDimensionWeight", () => {
+  test("returns default calibrated weight (1.5)", () => {
+    const w = computeVulnDimensionWeight();
+    expect(w).toBe(1.5);
   });
 });

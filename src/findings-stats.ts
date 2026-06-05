@@ -1,3 +1,4 @@
+import { computeVulnDimensionWeight } from "./convergence-metrics.ts";
 import { Database } from "bun:sqlite";
 import { parseFindings } from "./diff-critic.ts";
 import { initDb } from "./state.ts";
@@ -425,6 +426,10 @@ export function buildDynamicRules(projectPath: string): string | null {
   } catch {
     /* skip calibration section on malformed DB records */
   }
+
+  // ── Vulnerability discovery dimension convergence weight ──
+  lines.push(`漏洞发现维度收敛权重: ${computeVulnDimensionWeight().toFixed(1)}x（基于校准数据分配，用于加权收敛性度量计算）`);
+  lines.push("");
 
   return lines.join("\n");
 }
