@@ -13,6 +13,7 @@ import { loadConfig } from "./config.ts";
 import { planDisplayTitle } from "./plan-i18n.ts";
 import { PlanSchema, type Plan, type PlanRecord, type ProjectScan } from "./types.ts";
 import { getHeadCommit } from "./worktree.ts";
+import { reviewPlanWithRouting } from "./evaluator-middleware.ts";
 
 const FAILED_PLANS_DIR = "failed-plans";
 
@@ -240,6 +241,24 @@ export async function generatePlan(
     const raw = extractLastJsonBlock(text);
     const parsed = PlanSchema.parse(raw);
     parsed.baseCommit = baseCommit;
+
+    /* ── Gemma fast-path ── */
+    {
+      const gemmaResult = await reviewPlanWithRouting(parsed, projectPath);
+      if (gemmaResult !== null) {
+        if (gemmaResult.ok) {
+          plan = parsed;
+          lastCritic = gemmaResult.feedback;
+          break;
+        }
+        // Gemma rejected — use its feedback and continue to next revision round
+        lastCritic = gemmaResult.feedback;
+        lastCriticFindings = [];
+        plan = parsed;
+        continue;
+      }
+    }
+    /* ── end Gemma fast-path ── */
 
     for (const f of recentFailed) {
       if (bigramJaccard(parsed.title, f.title) > 0.6) {
