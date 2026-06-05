@@ -700,3 +700,62 @@ export interface ConvergenceIterationRange {
   startRound?: number;
   endRound?: number;
 }
+
+/* ── Self-play convergence curve types ── */
+
+/**
+ * Raw self-play log entry from a single iteration round.
+ *
+ * The extractor ingests an array of these entries and enriches each with
+ * computed convergence metrics (rule entropy, FPR drift, coverage stability)
+ * to produce a {@link SelfPlayRound}.
+ *
+ * - `round`: 0-based iteration round number
+ * - `rules`: dynamic rules snapshot at this round
+ * - `baselineFpr`: cumulative baseline false-positive rate used for drift
+ *   computation in curve extraction (typically carried forward from the
+ *   warm-up phase)
+ * - `recordedAt`: ISO-8601 timestamp when this entry was recorded
+ */
+export interface SelfPlayLogEntry {
+  round: number;
+  rules: DynamicRule[];
+  baselineFpr?: number;
+  recordedAt: string;
+}
+
+/**
+ * A single processed round within the convergence curve.
+ *
+ * Extends the raw log entry with pre-computed {@link ConvergenceMetrics}
+ * so consumers can plot trend lines without re-computing statistics from
+ * the raw rule arrays.
+ *
+ * - `round`: 0-based iteration round number
+ * - `rules`: dynamic rules snapshot at this round (preserved for drill-down)
+ * - `metrics`: pre-computed convergence metrics (entropy, FPR drift, coverage)
+ * - `recordedAt`: ISO-8601 timestamp when this round was recorded
+ */
+export interface SelfPlayRound {
+  round: number;
+  rules: DynamicRule[];
+  metrics: ConvergenceMetrics;
+  recordedAt: string;
+}
+
+/**
+ * Time-series convergence curve for the self-play iteration loop.
+ *
+ * Aggregates all processed rounds into a sortable sequence that can be
+ * rendered as line charts (rule entropy over rounds, FPR drift over rounds,
+ * coverage CV over rounds) for operator observability.
+ *
+ * - `rounds`: chronologically ordered array of processed rounds
+ * - `totalRounds`: convenience field equal to `rounds.length`
+ * - `generatedAt`: ISO-8601 timestamp of curve generation
+ */
+export interface ConvergenceCurve {
+  rounds: SelfPlayRound[];
+  totalRounds: number;
+  generatedAt: string;
+}
