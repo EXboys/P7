@@ -52,6 +52,7 @@ import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
 import type { DevAgentConfig } from "../src/config.ts";
 import { computeTypeSafetyMetrics, type TypeSafetyMetrics } from "../src/gradual-typecheck-config.ts";
+import { parseFindings } from "../src/diff-critic.ts";
 import {
   checkGhAuth,
   collectGhAuthChecks,
@@ -84,6 +85,7 @@ import {
   renderJobsPage,
   discoverToolbar,
   renderTrendsPage,
+  renderVulnerabilityPanel,
   resolveProject,
   statusBadge,
   workbenchToolbar,
@@ -951,6 +953,71 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
       body,
       flash,
       pipelineDone: 6,
+    });
+    return c.html(html ?? "not found", html ? 200 : 404);
+  });
+
+  app.get("/project/:alias/vulnerabilities", (c) => {
+    const cfg = getCfg();
+    const alias = c.req.param("alias");
+    const proj = resolveProject(cfg, alias);
+    if (!proj) return c.text("not found", 404);
+    const flash = c.req.query("flash");
+    const base = `/project/${encodeURIComponent(alias)}`;
+
+    let total = 0;
+    let blockerCount = 0;
+    let warningCount = 0;
+    let infoCount = 0;
+    const recent: Array<{
+      planId: string;
+      title: string;
+      severity: "blocker" | "warning" | "info";
+      dimension: string;
+      message: string;
+    }> = [];
+
+    if (existsSync(proj.path)) {
+      const states = listPlanStates(proj.path, 100);
+      for (const state of states) {
+        if (!state.diffCriticFindings) continue;
+        const parsed = parseFindings(state.diffCriticFindings);
+        if (parsed.length === 0) continue;
+        for (const f of parsed) {
+          total++;
+          if (f.severity === "blocker") blockerCount++;
+          else if (f.severity === "warning") warningCount++;
+          else infoCount++;
+        }
+        for (const f of parsed.slice(0, 5)) {
+          if (recent.length >= 50) break;
+          recent.push({
+            planId: state.planId,
+            title: state.title || state.planId,
+            severity: f.severity,
+            dimension: f.dimension,
+            message: f.message,
+          });
+        }
+        if (recent.length >= 50) break;
+      }
+    }
+
+    const body = renderVulnerabilityPanel({
+      alias,
+      total,
+      blockerCount,
+      warningCount,
+      infoCount,
+      findings: recent,
+    });
+
+    const html = projectShell(cfg, alias, "vulnerabilities", {
+      title: "漏洞发现",
+      description: "diff-critic 扫描发现的代码漏洞汇总；按 severity 分类展示。",
+      body,
+      flash,
+      pipelineDone: 5,
     });
     return c.html(html ?? "not found", html ? 200 : 404);
   });
