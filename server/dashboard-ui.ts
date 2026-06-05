@@ -336,7 +336,7 @@ a.meta-tile:hover{border-color:rgba(107,159,255,.4);background:rgba(107,159,255,
 }
 `;
 
-export type ProjectTab = "overview" | "trends" | "plan" | "run" | "review" | "settings";
+export type ProjectTab = "overview" | "trends" | "plan" | "run" | "review" | "vulnerabilities" | "settings";
 
 export type SystemPage = "/jobs" | "/settings" | "/logs";
 
@@ -346,6 +346,7 @@ type NavIcon =
   | "plan"
   | "run"
   | "review"
+  | "vulnerabilities"
   | "settings"
   | "bind"
   | "jobs"
@@ -359,6 +360,8 @@ const NAV_SVG: Record<NavIcon, string> = {
   run: '<svg viewBox="0 0 24 24"><polygon points="9,7 18,12 9,17" fill="currentColor" stroke="none"/></svg>',
   review:
     '<svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>',
+  vulnerabilities:
+    '<svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>',
   settings:
     '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/><path d="M12 3v2M12 19v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M3 12h2M19 12h2M5.6 18.4l1.4-1.4M17 7l1.4-1.4"/></svg>',
   bind: '<svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>',
@@ -386,6 +389,7 @@ const PIPELINE: {
   { tab: "plan", label: "规划", icon: "plan" },
   { tab: "run", label: "运行", icon: "run" },
   { tab: "review", label: "Review", icon: "review" },
+  { tab: "vulnerabilities", label: "漏洞", icon: "vulnerabilities" },
   {
     tab: "settings",
     label: "设置",
@@ -1738,6 +1742,61 @@ ${themePills}
   });
 })();
 </script>`;
+}
+
+export function renderVulnerabilityPanel(opts: {
+  alias: string;
+  total: number;
+  blockerCount: number;
+  warningCount: number;
+  infoCount: number;
+  findings: Array<{
+    planId: string;
+    title: string;
+    severity: "blocker" | "warning" | "info";
+    dimension: string;
+    message: string;
+  }>;
+}): string {
+  const base = `/project/${encodeURIComponent(opts.alias)}`;
+
+  const badge = (severity: "blocker" | "warning" | "info"): string => {
+    const cls = severity === "blocker" ? "fail" : severity === "warning" ? "warn" : "idle";
+    return `<span class="badge ${cls}">${severity}</span>`;
+  };
+
+  const emptyHtml =
+    opts.total === 0
+      ? `<div class="empty"><p>暂未发现漏洞。先执行 diff-critic 扫描。</p><a class="btn ghost sm" href="${base}/run">前往执行</a></div>`
+      : "";
+
+  const rows = opts.findings
+    .map(
+      (f) =>
+        `<tr><td><a href="${base}/plans/${encodeURIComponent(f.planId)}">${esc(f.title)}</a></td>
+<td>${badge(f.severity)}</td>
+<td class="muted">${esc(f.dimension)}</td>
+<td class="muted" style="max-width:320px;word-break:break-word">${esc(f.message.slice(0, 120))}</td></tr>`,
+    )
+    .join("");
+
+  const tableHtml =
+    opts.total > 0
+      ? `<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>Severity</th><th>维度</th><th>描述</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : "";
+
+  return `<div>
+<div class="cards">
+${metricCard(opts.total, "发现总数")}
+${metricCard(opts.blockerCount, "Blocker", opts.blockerCount > 0 ? "alert" : undefined)}
+${metricCard(opts.warningCount, "Warning", opts.warningCount > 0 ? "warn" : undefined)}
+${metricCard(opts.infoCount, "Info")}
+</div>
+<div class="panel">
+<div class="panel-head"><h2>最近发现</h2><span class="muted" style="font-size:12px">显示 ${opts.findings.length} 条 / 共 ${opts.total} 条</span></div>
+${emptyHtml || tableHtml}
+</div>
+</div>`;
 }
 
 function auditEventBadgeClass(event: string): string {
