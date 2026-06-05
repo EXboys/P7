@@ -397,3 +397,72 @@ export interface PlanCriticResult {
   /** One-line human-readable verdict */
   summary: string;
 }
+
+/* ── Pattern extractor types ── */
+
+/**
+ * Per-dimension statistics extracted from historical review records.
+ * Used by the pattern extractor to identify high-frequency failure types
+ * and severity distribution for threshold auto-calibration.
+ *
+ * - `dimension`: The critic dimension (e.g. "type-safety", "complexity")
+ * - `total`: Absolute count of findings in this dimension
+ * - `bySeverity`: Breakdown by severity level (info / warning / blocker)
+ * - `hitRate`: Proportion of all scanned reviews that had at least one
+ *   finding in this dimension (0–1)
+ * - `blockerRatio`: Proportion of findings in this dimension that are
+ *   blockers (0–1); high values signal dimension is a reliable gate
+ */
+export interface DimensionStat {
+  dimension: string;
+  total: number;
+  bySeverity: Record<DcSeverity, number>;
+  hitRate: number;
+  blockerRatio: number;
+}
+
+/**
+ * Dimension co-occurrence pattern identified in historical reviews.
+ * Records how often two dimensions produce findings in the same review run,
+ * enabling discovery of correlated failure patterns.
+ *
+ * - `dimensionA` / `dimensionB`: The paired dimensions (lexicographically
+ *   ordered to avoid duplicate pairs)
+ * - `count`: Number of review runs where both dimensions had findings
+ * - `frequency`: Proportion of all scanned reviews where both fired (0–1)
+ */
+export interface CoOccurrence {
+  dimensionA: string;
+  dimensionB: string;
+  count: number;
+  frequency: number;
+}
+
+/**
+ * Top-level report from the pattern extractor, aggregating dimension
+ * statistics, co-occurrence matrix, and high-frequency patterns.
+ *
+ * Designed as the output contract for `PatternExtractor.extract()` and
+ * consumed by threshold auto-calibration and dynamic rule injection stages.
+ *
+ * - `scannedRecords`: number of historical PlanState records examined
+ * - `source`: identifies which critic pipeline(s) the data comes from
+ * - `dimensions`: per-dimension stats, sorted by total descending
+ * - `coOccurrences`: co-occurrence pairs, sorted by frequency descending
+ * - `topPatterns`: recurring finding patterns (by message prefix),
+ *   capped at 20 entries, sorted by frequency descending
+ * - `generatedAt`: ISO-8601 timestamp of report generation
+ */
+export interface PatternExtractorReport {
+  scannedRecords: number;
+  source: "diff-critic" | "plan-critic" | "mixed";
+  dimensions: DimensionStat[];
+  coOccurrences: CoOccurrence[];
+  topPatterns: Array<{
+    dimension: string;
+    description: string;
+    frequency: number;
+    topSeverity: DcSeverity;
+  }>;
+  generatedAt: string;
+}
