@@ -837,3 +837,48 @@ export interface TrendAnalysisConfig {
   oscillationSignChanges: number;
   minWindowSize: number;
 }
+
+/* ── Early stop trigger types ── */
+
+/**
+ * Configuration for the convergence plateau early stop trigger.
+ *
+ * When all three convergence metrics (rule entropy, FPR drift, coverage CV)
+ * exhibit a flat slope (|slope| < slopeEpsilon) for `plateauRounds` consecutive
+ * rounds, the early stop trigger fires and freezes the current rule version.
+ *
+ * - `slopeEpsilon`: absolute slope threshold below which a metric is considered
+ *   flat (default 0.01). Matches TrendAnalysisConfig.slopeEpsilon for consistency.
+ * - `plateauRounds`: number of consecutive rounds all three metrics must be
+ *   converging to trigger early stop (default 5)
+ * - `minRounds`: minimum total rounds that must have elapsed before early stop
+ *   can trigger. Prevents premature stopping during the warm-up phase (default 10)
+ */
+export interface EarlyStopConfig {
+  slopeEpsilon: number;
+  plateauRounds: number;
+  minRounds: number;
+}
+
+/**
+ * Decision output from the convergence plateau early stop trigger.
+ *
+ * - `shouldStop`: true when the plateau condition has been sustained for
+ *   `plateauRounds` consecutive evaluations
+ * - `reason`: human-readable explanation of the decision (why stopped or why not)
+ * - `plateauDuration`: how many consecutive rounds the all-three-converging
+ *   condition has been true at the time of evaluation
+ * - `frozenVersion`: the iteration round number at which the rule set was frozen,
+ *   or null if not stopping
+ * - `triggeredAt`: ISO-8601 timestamp when this decision was computed
+ * - `trendAnalysis`: the ConvergenceTrendAnalysis snapshot used to evaluate
+ *   the plateau condition at this round
+ */
+export interface EarlyStopDecision {
+  shouldStop: boolean;
+  reason: string;
+  plateauDuration: number;
+  frozenVersion: number | null;
+  triggeredAt: string;
+  trendAnalysis: ConvergenceTrendAnalysis;
+}
