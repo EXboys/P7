@@ -589,6 +589,62 @@ export interface ConvergenceMetrics {
 }
 
 /**
+ * Adaptive trigger configuration: thresholds for the convergence decision matrix.
+ *
+ * The decision matrix combines three indicators to determine the iteration
+ * lifecycle action:
+ * 1. Rule entropy normalized (0-1) — fragmentation
+ * 2. FPR trend drift — effectiveness decay
+ * 3. Coverage stability CV — balance
+ *
+ * Default heuristics (subject to empirical tuning):
+ * - entropyLow: 0.3 — below this, rules are concentrated enough to converge
+ * - entropyHigh: 0.7 — above this, rules are too fragmented, need consolidation
+ * - fprDriftAlert: 0.03 — above this triggers alert, signaling potential degradation
+ * - fprDriftRollback: 0.10 — above this triggers automatic rollback
+ * - cvAlert: 0.5 — above this triggers imbalance alert
+ * - cvRollback: 0.8 — above this triggers automatic rollback
+ */
+export interface AdaptiveTriggerConfig {
+  entropyLow: number;
+  entropyHigh: number;
+  fprDriftAlert: number;
+  fprDriftRollback: number;
+  cvAlert: number;
+  cvRollback: number;
+}
+
+/**
+ * Decision action output from the adaptive trigger joint decision matrix.
+ *
+ * - `continue`: all indicators within normal range; proceed with next iteration
+ * - `alert`: one or more indicators crossed the alert threshold; notify but continue
+ * - `freeze`: entropy or coverage imbalance is high; freeze iterations until consolidated
+ * - `rollback`: FPR drift or CV crossed the rollback threshold; revert last iteration
+ */
+export type TriggerAction = "continue" | "alert" | "freeze" | "rollback";
+
+/**
+ * Result of the adaptive trigger joint decision matrix evaluation.
+ *
+ * Combines the three convergence metrics with the configured thresholds
+ * to produce a deterministic action recommendation, along with the
+ * specific indicators that triggered the decision.
+ *
+ * - `action`: recommended lifecycle action based on threshold evaluation
+ * - `triggeredBy`: list of metric names that crossed their alert/rollback
+ *   thresholds (e.g. `["fprTrendDrift", "ruleEntropy"]`), empty for continue
+ * - `convergenceMetrics`: snapshot of the metrics at decision time
+ * - `config`: effective threshold configuration used for this decision
+ */
+export interface TriggerDecision {
+  action: TriggerAction;
+  triggeredBy: string[];
+  convergenceMetrics: ConvergenceMetrics;
+  config: AdaptiveTriggerConfig;
+}
+
+/**
  * A single convergence snapshot stored in the convergence_snapshots table.
  *
  * Each row persists computed ConvergenceMetrics at a specific point in the
