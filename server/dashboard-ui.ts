@@ -1848,46 +1848,86 @@ export function renderVulnerabilityPanel(opts: {
     severity: "blocker" | "warning" | "info";
     dimension: string;
     message: string;
+    file?: string;
+    line?: number;
+    code?: string;
   }>;
   trendChartHtml?: string;
+  filterSeverity?: string;
 }): string {
   const base = `/project/${encodeURIComponent(opts.alias)}`;
+  const fs = opts.filterSeverity;
+  const isFiltered = fs === "blocker" || fs === "warning" || fs === "info";
 
   const badge = (severity: "blocker" | "warning" | "info"): string => {
     const cls = severity === "blocker" ? "fail" : severity === "warning" ? "warn" : "idle";
     return `<span class="badge ${cls}">${severity}</span>`;
   };
 
+  /** Render a clickable severity metric card linking to filtered view. */
+  function severityCardLink(
+    count: number,
+    label: string,
+    severity: "blocker" | "warning" | "info",
+    tone?: "warn" | "alert",
+  ): string {
+    const href = `${base}/vulnerabilities?severity=${severity}`;
+    const toneCls = tone ? ` ${tone}` : "";
+    const activeStyle =
+      isFiltered && fs === severity
+        ? ' style="border-color:var(--accent);background:var(--accent-soft)"'
+        : "";
+    return `<a href="${href}" class="metric${toneCls}"${activeStyle}><div class="n">${esc(String(count))}</div><div class="l">${esc(label)}</div></a>`;
+  }
+
+  const filteredFindings = isFiltered
+    ? opts.findings.filter((f) => f.severity === fs)
+    : opts.findings;
+
   const emptyHtml =
-    opts.total === 0
+    filteredFindings.length === 0
       ? `<div class="empty"><p>暂未发现漏洞。先执行 diff-critic 扫描。</p><a class="btn ghost sm" href="${base}/run">前往执行</a></div>`
       : "";
 
-  const rows = opts.findings
-    .map(
-      (f) =>
-        `<tr><td><a href="${base}/plans/${encodeURIComponent(f.planId)}">${esc(f.title)}</a></td>
+  // Show location columns (file / line / code) only in drill-down mode
+  const showLocation = isFiltered;
+
+  const rows = filteredFindings
+    .map((f) => {
+      const msgText = isFiltered ? f.message : f.message.slice(0, 120);
+      const fileCell = showLocation
+        ? `<td class="muted" style="max-width:180px;word-break:break-word;font-size:12px"><code>${esc(f.file ?? "—")}${f.line != null ? `:${f.line}` : ""}</code></td>`
+        : "";
+      const codeCell = showLocation
+        ? `<td class="muted" style="max-width:200px;word-break:break-word;font-size:12px"><code>${esc(f.code ? f.code.slice(0, 80) : "—")}</code></td>`
+        : "";
+      return `<tr><td><a href="${base}/plans/${encodeURIComponent(f.planId)}">${esc(f.title)}</a></td>
 <td>${badge(f.severity)}</td>
-<td class="muted">${esc(f.dimension)}</td>
-<td class="muted" style="max-width:320px;word-break:break-word">${esc(f.message.slice(0, 120))}</td></tr>`,
-    )
+<td class="muted">${esc(f.dimension)}</td>${fileCell}${codeCell}
+<td class="muted" style="max-width:320px;word-break:break-word">${esc(msgText)}</td></tr>`;
+    })
     .join("");
 
+  const headers = `<th>Plan</th><th>Severity</th><th>维度</th>${
+    showLocation ? "<th>位置</th><th>代码</th>" : ""
+  }<th>描述</th>`;
+
   const tableHtml =
-    opts.total > 0
-      ? `<div class="tbl-wrap"><table><thead><tr><th>Plan</th><th>Severity</th><th>维度</th><th>描述</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    filteredFindings.length > 0
+      ? `<div class="tbl-wrap"><table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`
       : "";
 
   return `<div>
 <div class="cards">
 ${metricCard(opts.total, "发现总数")}
-${metricCard(opts.blockerCount, "Blocker", opts.blockerCount > 0 ? "alert" : undefined)}
-${metricCard(opts.warningCount, "Warning", opts.warningCount > 0 ? "warn" : undefined)}
-${metricCard(opts.infoCount, "Info")}
+${severityCardLink(opts.blockerCount, "Blocker", "blocker", opts.blockerCount > 0 ? "alert" : undefined)}
+${severityCardLink(opts.warningCount, "Warning", "warning", opts.warningCount > 0 ? "warn" : undefined)}
+${severityCardLink(opts.infoCount, "Info", "info")}
+${isFiltered ? `<a href="${base}/vulnerabilities" class="btn ghost sm" style="align-self:center">显示全部</a>` : ""}
 </div>
 ${opts.trendChartHtml || ""}
 <div class="panel">
-<div class="panel-head"><h2>最近发现</h2><span class="muted" style="font-size:12px">显示 ${opts.findings.length} 条 / 共 ${opts.total} 条</span></div>
+<div class="panel-head"><h2>最近发现</h2><span class="muted" style="font-size:12px">显示 ${filteredFindings.length} 条 / 共 ${opts.total} 条</span></div>
 ${emptyHtml || tableHtml}
 </div>
 </div>`;
