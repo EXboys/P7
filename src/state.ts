@@ -696,6 +696,27 @@ export function recordBackpressureEvent(
   });
 }
 
+/**
+ * 列出所有 diff_critic_findings 非空的 PlanState 记录，按 updated_at 降序排列。
+ * 用于模式提炼器从历史 diff-critic 评审记录中提取高频失败模式类别与判定边界线索。
+ */
+export function listPlansWithDiffCriticFindings(
+  projectPath: string,
+  limit = 50,
+  offset = 0,
+): PlanState[] {
+  const db = initDb(projectPath);
+  const rows = db
+    .query(
+      `SELECT * FROM plan_states
+       WHERE diff_critic_findings IS NOT NULL AND diff_critic_findings != ''
+       ORDER BY updated_at DESC
+       LIMIT $limit OFFSET $offset`,
+    )
+    .all({ $limit: limit, $offset: offset }) as Record<string, unknown>[];
+  return rows.map(rowToPlanState);
+}
+
 /** 查询今日/本月成本汇总，含按 goal 维度的归因 */
 export function queryDailyCostSummary(projectPath: string): CostSummary {
   const db = initDb(projectPath);
