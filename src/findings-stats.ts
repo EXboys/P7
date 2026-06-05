@@ -213,6 +213,46 @@ function buildPromptTuningInput(
   };
 }
 
+interface CweBreakdownEntry {
+  cweId: string;
+  total: number;
+  bySeverity: Record<DcSeverity, number>;
+}
+
+/**
+ * Group vulnerability-dimension findings by CWE identifier and compute
+ * per-CWE severity distribution for the dynamic_rules CWE breakdown table.
+ *
+ * Returns an empty array when no vulnerability findings with CWE IDs exist —
+ * callers MUST check the length before rendering to avoid empty table headers.
+ */
+function computeCweBreakdown(
+  plans: Array<{ planId: string; findings: DiffCriticFinding[] }>,
+): CweBreakdownEntry[] {
+  const vulnFindings = plans
+    .flatMap((p) => p.findings)
+    .filter((f) => f.dimension === "漏洞发现" && f.cweId);
+
+  const groups = new Map<string, DiffCriticFinding[]>();
+  for (const f of vulnFindings) {
+    const cwe = f.cweId!;
+    if (!groups.has(cwe)) groups.set(cwe, []);
+    groups.get(cwe)!.push(f);
+  }
+
+  const entries: CweBreakdownEntry[] = [];
+  for (const [cweId, group] of groups) {
+    const bySeverity: Record<DcSeverity, number> = { info: 0, warning: 0, blocker: 0 };
+    for (const f of group) {
+      bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
+    }
+    entries.push({ cweId, total: group.length, bySeverity });
+  }
+
+  entries.sort((a, b) => b.total - a.total);
+  return entries;
+}
+
 /**
  * Build a formatted markdown string of historical findings patterns
  * for injection into critic prompt templates as `{{dynamic_rules}}`.
@@ -255,6 +295,19 @@ export function buildDynamicRules(projectPath: string): string | null {
     for (const p of top) {
       lines.push(
         `- [${p.dimension}] "${p.description}" — 出现 ${p.frequency} 次（最高严重度: ${p.topSeverity}）`,
+      );
+    }
+    lines.push("");
+  }
+
+  const cweBreakdown = computeCweBreakdown(plans);
+  if (cweBreakdown.length > 0) {
+    lines.push("CWE 漏洞分布：");
+    lines.push("| CWE ID | 数量 | info | warning | blocker |");
+    lines.push("|--------|------|------|---------|---------|");
+    for (const entry of cweBreakdown) {
+      lines.push(
+        `| ${entry.cweId} | ${entry.total} | ${entry.bySeverity.info ?? 0} | ${entry.bySeverity.warning ?? 0} | ${entry.bySeverity.blocker ?? 0} |`,
       );
     }
     lines.push("");
