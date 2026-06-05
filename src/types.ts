@@ -759,3 +759,81 @@ export interface ConvergenceCurve {
   totalRounds: number;
   generatedAt: string;
 }
+
+/* ── Convergence trend analysis types ── */
+
+/**
+ * Direction classification for a single metric's trend.
+ *
+ * - `converging`: slope is near zero (within ε) and R² is adequate —
+ *   metric has stabilised within the sliding window
+ * - `diverging`: slope magnitude is significant and R² is adequate —
+ *   metric is trending away from the target level
+ * - `oscillating`: high sign-change frequency in consecutive deltas —
+ *   metric is unstable, alternating direction each round
+ * - `insufficient_data`: too few data points for reliable regression,
+ *   or R² is too low to trust the fit
+ */
+export type TrendDirection = "converging" | "diverging" | "oscillating" | "insufficient_data";
+
+/**
+ * Ordinary Least Squares regression result for a single metric.
+ *
+ * - `metricName`: which metric was analysed (e.g. "normalizedEntropy",
+ *   "fprDrift", "coverageCv")
+ * - `slope`: OLS slope estimate — per-round rate of change
+ * - `intercept`: OLS intercept estimate — estimated value at round 0
+ * - `rSquared`: coefficient of determination (0–1); goodness of fit
+ * - `direction`: classified trend direction based on thresholds
+ * - `windowSize`: actual number of data points included (≤ config.windowSize)
+ */
+export interface MetricTrend {
+  metricName: string;
+  slope: number;
+  intercept: number;
+  rSquared: number;
+  direction: TrendDirection;
+  windowSize: number;
+}
+
+/**
+ * Combined trend analysis across all three convergence metrics.
+ *
+ * Each metric is independently analysed via sliding-window regression.
+ * The `verdict` is an aggregate priority vote: diverging > oscillating >
+ * converging > insufficient_data.
+ *
+ * - `entropyTrend`: regression & classification for normalized rule entropy
+ * - `fprDriftTrend`: regression & classification for FPR drift
+ * - `coverageCvTrend`: regression & classification for coverage CV
+ * - `verdict`: aggregate convergence verdict across all three metrics
+ * - `analyzedAt`: ISO-8601 timestamp when the analysis was performed
+ */
+export interface ConvergenceTrendAnalysis {
+  entropyTrend: MetricTrend;
+  fprDriftTrend: MetricTrend;
+  coverageCvTrend: MetricTrend;
+  verdict: TrendDirection;
+  analyzedAt: string;
+}
+
+/**
+ * Configuration for trend analysis sliding-window regression.
+ *
+ * All thresholds are initial heuristics and should be empirically tuned
+ * once production convergence data is available.
+ *
+ * - `windowSize`: number of most recent rounds to include (default 8)
+ * - `slopeEpsilon`: absolute slope below which trend is flat (default 0.01)
+ * - `rSquaredFloor`: minimum R² to trust the linear fit (default 0.6)
+ * - `oscillationSignChanges`: minimum number of sign changes in consecutive
+ *   deltas to classify as oscillating (default 3)
+ * - `minWindowSize`: minimum data points required for any analysis (default 5)
+ */
+export interface TrendAnalysisConfig {
+  windowSize: number;
+  slopeEpsilon: number;
+  rSquaredFloor: number;
+  oscillationSignChanges: number;
+  minWindowSize: number;
+}
