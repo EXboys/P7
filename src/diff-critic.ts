@@ -1,7 +1,7 @@
 import { readPrompt, renderPrompt, runSdkQuery } from "./sdk.ts";
 import { addSdkCost, emptySdkCost, type SdkCostSummary } from "./sdk-cost.ts";
 import type { DiffCriticFinding, DcSeverity } from "./types.ts";
-import { buildDynamicRules } from "./findings-stats.ts";
+import { buildDynamicRules, buildThreatModelPreamble } from "./findings-stats.ts";
 
 /* ── AI 生成代码特征维度声明 ── */
 
@@ -79,7 +79,11 @@ export async function reviewDiff(
 ): Promise<{ ok: boolean; findings: string; structuredFindings: DiffCriticFinding[]; cost?: SdkCostSummary }> {
   try {
     const dynamicRules = buildDynamicRules(projectPath);
-    const system = renderPrompt("diff-critic.md", { dynamic_rules: dynamicRules });
+    const threatModel = buildThreatModelPreamble(diffStat);
+    const system = renderPrompt("diff-critic.md", {
+      dynamic_rules: dynamicRules ?? "",
+      threat_model: threatModel ?? "",
+    });
     const { text, costUsd, usage } = await runSdkQuery({
       prompt: `## 计划摘要\n${planSummary}\n\n## git diff --stat\n\`\`\`\n${diffStat}\n\`\`\`\n\n请审查。`,
       cwd: projectPath,
