@@ -12,6 +12,7 @@ export const AI_CODE_DIMENSIONS = [
   "不合理嵌套",
   "幻觉检测",
   "安全越狱",
+  "漏洞发现",
 ] as const;
 
 export type AiCodeDimension = (typeof AI_CODE_DIMENSIONS)[number];

@@ -199,6 +199,12 @@ export interface DiffCriticFinding {
   file?: string;
   line?: number;
   code?: string;
+  /** CWE identifier for vulnerability findings, e.g. "CWE-89", "CWE-79" */
+  cweId?: string;
+  /** Confidence score 0–1 for vulnerability detection certainty */
+  confidence?: number;
+  /** Suggested remediation guidance for vulnerability findings */
+  remediation?: string;
 }
 
 /* ── Gradual type-check config types ── */
