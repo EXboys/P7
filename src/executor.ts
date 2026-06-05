@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { devAgentDir } from "./config.ts";
 import type { DevAgentConfig } from "./config.ts";
 import { reviewDiff } from "./diff-critic.ts";
+import { reviewDiffWithRouting } from "./evaluator-middleware.ts";
 import { appendLesson } from "./agent-memory.ts";
 import { markRoadmapStepDone } from "./roadmap.ts";
 import { refreshRoadmapIfExhausted } from "./roadmap-refresh.ts";
@@ -663,7 +664,7 @@ export async function executePlan(
 
     const criticStart = new Date().toISOString();
     writeStepState({ step_name: "diff_critic", status: "running", started_at: criticStart });
-    const critic = await reviewDiff(wt.path, diffStatOut, plan.title);
+    const critic = await reviewDiffWithRouting(wt.path, diffStatOut, plan.title, stats, plan);
     if (critic.cost) sdkCost = addSdkCost(sdkCost, critic.cost);
 
     if (!critic.ok) {
