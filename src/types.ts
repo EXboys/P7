@@ -489,6 +489,18 @@ export interface PatternExtractorReport {
 /* ── Dynamic rules convergence metric types ── */
 
 /**
+ * Per-dimension weight configuration for weighted convergence metric computation.
+ *
+ * Keys are dimension names (e.g. "漏洞发现"), values are multipliers applied
+ * to rule counts when computing entropy, coverage stability, and other metrics.
+ * Dimensions not present in the map default to 1.0 (no weighting).
+ *
+ * Used by computeRuleEntropy and computeCoverageStability to bias convergence
+ * metrics toward dimensions with higher strategic importance.
+ */
+export type DimensionWeights = Record<string, number>;
+
+/**
  * A single dynamic rule entity within the self-iteration loop.
  *
  * Each rule associates a critic dimension with a pattern signature and
