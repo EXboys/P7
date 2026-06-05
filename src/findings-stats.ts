@@ -10,6 +10,22 @@ import type {
 } from "./types.ts";
 
 /**
+ * Security-relevant file path pattern categories for threat model preamble
+ * generation. Each group pairs an array of substring patterns (case-insensitive
+ * match against lowercased file path) with a concise Chinese label.
+ */
+const THREAT_PATTERNS: Array<{ patterns: string[]; label: string }> = [
+  { patterns: ["route", "api", "endpoint", "controller", "router", "handler", "middleware"], label: "路由/API" },
+  { patterns: ["db", "sql", "schema", "migration", "query", "database", "repository", "model", "orm"], label: "数据层" },
+  { patterns: ["shell", "exec", "cmd", "command", "spawn", "child_process"], label: "命令执行" },
+  { patterns: ["crypto", "encrypt", "decrypt", "cipher", "hash", "salt"], label: "加密" },
+  { patterns: ["auth", "login", "session", "token", "jwt", "permission", "rbac", "oauth", "credential"], label: "鉴权" },
+  { patterns: ["upload", "download", "file", "fs", "filesystem", "path", "stream"], label: "文件操作" },
+  { patterns: ["input", "form", "param", "validate", "sanitize", "xss", "inject"], label: "输入处理" },
+  { patterns: ["config", "secret", "key", "env", "cert"], label: "密钥配置" },
+];
+
+/**
  * Query `plan_states` for all records with non-null findings text
  * (`findings` or `diff_critic_findings` columns), parse each via
  * `parseFindings()`, and return the results grouped by plan ID.
@@ -314,4 +330,67 @@ export function buildDynamicRules(projectPath: string): string | null {
   }
 
   return lines.join("\n");
+}
+
+/**
+ * Parse file path strings from a `git diff --stat` output.
+ * Extracts paths from standard diff-stat lines like:
+ * ```
+ *  src/file.ts | 2 +-
+ *  src/db/query.ts | 10 ++++++++++
+ * ```
+ * Skips binary file indicators and deleted-file markers.
+ * Returns an empty array when the input has no parseable paths.
+ */
+function parseDiffStatPaths(diffStat: string): string[] {
+  const paths: string[] = [];
+  for (const line of diffStat.split("\n")) {
+    const m = line.match(/^\s*(.+?)\s+\|\s+\d+/);
+    if (m) {
+      const path = m[1].trim();
+      if (path !== "deleted" && !path.startsWith("Bin")) {
+        paths.push(path);
+      }
+    }
+  }
+  return paths;
+}
+
+/**
+ * Scan diff stat output for security-relevant file path patterns and generate
+ * a concise attack surface preamble (~50 tokens) for injection into the critic
+ * prompt's threat model section.
+ *
+ * Checks file paths against categories: routes/API, database, shell/command
+ * execution, cryptography, authentication, file operations, input handling,
+ * and secrets/config. Each matched category is included in the output.
+ *
+ * Returns a compact Chinese markdown paragraph (~50 tokens) listing the
+ * affected security domains, or `null` if no relevant patterns are found.
+ * Callers should pass the result through `renderPrompt` with a
+ * `{{$if threat_model}}` guard so the section is cleanly omitted.
+ *
+ * @param diffStat — raw `git diff --stat` string (same value passed to reviewDiff)
+ */
+export function buildThreatModelPreamble(diffStat: string): string | null {
+  const paths = parseDiffStatPaths(diffStat);
+  if (paths.length === 0) return null;
+
+  const lowerPaths = paths.map((p) => p.toLowerCase());
+  const matched = new Set<string>();
+
+  for (const { patterns, label } of THREAT_PATTERNS) {
+    for (const fp of lowerPaths) {
+      for (const pat of patterns) {
+        if (fp.includes(pat)) {
+          matched.add(label);
+          break;
+        }
+      }
+    }
+  }
+
+  if (matched.size === 0) return null;
+
+  return `攻击面: ${[...matched].join("、")}。审查时重点关注该上下文中的注入、越权、泄露、路径遍历等经典漏洞。`;
 }
