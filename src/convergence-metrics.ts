@@ -27,6 +27,9 @@ import type {
   FprTrendDriftMetric,
   CoverageStabilityMetric,
   ConvergenceMetrics,
+  AdaptiveTriggerConfig,
+  TriggerAction,
+  TriggerDecision,
 } from "./types.ts";
 
 /**
@@ -171,4 +174,123 @@ export function computeAllMetrics(
     coverageStability: computeCoverageStability(rules, cvThreshold),
     computedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Default adaptive trigger thresholds.
+ *
+ * These are initial heuristics that MUST be empirically tuned via the
+ * convergence observability panel once production data is available.
+ *
+ * - `entropyLow`: 0.3  — below this, rules are concentrated enough to converge
+ * - `entropyHigh`: 0.7 — above this, rules are too fragmented, need consolidation
+ * - `fprDriftAlert`: 0.03  — above this triggers alert, signaling potential degradation
+ * - `fprDriftRollback`: 0.10 — above this triggers automatic rollback
+ * - `cvAlert`: 0.5  — above this triggers imbalance alert
+ * - `cvRollback`: 0.8 — above this triggers automatic rollback
+ */
+export const DEFAULT_TRIGGER_CONFIG: AdaptiveTriggerConfig = {
+  entropyLow: 0.3,
+  entropyHigh: 0.7,
+  fprDriftAlert: 0.03,
+  fprDriftRollback: 0.10,
+  cvAlert: 0.5,
+  cvRollback: 0.8,
+};
+
+/**
+ * Classify normalised entropy into low / medium / high buckets.
+ *
+ * - **low** (→ converge): `normalizedEntropy < entropyLow`
+ *   Rules are concentrated in a few dimensions; iteration is converging.
+ * - **medium** (→ explore): `entropyLow ≤ normalizedEntropy < entropyHigh`
+ *   Rules are moderately spread; still in exploration phase.
+ * - **high** (→ consolidate): `normalizedEntropy ≥ entropyHigh`
+ *   Rules are highly fragmented; consolidation is needed before further iteration.
+ */
+function classifyEntropyLevel(
+  normalizedEntropy: number,
+  entropyLow: number,
+  entropyHigh: number,
+): "low" | "medium" | "high" {
+  if (normalizedEntropy >= entropyHigh) return "high";
+  if (normalizedEntropy >= entropyLow) return "medium";
+  return "low";
+}
+
+/**
+ * Evaluate the joint decision matrix and produce a lifecycle action.
+ *
+ * The matrix combines three indicators — rule entropy, FPR trend drift,
+ * and coverage stability CV — against configurable thresholds, using
+ * a deterministic priority cascade:
+ *
+ * 1. **rollback** — FPR drift ≥ `fprDriftRollback` **or** CV ≥ `cvRollback`
+ *    (rule effectiveness has degraded or coverage is severely imbalanced)
+ * 2. **freeze** — entropy is **high** (≥ entropyHigh) — fragmentation too large
+ *    **or** entropy is medium **and** CV ≥ cvAlert
+ *    (consolidation required before next iteration)
+ * 3. **alert** — FPR drift ≥ `fprDriftAlert`, **or** entropy is medium,
+ *    **or** CV ≥ cvAlert
+ *    (notify operator but allow iteration to continue)
+ * 4. **continue** — all indicators within normal bounds
+ *
+ * @param metrics - Pre-computed convergence metrics snapshot
+ * @param config  - Threshold configuration (omit for defaults)
+ * @returns Decision result with action, triggered-by labels, and snapshot
+ */
+export function evaluateAdaptiveTrigger(
+  metrics: ConvergenceMetrics,
+  config: AdaptiveTriggerConfig = DEFAULT_TRIGGER_CONFIG,
+): TriggerDecision {
+  const triggeredBy: string[] = [];
+  const { ruleEntropy, fprTrendDrift, coverageStability } = metrics;
+
+  const entropyLevel = classifyEntropyLevel(
+    ruleEntropy.normalizedEntropy,
+    config.entropyLow,
+    config.entropyHigh,
+  );
+
+  let action: TriggerAction;
+
+  // ── Priority 1: rollback (irreversible degradation) ──
+  if (fprTrendDrift.drift >= config.fprDriftRollback) {
+    action = "rollback";
+    triggeredBy.push("fprTrendDrift");
+  } else if (coverageStability.coefficientOfVariation >= config.cvRollback) {
+    action = "rollback";
+    triggeredBy.push("coverageStability");
+  }
+
+  // ── Priority 2: freeze (needs consolidation) ──
+  else if (entropyLevel === "high") {
+    action = "freeze";
+    triggeredBy.push("ruleEntropy");
+  } else if (
+    entropyLevel === "medium" &&
+    coverageStability.coefficientOfVariation >= config.cvAlert
+  ) {
+    action = "freeze";
+    triggeredBy.push("ruleEntropy", "coverageStability");
+  }
+
+  // ── Priority 3: alert (monitor-worthy but not blocking) ──
+  else if (fprTrendDrift.drift >= config.fprDriftAlert) {
+    action = "alert";
+    triggeredBy.push("fprTrendDrift");
+  } else if (entropyLevel === "medium") {
+    action = "alert";
+    triggeredBy.push("ruleEntropy");
+  } else if (coverageStability.coefficientOfVariation >= config.cvAlert) {
+    action = "alert";
+    triggeredBy.push("coverageStability");
+  }
+
+  // ── Priority 4: continue (all clear) ──
+  else {
+    action = "continue";
+  }
+
+  return { action, triggeredBy, convergenceMetrics: metrics, config };
 }
