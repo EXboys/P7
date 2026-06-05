@@ -85,6 +85,7 @@ import {
   renderJobsPage,
   discoverToolbar,
   renderTrendsPage,
+  renderSeverityTrendChart,
   renderVulnerabilityPanel,
   resolveProject,
   statusBadge,
@@ -977,8 +978,11 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
       message: string;
     }> = [];
 
+    let body = "";
+
     if (existsSync(proj.path)) {
       const states = listPlanStates(proj.path, 100);
+      const dailyMap = new Map<string, { blocker: number; warning: number; info: number }>();
       for (const state of states) {
         if (!state.diffCriticFindings) continue;
         const parsed = parseFindings(state.diffCriticFindings);
@@ -988,6 +992,17 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
           if (f.severity === "blocker") blockerCount++;
           else if (f.severity === "warning") warningCount++;
           else infoCount++;
+        }
+        // Daily aggregation for trend chart
+        const date = state.updatedAt ? state.updatedAt.slice(0, 10) : "";
+        if (date) {
+          if (!dailyMap.has(date)) dailyMap.set(date, { blocker: 0, warning: 0, info: 0 });
+          const bucket = dailyMap.get(date)!;
+          for (const f of parsed) {
+            if (f.severity === "blocker") bucket.blocker++;
+            else if (f.severity === "warning") bucket.warning++;
+            else bucket.info++;
+          }
         }
         for (const f of parsed.slice(0, 5)) {
           if (recent.length >= 50) break;
@@ -1001,16 +1016,23 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
         }
         if (recent.length >= 50) break;
       }
-    }
 
-    const body = renderVulnerabilityPanel({
-      alias,
-      total,
-      blockerCount,
-      warningCount,
-      infoCount,
-      findings: recent,
-    });
+      // Build sorted time-series trend points for the chart
+      const trendPoints = [...dailyMap.entries()]
+        .map(([date, counts]) => ({ date, ...counts }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+      const trendChartHtml = renderSeverityTrendChart(trendPoints);
+
+      body = renderVulnerabilityPanel({
+        alias,
+        total,
+        blockerCount,
+        warningCount,
+        infoCount,
+        findings: recent,
+        trendChartHtml,
+      });
+    }
 
     const html = projectShell(cfg, alias, "vulnerabilities", {
       title: "漏洞发现",
