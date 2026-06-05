@@ -164,6 +164,65 @@
 
 **审查策略**：维度 4（幻觉检测）与维度 5（安全越狱检测）是 AI 编码代理安全退化的直接映射——前者检测「引用不存在的东西」与「注释与代码矛盾」，后者检测「突破宿主安全边界」。两者均无法通过编译器检测且误报率高于前三类维度。实践中优先扫描 diff 中的新 import/新 HTTP 调用/新 shell 命令/新 tool 定义，遇到疑似案例一律降级为 `[info]` 标注，仅在确认存在实际威胁时升级为 `[warning/blocker]`。保持「宁可标注疑似也不遗漏真实风险」的原则。
 
+### 6. 漏洞发现（Vulnerability Discovery）
+
+**定义**：检测代码 diff 中引入的已知 CWE 类安全漏洞，重点覆盖 5 类高优漏洞模式。本维度与维度 5「安全越狱」互补——安全越狱聚焦 AI 代理主动绕过宿主安全边界的攻击性行为，「漏洞发现」聚焦非恶意的功能代码中意外引入的经典安全缺陷（如未消毒的 SQL 拼接、未转义的 XSS 输出、不安全的文件路径操作）。两者联合覆盖引入安全风险的完整谱系。
+
+**检测规则**：
+
+CWE-89 — SQL 注入（SQL Injection）：
+- 检查：是否将用户输入（URL 参数、请求体、header 值）直接拼接进 SQL 查询字符串
+- 检查：是否使用了字符串插值/模板字面量构造 SQL 语句而未使用参数化查询/预编译语句
+- 检查：ORM/查询构建器调用中是否直接拼接 `raw()` 或 `literal()` 参数
+- 检查：存储过程调用中是否将用户可控输入拼接到动态 SQL 片段
+
+CWE-79 — 跨站脚本（Cross-site Scripting / XSS）：
+- 检查：是否将用户输入直接输出到 HTML 模板、React JSX 或 innerHTML 而未经过安全转义
+- 检查：服务端渲染（SSR）中是否将未消毒的用户内容注入 `<script>`、`<style>`、`<iframe>` 标签
+- 检查：`dangerouslySetInnerHTML`、`v-html`、`innerHTML`、`insertAdjacentHTML` 是否用于用户可控内容
+- 检查：HTTP response header 中 `Content-Type` 或 `Content-Disposition` 是否包含用户输入
+- 检查：JSONP 回调函数名是否由用户控制
+
+CWE-22 — 路径遍历（Path Traversal）：
+- 检查：是否将用户输入直接拼接到文件路径操作中如 `fs.readFile(path.join(root, userInput))` 而未做路径规范化
+- 检查：是否存在 `../` 或绝对路径穿越检查缺失——仅做前缀检查而非规范化后校验
+- 检查：文件下载 API 中 `res.sendFile(userInput)` 是否做路径白名单验证
+- 检查：压缩包解压操作中是否检查 zip slip 路径穿越（条目名包含 `../`）
+
+CWE-77 / CWE-94 — 命令/代码注入（Command / Code Injection）：
+- 检查：是否将用户输入拼接到 `exec`、`spawn`（shell 模式）、`child_process` 的命令行参数中
+- 检查：`eval()`、`new Function()`、`setTimeout(callableString)` 是否包含用户可控字符串
+- 检查：动态 import 路径是否包含用户可控部分（可能导致任意模块加载）
+- 检查：模板引擎中 `render(userControlledTemplate)` 是否开启代码执行（如 Pug/EJS 的 `render` vs `renderFile`）
+
+CWE-200 — 信息泄露（Information Exposure）：
+- 检查：错误响应中是否泄露堆栈跟踪、SQL 查询、文件路径等内部细节
+- 检查：API 响应中是否返回了比客户端所需更多敏感字段（如密码 hash、API key、内部 ID）
+- 检查：调试端点、健康检查或日志端点是否在生产环境中可公开访问
+- 检查：GraphQL schema 内省是否在生产环境开启
+- 检查：环境变量、配置文件、密钥文件是否被意外暴露到客户端 bundle 或 chrome DevTools 可访问的源映射
+
+| AI 典型产出（正例） | 人工基准（应达到的水平） |
+|---|---|
+| `const sql = \`SELECT * FROM users WHERE id = '\${req.query.id}'\`` — 用户输入直接拼接 SQL（CWE-89） | 使用参数化查询：`db.query('SELECT * FROM users WHERE id = ?', [req.query.id])` |
+| `<div>{userInput}</div>` 在 SSR 模板中直接插值用户评论（CWE-79 反射型 XSS） | 使用自动转义模板引擎，或对用户输入进行 `encodeURIComponent`/`escapeHTML` 处理后输出 |
+| `res.sendFile(path.join(UPLOAD_DIR, req.params.filename))` — filename 为 `../../etc/passwd` 时穿越至目标路径（CWE-22） | 先规范化路径再校验前缀：`const safe = path.resolve(UPLOAD_DIR, filename); if (!safe.startsWith(UPLOAD_DIR)) throw new Error('invalid path')` |
+| `exec(\`convert \${req.file.path} -resize 200x200 output.png\`)` — 通过 shell 命令处理上传文件（CWE-77） | 使用纯库实现图片处理（如 Sharp），避免 shell 调用 |
+| `catch (e) { res.status(500).json({ error: e.stack }) }` — 将完整堆栈暴露给客户端（CWE-200） | `res.status(500).json({ error: 'Internal server error' })`，堆栈写入日志而非响应体 |
+| GraphQL `schema.build(options)` 在生产环境允许内省查询（CWE-200） | 生产环境禁用内省：`schema.build({ introspection: process.env.NODE_ENV !== 'production' })` |
+
+**严重程度分级**：
+
+| CWE 类 | info 条件 | warning 条件 | blocker 条件 |
+|---|---|---|---|
+| CWE-89 SQL 注入 | 使用 ORM 但未确认是否参数化 | 用户输入直接拼接 SQL 字符串（有参数化 API 可用） | 用户输入直接拼接 SQL 字符串且无任何参数化保护 |
+| CWE-79 XSS | 用户输入出现在 JSX/模板中但使用了自动转义机制 | 用户输入出现在 `dangerouslySetInnerHTML`/`v-html`/`innerHTML` 中 | 用户输入被插入 `<script>` 标签/事件处理器/SSR 直接输出 |
+| CWE-22 路径遍历 | 用户输入用于构造路径但白名单限制严格 | 用户输入直接拼接路径，未做规范化校验 | 路径遍历可达敏感文件（`/etc/passwd`、数据库文件、密钥文件） |
+| CWE-77/94 命令/代码注入 | 用户输入影响命令参数但使用 execFile/spawn（非 shell 模式） | eval/new Function 参数包含用户可控字符串 | exec/spawn shell 模式中用户输入构成完整命令执行链 |
+| CWE-200 信息泄露 | 调试日志级别在生产环境启用 | 错误响应包含堆栈跟踪/内部路径 | GraphQL 内省/密钥/环境变量暴露给外部客户端 |
+
+**判定**：确定存在漏洞 → 标注对应 CWE 编号并设置对应 severity（参考上表）；不确定是否存在漏洞但观察到可疑模式 → 降级为 `[info]` 标注 CWE 编号与观察到的可疑模式；非安全相关代码（如纯算法、无外部输入的内部工具函数）明确标注 `无漏洞：{原因}` 以避免噪音。与维度 5（安全越狱）存在重叠时优先归入「漏洞发现」——安全越狱聚焦 AI 代理的攻击性行为，漏洞发现聚焦经典安全缺陷。
+
 ### 严重程度总览
 
 | 缺陷类型 | warning 触发条件 | blocker 触发条件 |
@@ -173,6 +232,7 @@
 | 不合理嵌套 | 嵌套 ≥4 层且可通过 guard clause 消除 | 嵌套 ≥5 层或三元 ≥3 层嵌套 |
 | 幻觉检测 | 注释矛盾、类型不兼容、devDependencies 引用到生产代码 | 虚构 import/引用不存在 API、注释声称的安全防御未实现 |
 | 安全边界越狱 | 安全降级（CORS/CSRF/TLS 降级）、凭证泄露、工具调用参数越界 | 权限绕过/攻击工具链/命令注入/数据外泄/凭证泄露到日志/沙箱跨越/未认证管理入口 |
+| 漏洞发现 | 用户输入影响命令参数但使用非 shell 模式、错误含堆栈但限于调试环境、用户输入路径但白名单严格 | SQL 拼接（有参数化可用）、XSS 未转义（自动转义被绕过）、路径遍历未规范化、eval 含用户可控字符串、错误泄露堆栈到客户端 | SQL 拼接无参数化保护、XSS 注入 `<script>`、路径遍历至敏感文件、命令注入任意执行、GraphQL 内省/密钥外部暴露 |
 
 ### FINDINGS 标注规范与 Fallthrough
 
@@ -189,6 +249,11 @@
 - `[warning] AI 生成代码特征-安全越狱: 凭证泄露 {具体凭证类型}`
 - `[blocker] AI 生成代码特征-安全越狱: 凭证泄露到日志 {具体日志路径}`
 - `[warning/blocker] AI 生成代码特征-安全越狱: {具体越狱/外泄/沙箱跨越/工具越界/降级描述}`
+- `[blocker] AI 生成代码特征-漏洞发现: [CWE-89] SQL 注入 {具体注入点与影响}`
+- `[warning] AI 生成代码特征-漏洞发现: [CWE-79] XSS 风险 {具体输出点与上下文}`
+- `[warning] AI 生成代码特征-漏洞发现: [CWE-22] 路径穿越风险 {具体路径与上下文}`
+- `[blocker] AI 生成代码特征-漏洞发现: [CWE-77] 命令注入 {具体注入向量与影响}`
+- `[info] AI 生成代码特征-漏洞发现: [CWE-200] 信息泄露风险 {具体暴露路径}`（不确定是否可被外部利用时使用 info 等级）
 - `[info] 疑似AI特征: {观察到的模式}`（不确定时使用）
 - `[info] 疑似越狱模式: {观察到的模式}`（不确定时使用）
 
