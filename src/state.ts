@@ -331,6 +331,27 @@ export function initDb(projectPath: string): Database {
     /* exists */
   }
 
+  /* evaluator_route_stats table: records every routing decision for observability and cost tracking */
+  db.run(`
+    CREATE TABLE IF NOT EXISTS evaluator_route_stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      route_point TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      urgency TEXT NOT NULL,
+      selected_evaluator TEXT NOT NULL,
+      estimated_cost_usd REAL NOT NULL DEFAULT 0,
+      actual_cost_usd REAL NOT NULL DEFAULT 0,
+      latency_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `);
+  db.run(
+    `CREATE INDEX IF NOT EXISTS idx_eval_route_created ON evaluator_route_stats(created_at DESC)`,
+  );
+  db.run(
+    `CREATE INDEX IF NOT EXISTS idx_eval_route_evaluator ON evaluator_route_stats(selected_evaluator)`,
+  );
+
   migrateFromJsonIfNeeded(db, projectPath);
   dbCache.set(projectPath, db);
   return db;
@@ -767,6 +788,126 @@ export function queryDailyCostSummary(projectPath: string): CostSummary {
       planCount: r.cnt,
     })),
   };
+}
+
+/** Per-evaluator route stat, as written by writeEvalRouteStat. */
+export interface EvalRouteStatWrite {
+  routePoint: string;
+  tier: string;
+  urgency: string;
+  selectedEvaluator: string;
+  estimatedCostUsd: number;
+  actualCostUsd: number;
+  latencyMs: number;
+}
+
+/** Aggregated route stat for dashboard display. */
+export interface EvalRouteStatsRow {
+  selectedEvaluator: string;
+  callCount: number;
+  avgCostUsd: number;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+}
+
+/**
+ * Record a single evaluator routing decision to the evaluator_route_stats table.
+ *
+ * Called after every routed evaluation (diff-critic or plan-critic) to capture
+ * tier, urgency, evaluator choice, cost estimates, actual cost, and measured
+ * latency. This data powers the Run-page metric cards for observability and
+ * cost tracking.
+ */
+export function writeEvalRouteStat(
+  projectPath: string,
+  stat: EvalRouteStatWrite,
+): void {
+  const db = initDb(projectPath);
+  const stmt = db.prepare(`
+    INSERT INTO evaluator_route_stats (route_point, tier, urgency, selected_evaluator, estimated_cost_usd, actual_cost_usd, latency_ms, created_at)
+    VALUES ($route_point, $tier, $urgency, $selected_evaluator, $estimated_cost_usd, $actual_cost_usd, $latency_ms, $created_at)
+  `);
+  withBusyRetry(() => {
+    stmt.run({
+      $route_point: stat.routePoint,
+      $tier: stat.tier,
+      $urgency: stat.urgency,
+      $selected_evaluator: stat.selectedEvaluator,
+      $estimated_cost_usd: stat.estimatedCostUsd,
+      $actual_cost_usd: stat.actualCostUsd,
+      $latency_ms: stat.latencyMs,
+      $created_at: new Date().toISOString(),
+    });
+  });
+}
+
+/**
+ * Query aggregated evaluator route stats over a configurable lookback window.
+ *
+ * Returns per-evaluator call count, average cost, average latency, and
+ * p50/p95 latency distribution. Latency percentiles are computed in JS
+ * from the raw rows to avoid SQLite percentile-function availability issues.
+ *
+ * @param projectPath - Scoping project path
+ * @param days - Lookback window in days (default 7)
+ */
+export function queryEvalRouteStats(
+  projectPath: string,
+  days = 7,
+): EvalRouteStatsRow[] {
+  const db = initDb(projectPath);
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+
+  const rows = db
+    .query(
+      `SELECT selected_evaluator, actual_cost_usd, latency_ms
+       FROM evaluator_route_stats
+       WHERE created_at >= $since
+       ORDER BY created_at DESC`,
+    )
+    .all({ $since: since }) as { selected_evaluator: string; actual_cost_usd: number; latency_ms: number }[];
+
+  // Group by evaluator
+  const groups = new Map<string, { costs: number[]; latencies: number[] }>();
+  for (const r of rows) {
+    let g = groups.get(r.selected_evaluator);
+    if (!g) {
+      g = { costs: [], latencies: [] };
+      groups.set(r.selected_evaluator, g);
+    }
+    g.costs.push(r.actual_cost_usd);
+    g.latencies.push(r.latency_ms);
+  }
+
+  const result: EvalRouteStatsRow[] = [];
+  for (const [selectedEvaluator, g] of groups) {
+    const callCount = g.costs.length;
+    const avgCostUsd = g.costs.reduce((s, c) => s + c, 0) / callCount;
+    const avgLatencyMs = g.latencies.reduce((s, l) => s + l, 0) / callCount;
+
+    // p50/p95 from sorted latencies
+    const sorted = [...g.latencies].sort((a, b) => a - b);
+    const p50 = percentile(sorted, 0.5);
+    const p95 = percentile(sorted, 0.95);
+
+    result.push({ selectedEvaluator, callCount, avgCostUsd, avgLatencyMs, p50LatencyMs: p50, p95LatencyMs: p95 });
+  }
+
+  // Sort by call count descending for display
+  result.sort((a, b) => b.callCount - a.callCount);
+  return result;
+}
+
+/** Compute the p-th percentile from a sorted array. */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const idx = p * (sorted.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 }
 
 /**

@@ -31,6 +31,7 @@ import type { GemmaEvalConfig, GemmaSliceMeta, GemmaEvalResult } from "./gemma-b
 import type { DiffCriticFinding, DcSeverity, Plan } from "./types.ts";
 import type { SdkCostSummary } from "./sdk-cost.ts";
 import { reviewDiff } from "./diff-critic.ts";
+import { writeEvalRouteStat } from "./state.ts";
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Urgency detection
@@ -247,6 +248,7 @@ async function evaluatePlanViaGemma(plan: Plan): Promise<GemmaPlanEvalResult | n
  * observability without breaking downstream destructuring.
  */
 export async function reviewDiffWithRouting(
+  projectPath: string,
   wtPath: string,
   diffStatOut: string,
   planTitle: string,
@@ -257,22 +259,62 @@ export async function reviewDiffWithRouting(
   const urgency = detectCriticUrgency(plan);
   const decision = selectEvaluator(tier, urgency);
 
+  const routePoint = "diff_critic";
+  let actualCostUsd = 0;
+  let latencyMs = 0;
+  let result: { ok: boolean; findings: string; structuredFindings: DiffCriticFinding[]; cost?: SdkCostSummary };
+
   // Claude route: bypass Gemma entirely
   if (decision.evaluator === "claude") {
-    return reviewDiff(wtPath, diffStatOut, planTitle);
+    const t0 = performance.now();
+    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    latencyMs = Math.round(performance.now() - t0);
+    actualCostUsd = result.cost?.costUsd ?? 0;
+    writeEvalRouteStat(projectPath, {
+      routePoint, tier, urgency,
+      selectedEvaluator: "claude",
+      estimatedCostUsd: decision.estimatedCostUsd,
+      actualCostUsd,
+      latencyMs,
+    });
+    return result;
   }
 
   // Gemma route: try local evaluation
+  const gemmaT0 = performance.now();
   const gemmaResult = await evaluateDiffViaGemma(wtPath);
+  const gemmaLatency = Math.round(performance.now() - gemmaT0);
 
   if (!gemmaResult) {
     // Gemma unavailable — transparent fallback to Claude
-    return reviewDiff(wtPath, diffStatOut, planTitle);
+    const t0 = performance.now();
+    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    latencyMs = Math.round(performance.now() - t0);
+    actualCostUsd = result.cost?.costUsd ?? 0;
+    writeEvalRouteStat(projectPath, {
+      routePoint, tier, urgency,
+      selectedEvaluator: "claude",
+      estimatedCostUsd: decision.estimatedCostUsd,
+      actualCostUsd,
+      latencyMs: gemmaLatency + latencyMs,
+    });
+    return result;
   }
 
   // Check if fallback to Claude is warranted
   if (decision.evaluator === "gemma_with_fallback" && shouldFallbackToClaude(gemmaResult)) {
-    return reviewDiff(wtPath, diffStatOut, planTitle);
+    const t0 = performance.now();
+    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    latencyMs = Math.round(performance.now() - t0);
+    actualCostUsd = result.cost?.costUsd ?? 0;
+    writeEvalRouteStat(projectPath, {
+      routePoint, tier, urgency,
+      selectedEvaluator: "claude",
+      estimatedCostUsd: decision.estimatedCostUsd,
+      actualCostUsd,
+      latencyMs: gemmaLatency + latencyMs,
+    });
+    return result;
   }
 
   // Convert Gemma slice findings to standard DiffCriticFinding[]
@@ -287,6 +329,14 @@ export async function reviewDiffWithRouting(
     structuredFindings.length > 0
       ? structuredFindings.map((f) => `- [${f.severity}] ${f.dimension}: ${f.message}`).join("\n")
       : "";
+
+  writeEvalRouteStat(projectPath, {
+    routePoint, tier, urgency,
+    selectedEvaluator: "gemma",
+    estimatedCostUsd: decision.estimatedCostUsd,
+    actualCostUsd: 0,
+    latencyMs: gemmaLatency,
+  });
 
   return {
     ok: !hasBlocker,
@@ -314,13 +364,32 @@ export async function reviewDiffWithRouting(
  */
 export async function reviewPlanWithRouting(
   plan: Plan,
-  _projectPath: string,
+  projectPath: string,
 ): Promise<{ ok: boolean; feedback: string } | null> {
   const tier = classifyPlanComplexity(plan);
+  const routePoint = "plan_critic";
 
   // Complex plans always route to Claude (existing SDK path)
-  if (tier === "complex") return null;
+  if (tier === "complex") {
+    return null;
+  }
 
   // Simple/advisory plans: try Gemma fast-path
-  return evaluatePlanViaGemma(plan);
+  const t0 = performance.now();
+  const result = await evaluatePlanViaGemma(plan);
+  const latencyMs = Math.round(performance.now() - t0);
+
+  if (result) {
+    writeEvalRouteStat(projectPath, {
+      routePoint,
+      tier,
+      urgency: "advisory",
+      selectedEvaluator: "gemma",
+      estimatedCostUsd: 0,
+      actualCostUsd: 0,
+      latencyMs,
+    });
+  }
+
+  return result;
 }
