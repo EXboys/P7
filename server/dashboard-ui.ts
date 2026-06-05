@@ -334,6 +334,14 @@ a.meta-tile:hover{border-color:rgba(107,159,255,.4);background:rgba(107,159,255,
   .sidebar{width:100%;height:auto;max-height:none;position:relative}
   .content-head,.content-body{padding-left:16px;padding-right:16px}
 }
+.chart-wrap{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin-bottom:16px;box-shadow:var(--elev)}
+.chart-wrap h3{margin:0 0 12px;font-size:14px;font-weight:600}
+.chart-svg{width:100%;height:180px;display:block}
+.chart-svg text{font-family:"DM Sans",-apple-system,system-ui,sans-serif;font-size:10px;fill:var(--mut)}
+.chart-legend{display:flex;gap:16px;margin-bottom:10px;font-size:12px;flex-wrap:wrap}
+.chart-legend-item{display:flex;align-items:center;gap:6px;color:var(--mut)}
+.chart-legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.chart-empty{text-align:center;padding:32px 16px;color:var(--mut);font-size:13px}
 `;
 
 export type ProjectTab = "overview" | "trends" | "plan" | "run" | "review" | "vulnerabilities" | "settings";
@@ -1744,6 +1752,90 @@ ${themePills}
 </script>`;
 }
 
+export interface SeverityTrendPoint {
+  /** ISO date string (YYYY-MM-DD) */
+  date: string;
+  blocker: number;
+  warning: number;
+  info: number;
+}
+
+/**
+ * Render an inline SVG severity trend line chart with 3 polylines (blocker / warning / info).
+ * Y-axis auto-scales to the maximum value across all series.
+ * Returns an empty-state div when `points` is empty.
+ */
+export function renderSeverityTrendChart(points: SeverityTrendPoint[]): string {
+  if (points.length === 0) {
+    return `<div class="chart-wrap"><h3>Severity 趋势</h3><div class="chart-empty">暂无趋势数据</div></div>`;
+  }
+
+  const W = 600;
+  const H = 180;
+  const PL = 36; // left padding for Y-axis labels
+  const PR = 12;
+  const PT = 10;
+  const PB = 28; // bottom padding for X-axis date labels
+  const CW = W - PL - PR;
+  const CH = H - PT - PB;
+
+  // Determine Y-axis max
+  let maxVal = 0;
+  for (const p of points) {
+    maxVal = Math.max(maxVal, p.blocker, p.warning, p.info);
+  }
+  if (maxVal === 0) maxVal = 1;
+
+  const scaleY = (v: number): number => PT + CH - (v / maxVal) * CH;
+  const stepX = points.length > 1 ? CW / (points.length - 1) : CW / 2;
+  const getX = (i: number): number => PL + i * stepX;
+
+  const buildPoints = (sel: (p: SeverityTrendPoint) => number): string =>
+    points.map((p, i) => `${getX(i)},${scaleY(sel(p))}`).join(" ");
+
+  // Horizontal grid lines with Y-axis labels
+  const gridLines = [0, 0.25, 0.5, 0.75, 1]
+    .map((f) => {
+      const y = PT + CH - f * CH;
+      const label = Math.round(f * maxVal);
+      return `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="#232933" stroke-width="1"/><text x="${PL - 6}" y="${y + 3}" text-anchor="end">${label}</text>`;
+    })
+    .join("");
+
+  // X-axis date labels (MM-DD)
+  const dateLabels = points
+    .map((p, i) => {
+      const x = getX(i);
+      const label = p.date.slice(5); // "MM-DD"
+      const anchor = i === 0 ? "start" : i === points.length - 1 ? "end" : "middle";
+      return `<text x="${x}" y="${H - 6}" text-anchor="${anchor}">${label}</text>`;
+    })
+    .join("");
+
+  // Legend items
+  const series: { key: keyof SeverityTrendPoint; label: string; color: string }[] = [
+    { key: "blocker", label: "Blocker", color: "#f07178" },
+    { key: "warning", label: "Warning", color: "#e5b567" },
+    { key: "info", label: "Info", color: "#6b9fff" },
+  ];
+
+  const legendHtml = series
+    .map(
+      (s) =>
+        `<span class="chart-legend-item"><span class="chart-legend-dot" style="background:${s.color}"></span> ${s.label}</span>`,
+    )
+    .join("");
+
+  const polylines = series
+    .map(
+      (s) =>
+        `<polyline points="${buildPoints((p) => Number(p[s.key]))}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`,
+    )
+    .join("");
+
+  return `<div class="chart-wrap"><h3>Severity 趋势</h3><div class="chart-legend">${legendHtml}</div><svg class="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${gridLines}${polylines}${dateLabels}</svg></div>`;
+}
+
 export function renderVulnerabilityPanel(opts: {
   alias: string;
   total: number;
@@ -1757,6 +1849,7 @@ export function renderVulnerabilityPanel(opts: {
     dimension: string;
     message: string;
   }>;
+  trendChartHtml?: string;
 }): string {
   const base = `/project/${encodeURIComponent(opts.alias)}`;
 
@@ -1792,6 +1885,7 @@ ${metricCard(opts.blockerCount, "Blocker", opts.blockerCount > 0 ? "alert" : und
 ${metricCard(opts.warningCount, "Warning", opts.warningCount > 0 ? "warn" : undefined)}
 ${metricCard(opts.infoCount, "Info")}
 </div>
+${opts.trendChartHtml || ""}
 <div class="panel">
 <div class="panel-head"><h2>最近发现</h2><span class="muted" style="font-size:12px">显示 ${opts.findings.length} 条 / 共 ${opts.total} 条</span></div>
 ${emptyHtml || tableHtml}
