@@ -472,3 +472,118 @@ export interface PatternExtractorReport {
   }>;
   generatedAt: string;
 }
+
+/* ── Dynamic rules convergence metric types ── */
+
+/**
+ * A single dynamic rule entity within the self-iteration loop.
+ *
+ * Each rule associates a critic dimension with a pattern signature and
+ * tracks its hit/miss counters across iterations. The version field
+ * increments on each auto-tuning adjustment, enabling convergence
+ * tracking over the rule's lifecycle.
+ *
+ * - `dimension`: critic dimension this rule targets (e.g. "type-safety",
+ *   "complexity", "漏洞发现")
+ * - `pattern`: pattern prefix or message signature this rule matches
+ * - `hitCount`: number of times this rule has been triggered (hits)
+ * - `falsePositiveCount`: number of false positives identified for this rule
+ * - `falseNegativeCount`: number of false negatives identified for this rule
+ * - `version`: version number incremented on each auto-tuning iteration
+ */
+export interface DynamicRule {
+  dimension: string;
+  pattern: string;
+  hitCount: number;
+  falsePositiveCount: number;
+  falseNegativeCount: number;
+  version: number;
+}
+
+/**
+ * Rule entropy: information-theoretic measure of rule fragmentation
+ * across dimensions. Uses Shannon entropy `H = -Σ(pᵢ × log₂(pᵢ))`
+ * where `pᵢ` is the proportion of rules in dimension `i`.
+ *
+ * Lower entropy indicates rules are concentrated in a few dimensions
+ * (focused iteration, converging); higher entropy indicates rules are
+ * spreading across many dimensions (exploration phase, diverging).
+ *
+ * - `entropy`: raw Shannon entropy value (bits)
+ * - `maxEntropy`: theoretical maximum entropy given dimension count
+ * - `normalizedEntropy`: entropy / maxEntropy (0–1); closer to 0 = more concentrated
+ * - `dimensionCount`: number of dimensions with at least one rule
+ */
+export interface RuleEntropyMetric {
+  entropy: number;
+  maxEntropy: number;
+  normalizedEntropy: number;
+  dimensionCount: number;
+}
+
+/**
+ * False-positive rate trend drift: compares the current sliding-window
+ * FPR against a baseline FPR to detect rule effectiveness decay.
+ *
+ * Positive drift (currentFpr > baselineFpr) signals rule degradation
+ * that may warrant rollback or adjustment. The `isDrifting` flag
+ * triggers when `drift` exceeds `driftThreshold`.
+ *
+ * - `baselineFpr`: FPR computed from the baseline historical window
+ * - `currentFpr`: FPR computed from the current sliding window
+ * - `drift`: currentFpr - baselineFpr (positive = degradation)
+ * - `driftThreshold`: configurable threshold above which drift triggers alert
+ * - `isDrifting`: true when drift exceeds driftThreshold
+ */
+export interface FprTrendDriftMetric {
+  baselineFpr: number;
+  currentFpr: number;
+  drift: number;
+  driftThreshold: number;
+  isDrifting: boolean;
+}
+
+/**
+ * Dimension coverage stability coefficient: coefficient of variation (CV)
+ * across per-dimension rule counts. CV = σ / μ, where σ is the standard
+ * deviation and μ is the mean of rule counts per dimension.
+ *
+ * Lower CV indicates balanced coverage across dimensions; high CV signals
+ * that one or a few dimensions dominate, which may indicate over-fitting
+ * or blind spots in the rule set.
+ *
+ * - `mean`: average rule count across all tracked dimensions
+ * - `standardDeviation`: standard deviation of rule counts
+ * - `coefficientOfVariation`: σ / μ (unitless); lower values = more balanced
+ * - `dimensionCount`: total number of dimensions tracked
+ * - `cvThreshold`: configurable threshold for acceptable imbalance
+ * - `isUnstable`: true when coefficientOfVariation exceeds cvThreshold
+ */
+export interface CoverageStabilityMetric {
+  mean: number;
+  standardDeviation: number;
+  coefficientOfVariation: number;
+  dimensionCount: number;
+  cvThreshold: number;
+  isUnstable: boolean;
+}
+
+/**
+ * Aggregated convergence metrics for the dynamic_rules self-iteration loop.
+ *
+ * Contains three quantitative indicators:
+ * 1. `ruleEntropy` — fragmentation measure (Shannon entropy across dimensions)
+ * 2. `fprTrendDrift` — FPR degradation detection (window vs baseline)
+ * 3. `coverageStability` — dimension balance metric (coefficient of variation)
+ *
+ * Used by the auto-iteration supervisor to determine whether rule iterations
+ * are converging toward a stable, effective state — enabling automated
+ * decisions about rollback, freeze, or continued tuning.
+ */
+export interface ConvergenceMetrics {
+  ruleEntropy: RuleEntropyMetric;
+  fprTrendDrift: FprTrendDriftMetric;
+  coverageStability: CoverageStabilityMetric;
+  /** ISO-8601 timestamp of metric computation */
+  computedAt: string;
+}
