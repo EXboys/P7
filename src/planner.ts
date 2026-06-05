@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "path";
 import { projectSubpathForRead, projectSubpathForWrite } from "./p7-paths.ts";
 import { bigramJaccard, extractLastJsonBlock } from "./json-utils.ts";
-import { readPrompt, runSdkQuery } from "./sdk.ts";
+import { readPrompt, renderPrompt, runSdkQuery } from "./sdk.ts";
 import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
 import { shouldDegrade, splitPlan } from "./degrade.ts";
+import { buildDynamicRules } from "./findings-stats.ts";
 import { appendLesson } from "./agent-memory.ts";
 import { countQueuedPlans, recordBackpressureEvent, updatePlanCriticFindings, upsertPlanState } from "./state.ts";
 import { processAutoApprovals, savePendingApproval } from "./approval.ts";
@@ -192,7 +193,8 @@ export async function generatePlan(
   }
 
   const system = readPrompt("planner-system.md");
-  const criticPrompt = readPrompt("plan-critic.md");
+  const dynamicRules = buildDynamicRules(projectPath);
+  const criticPrompt = renderPrompt("plan-critic.md", { dynamic_rules: dynamicRules });
 
   const failed = loadRecentFailedTitles(projectPath);
   const now = Date.now();

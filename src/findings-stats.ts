@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { parseFindings } from "./diff-critic.ts";
+import { initDb } from "./state.ts";
 import type {
   DiffCriticFinding,
   DcSeverity,
@@ -210,4 +211,54 @@ function buildPromptTuningInput(
     })),
     patterns,
   };
+}
+
+/**
+ * Build a formatted markdown string of historical findings patterns
+ * for injection into critic prompt templates as `{{dynamic_rules}}`.
+ *
+ * Queries plan_states for non-null findings records, aggregates them
+ * by dimension, and formats the top patterns and stats into a concise
+ * markdown section. Returns null when no historical data exists —
+ * callers should pass the result through `renderPrompt` with a
+ * `{{$if dynamic_rules}}` guard so the section is cleanly omitted.
+ */
+export function buildDynamicRules(projectPath: string): string | null {
+  const db = initDb(projectPath);
+  const plans = readAllPlanFindings(db);
+  if (plans.length === 0) return null;
+
+  const agg = computeFindingsAggregation(plans);
+  const { summary, dimensions, patterns } = agg.tuningInput;
+
+  const lines: string[] = [];
+  lines.push(
+    `基于最近 ${summary.totalPlansScanned} 条评审记录的统计分析（共 ${summary.totalFindings} 条发现，OK率 ${Math.round(summary.okRate * 100)}%）：`,
+  );
+  lines.push("");
+
+  if (dimensions.length > 0) {
+    lines.push("| 维度 | 出现率 | info | warning | blocker | blocker占比 |");
+    lines.push("|------|--------|------|---------|---------|------------|");
+    for (const d of dimensions) {
+      const ib = d.severityBreakdown;
+      lines.push(
+        `| ${d.name} | ${Math.round(d.hitRate * 100)}% | ${ib.info ?? 0} | ${ib.warning ?? 0} | ${ib.blocker ?? 0} | ${Math.round(d.blockerRatio * 100)}% |`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (patterns.length > 0) {
+    const top = patterns.slice(0, 5);
+    lines.push("高频模式（Top 5）：");
+    for (const p of top) {
+      lines.push(
+        `- [${p.dimension}] "${p.description}" — 出现 ${p.frequency} 次（最高严重度: ${p.topSeverity}）`,
+      );
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
 }
