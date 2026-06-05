@@ -976,6 +976,9 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
       severity: "blocker" | "warning" | "info";
       dimension: string;
       message: string;
+      file?: string;
+      line?: number;
+      code?: string;
     }> = [];
 
     let body = "";
@@ -1012,6 +1015,9 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
             severity: f.severity,
             dimension: f.dimension,
             message: f.message,
+            file: f.file,
+            line: f.line,
+            code: f.code,
           });
         }
         if (recent.length >= 50) break;
@@ -1023,6 +1029,8 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
         .sort((a, b) => a.date.localeCompare(b.date));
       const trendChartHtml = renderSeverityTrendChart(trendPoints);
 
+      const filterSeverity = c.req.query("severity") as string | undefined;
+
       body = renderVulnerabilityPanel({
         alias,
         total,
@@ -1031,6 +1039,7 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
         infoCount,
         findings: recent,
         trendChartHtml,
+        filterSeverity,
       });
     }
 
