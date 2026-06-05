@@ -269,6 +269,71 @@ export interface TypeCoverageReport {
  */
 export type { GemmaEvalConfig, GemmaEvalResult } from "./gemma-bridge.ts";
 
+/* ── Findings aggregation types ── */
+
+/**
+ * Per-dimension statistics within a findings aggregation.
+ *
+ * - `total`: absolute count of findings in this dimension
+ * - `bySeverity`: breakdown by severity level (info / warning / blocker)
+ * - `hitRate`: proportion of scanned plans that had at least one
+ *   finding in this dimension (0–1)
+ * - `blockerRatio`: proportion of findings in this dimension that
+ *   are blockers (0–1)
+ */
+export interface FindingsDimensionStats {
+  dimension: string;
+  total: number;
+  bySeverity: Record<DcSeverity, number>;
+  hitRate: number;
+  blockerRatio: number;
+}
+
+/**
+ * Aggregated findings statistics across a set of historical PlanState records.
+ *
+ * - `scannedPlans`: number of plan records examined
+ * - `totalFindings`: total parsed finding entries across all plans
+ * - `okRate`: proportion of plans with zero findings (0–1)
+ * - `dimensions`: per-dimension stats, sorted by total descending
+ * - `tuningInput`: pre-built JSON object ready for prompt template injection
+ */
+export interface FindingsAggregation {
+  scannedPlans: number;
+  totalFindings: number;
+  okRate: number;
+  dimensions: FindingsDimensionStats[];
+  tuningInput: PromptTuningInput;
+}
+
+/**
+ * Minimal JSON structure designed for injection into critic prompt templates.
+ *
+ * - `summary`: one-line overview of the aggregation
+ * - `dimensions`: dimension-level stats for contextual weighting
+ * - `patterns`: recurring finding patterns (by message prefix),
+ *   sorted by frequency descending, capped at 20 entries
+ */
+export interface PromptTuningInput {
+  summary: {
+    totalPlansScanned: number;
+    totalFindings: number;
+    okRate: number;
+  };
+  dimensions: Array<{
+    name: string;
+    hitRate: number;
+    severityBreakdown: Record<DcSeverity, number>;
+    blockerRatio: number;
+  }>;
+  patterns: Array<{
+    dimension: string;
+    description: string;
+    frequency: number;
+    topSeverity: DcSeverity;
+  }>;
+}
+
 /* ── Plan-critic structured output types ── */
 
 /**
