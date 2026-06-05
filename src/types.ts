@@ -587,3 +587,47 @@ export interface ConvergenceMetrics {
   /** ISO-8601 timestamp of metric computation */
   computedAt: string;
 }
+
+/**
+ * A single convergence snapshot stored in the convergence_snapshots table.
+ *
+ * Each row persists computed ConvergenceMetrics at a specific point in the
+ * iteration lifecycle, keyed by planId and iterationRound for time-series
+ * queryability. Consumers use these rows to compute trend lines, detect
+ * divergence, and drive auto-rollback decisions.
+ *
+ * - `planId`: the Plan this snapshot belongs to
+ * - `iterationRound`: 0-based iteration round at which metrics were computed
+ * - `metrics`: the full ConvergenceMetrics payload (entropy, FPR drift, coverage)
+ * - `computedAt`: ISO-8601 timestamp of snapshot computation
+ */
+export interface ConvergenceSnapshotRecord {
+  planId: string;
+  iterationRound: number;
+  metrics: ConvergenceMetrics;
+  computedAt: string;
+}
+
+/**
+ * Query filter for slicing convergence snapshots by time window.
+ *
+ * Both `since` and `until` are ISO-8601 timestamps; the window is inclusive
+ * on both ends (`[since, until]`). When omitted, the query returns all
+ * snapshots for the given planId without time-based filtering.
+ */
+export interface ConvergenceTimeWindow {
+  since?: string;
+  until?: string;
+}
+
+/**
+ * Query filter for slicing convergence snapshots by iteration round range.
+ *
+ * The range is inclusive on both ends (`[startRound, endRound]`).
+ * When both are omitted, the query returns all snapshots for the planId
+ * without iteration-based filtering.
+ */
+export interface ConvergenceIterationRange {
+  startRound?: number;
+  endRound?: number;
+}
