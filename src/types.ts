@@ -267,3 +267,67 @@ export interface TypeCoverageReport {
  *                    confidence, and a fallback flag for downstream routing.
  */
 export type { GemmaEvalConfig, GemmaEvalResult } from "./gemma-bridge.ts";
+
+/* ── Plan-critic structured output types ── */
+
+/**
+ * 8-category taxonomy for plan review findings.
+ *
+ * - `scope_creep`: Plan touches files not relevant to the goal.
+ * - `optimistic_lines`: estimated_diff_lines far below realistic.
+ * - `missing_validation`: validation field absent or non-executable.
+ * - `duplicate_goal`: Plan closely matches a recently-failed goal.
+ * - `breaking_change`: Plan introduces backward-incompatible changes
+ *   without migration path.
+ * - `unclear_goal`: goal field is ambiguous or underspecified.
+ * - `stale_context`: Plan based on outdated code structure not yet
+ *   confirmed by reading current HEAD.
+ * - `other`: Catch-all for findings that don't fit above categories.
+ */
+export type PlanCriticCategory =
+  | "scope_creep"
+  | "optimistic_lines"
+  | "missing_validation"
+  | "duplicate_goal"
+  | "breaking_change"
+  | "unclear_goal"
+  | "stale_context"
+  | "other";
+
+/**
+ * Structured plan review finding, aligned with `DiffCriticFinding` pattern
+ * but adapted for plan-JSON review domain.
+ *
+ * - `target` replaces `file`/`line` — points to plan field, file path, or "plan"
+ * - `description` replaces `message` — the finding rationale
+ * - `recommendation` is explicit (DiffCriticFinding leaves this implicit)
+ * - `code` is optional, present when quoting a specific plan JSON excerpt
+ */
+export interface PlanCriticFinding {
+  severity: DcSeverity;
+  category: PlanCriticCategory;
+  /** What part of the plan is affected — file path, field name, or "plan" for global */
+  target: string;
+  /** Why this is a problem */
+  description: string;
+  /** What should change to resolve it */
+  recommendation: string;
+  /** Optional code snippet or excerpt supporting the finding */
+  code?: string;
+}
+
+/**
+ * Result wrapper for plan-critic output.
+ *
+ * Unlike `reviewDiff` which returns both raw text and structured findings,
+ * `PlanCriticResult` is purely structured — the `summary` field provides
+ * the quick human-readable verdict that raw text previously served.
+ */
+export interface PlanCriticResult {
+  /** true = plan is safe to execute */
+  ok: boolean;
+  /** All findings, sorted severity desc then category asc */
+  findings: PlanCriticFinding[];
+  /** One-line human-readable verdict */
+  summary: string;
+}
