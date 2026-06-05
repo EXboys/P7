@@ -208,21 +208,39 @@ if (RUN_EVAL) {
       );
     }
 
-    // ── Aggregate capture rate ≥ 80% ──
+    // ── Aggregate metrics: recall ≥ 80%, FPR ≤ 20% ──
     afterAll(() => {
       const total = positiveResults.length;
       const captured = positiveResults.filter((r) => r.captured).length;
       const rate = total > 0 ? captured / total : 0;
+      const fps = negativeResults.filter((r) => r.falsePositive).length;
+      const totalNeg = negativeResults.length;
+      const fpr = totalNeg > 0 ? fps / totalNeg : 0;
+
       console.log(
         `[capture-rate] ${captured}/${total} positive fixtures detected (${(rate * 100).toFixed(1)}%)`,
       );
-      if (negativeResults.length > 0) {
-        const fps = negativeResults.filter((r) => r.falsePositive).length;
-        console.log(
-          `[capture-rate] ${fps}/${negativeResults.length} negative fixtures had false positives`,
-        );
-      }
+      console.log(
+        `[capture-rate] ${fps}/${totalNeg} negative fixtures had false positives (${(fpr * 100).toFixed(1)}%)`,
+      );
+
+      // Emit structured JSON metrics to stderr for comparison tracking across prompt upgrades.
+      const model = process.env.P7_MODEL ?? "unknown";
+      const metrics = {
+        eval: "hallucination-capture-rate",
+        model,
+        positiveTotal: total,
+        positiveCaptured: captured,
+        recall: parseFloat((rate * 100).toFixed(1)),
+        negativeTotal: totalNeg,
+        negativeFalsePositives: fps,
+        fpr: parseFloat((fpr * 100).toFixed(1)),
+        timestamp: new Date().toISOString(),
+      };
+      console.error(`[eval-metrics] ${JSON.stringify(metrics)}`);
+
       expect(rate).toBeGreaterThanOrEqual(0.8);
+      expect(fpr).toBeLessThanOrEqual(0.2);
     });
   });
 }
