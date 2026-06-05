@@ -10,6 +10,14 @@
  * 3. **Coverage Stability** — Coefficient of variation across per-dimension
  *    rule counts. Measures balance / over-fitting risk.
  *
+ * ## Integration
+ *
+ * Compute all three metrics via {@linkcode computeAllMetrics}, then persist
+ * the result as a time-series row via `recordConvergenceSnapshot` in
+ * `state.ts`. Query historical trends with `listConvergenceSnapshots`
+ * (time-window slicing) or `listConvergenceSnapshotsByIteration`
+ * (iteration-round slicing).
+ *
  * @module convergence-metrics
  */
 
