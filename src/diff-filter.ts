@@ -1,0 +1,279 @@
+/**
+ * Diff slice pre-filter for review context reduction.
+ *
+ * Provides heuristic-based classification and stripping of low-information
+ * diff hunks before they reach the evaluator (Gemma or Claude diff-critic).
+ *
+ * Three filter categories:
+ * - FormatNoise: whitespace-only hunks, import reordering, trailing comma changes
+ * - CommentOnly: hunks whose delta is 100% comment lines
+ * - Boilerplate: auto-generated files, lockfiles, vendor directories
+ *
+ * See docs/diff-filter-strategy.md for the full design.
+ *
+ * @module
+ */
+
+/* ── Filter categories ── */
+
+/**
+ * Enum of filter categories for diff hunk classification.
+ * Each category corresponds to a heuristic detection strategy.
+ */
+export enum DiffFilterCategory {
+  /** Whitespace-only hunks, import reordering, trailing comma changes, etc. */
+  FormatNoise = "format_noise",
+  /** Hunks whose delta is 100% comment lines. */
+  CommentOnly = "comment_only",
+  /** Auto-generated files, lockfiles, vendor directories, etc. */
+  Boilerplate = "boilerplate",
+}
+
+/* ── Configuration types ── */
+
+/**
+ * Diff filter configuration schema (mirrors config.json `diff_critic.diff_filter`).
+ */
+export interface DiffFilterConfig {
+  /** Master switch. Set false to bypass all filtering (e.g. for debugging). */
+  enabled: boolean;
+  /** Strip whitespace-only / formatting-only hunks. */
+  strip_format_noise: boolean;
+  /** Strip hunks whose delta is 100% comment lines. */
+  strip_comment_only: boolean;
+  /** Strip or summarize boilerplate / generated files. */
+  strip_boilerplate: boolean;
+  /**
+   * Maximum hunk length in lines. Hunks exceeding this are truncated
+   * to a summary. 0 = no truncation.
+   */
+  max_hunk_lines: number;
+}
+
+/** Default values for `DiffFilterConfig`. */
+export const DEFAULT_DIFF_FILTER_CONFIG: DiffFilterConfig = {
+  enabled: true,
+  strip_format_noise: true,
+  strip_comment_only: true,
+  strip_boilerplate: true,
+  max_hunk_lines: 200,
+} as const satisfies DiffFilterConfig;
+
+/* ── Per-hunk metadata ── */
+
+/**
+ * Classification metadata for a single diff hunk.
+ */
+export interface HunkClassification {
+  /** The original hunk index (0-based position in the parsed diff). */
+  hunkIndex: number;
+  /** File path this hunk belongs to. */
+  filePath: string;
+  /** The category this hunk was classified under, if any. */
+  category: DiffFilterCategory | null;
+  /** Confidence level (0.0–1.0) for the classification. */
+  confidence: number;
+  /** Whether this hunk was stripped by the filter. */
+  stripped: boolean;
+}
+
+/**
+ * Result of running `filterDiff` on a diff payload.
+ */
+export interface DiffFilterResult {
+  /** The filtered diff content (hunks matching filter categories removed/truncated). */
+  filteredContent: string;
+  /** Per-hunk classification metadata. */
+  hunks: HunkClassification[];
+  /** Aggregate statistics. */
+  stats: {
+    /** Total input lines (diff text). */
+    totalInputLines: number;
+    /** Total output lines after filtering. */
+    totalOutputLines: number;
+    /** Number of hunks stripped. */
+    strippedHunks: number;
+    /** Number of hunks truncated (exceeded max_hunk_lines). */
+    truncatedHunks: number;
+    /** Total lines removed by stripping/truncation. */
+    removedLines: number;
+  };
+}
+
+/* ── Helper constants: regex patterns ── */
+
+/**
+ * Regex patterns for detecting whitespace-only / format-only hunk lines.
+ *
+ * Matches diff lines (`+` or `-` prefix) whose content consists solely of
+ * whitespace characters, blank lines, or common formatting tokens.
+ */
+export const FORMAT_NOISE_PATTERNS = {
+  /** Lines that are entirely whitespace or blank. */
+  whitespaceOnly: /^[+-]\s*$/,
+  /** Lines that differ only by trailing comma presence in object/array literals. */
+  trailingComma: /^[+-]\s*[}\]]\s*,?\s*$/,
+  /** Import/require lines — hint for import reordering hunks. */
+  importStatement: /^[+-]\s*(import|require|from|export\s+\*)/,
+  /** Lines that only change indentation (tab vs space). */
+  indentOnly: /^[+-]\s*(\t|  )+\S*$/,
+} as const satisfies Record<string, RegExp>;
+
+/**
+ * Comment line patterns keyed by language extension.
+ *
+ * Maps file extensions to regex patterns that detect comment-only diff lines.
+ */
+export const COMMENT_PATTERNS: Record<string, RegExp> = {
+  ts: /^[+-]\s*(\/\/| \*|\/\*)/,
+  tsx: /^[+-]\s*(\/\/| \*|\/\*)/,
+  js: /^[+-]\s*(\/\/| \*|\/\*)/,
+  jsx: /^[+-]\s*(\/\/| \*|\/\*)/,
+  py: /^[+-]\s*#/,
+  go: /^[+-]\s*\/\//,
+  rs: /^[+-]\s*(\/\/|\/\/\/)/,
+  rb: /^[+-]\s*#/,
+  java: /^[+-]\s*(\/\/| \*|\/\*)/,
+  c: /^[+-]\s*(\/\/| \*|\/\*)/,
+  cpp: /^[+-]\s*(\/\/| \*|\/\*)/,
+  /** Generic fallback for unrecognised extensions. */
+  _default: /^[+-]\s*(\/\/|#|<!--| \*)/,
+};
+
+/**
+ * Generated code marker patterns.
+ *
+ * If the first line of a file matches any of these patterns, the file
+ * is considered auto-generated.
+ */
+export const GENERATED_CODE_MARKERS = [
+  /@generated/i,
+  /auto-?generated/i,
+  /DO NOT EDIT/i,
+  /This (file|code) (is|was) (auto-?generated|generated)/i,
+  /^\/\/ Code generated by/i,
+  /^# Code generated by/i,
+] as const satisfies readonly RegExp[];
+
+/**
+ * File extension matchers for lockfiles and other boilerplate.
+ */
+export const LOCKFILE_PATTERNS = [
+  /package-lock\.json$/,
+  /yarn\.lock$/,
+  /pnpm-lock\.yaml$/,
+  /Cargo\.lock$/,
+  /Gemfile\.lock$/,
+  /poetry\.lock$/,
+  /composer\.lock$/,
+  /go\.sum$/,
+] as const satisfies readonly RegExp[];
+
+/**
+ * File extension matchers for generated/compiled output.
+ */
+export const GENERATED_FILE_PATTERNS = [
+  /\.min\.(js|css)$/,
+  /\.bundle\.(js|css)$/,
+  /\.generated\.(ts|tsx|js|jsx|py)$/,
+  /_pb\.(ts|js|py|go)$/,
+  /_grpc_pb\.(ts|js|go)$/,
+  /\.gen\.(ts|tsx|js)$/,
+] as const satisfies readonly RegExp[];
+
+/**
+ * Vendor/third-party directory markers used for file-level boilerplate detection.
+ */
+export const VENDOR_DIR_PATTERNS = [
+  /^vendor\//,
+  /^third_party\//,
+  /\.gen\//,
+] as const satisfies readonly RegExp[];
+
+/* ── Core filter pipeline (skeleton) ── */
+
+/**
+ * Parse a unified diff string into per-file hunk segments.
+ *
+ * Splits the raw `git diff` output into an array of file blocks.
+ *
+ * @param diffContent - Raw unified diff string.
+ * @returns Array of file blocks with header and hunk text.
+ *
+ * @internal
+ * @todo Implement per-hunk parsing for the three filter categories.
+ */
+export function parseDiffHunks(
+  _diffContent: string,
+): Array<{ header: string; filePath: string; hunks: string[] }> {
+  // Stub: returns empty file list; full implementation pending Phase 1.
+  // Detection pipeline:
+  //   1. Split on `diff --git` file headers
+  //   2. Per file, split on `@@ ... @@` hunk headers
+  //   3. For each hunk, classify via classifyHunk()
+  //   4. Apply filter rules: strip, summarize, or pass through
+  //   5. Reassemble filtered diff
+  return [];
+}
+
+/**
+ * Classify a single hunk into a `DiffFilterCategory` using heuristic patterns.
+ *
+ * Returns `null` when the hunk does not match any filter category.
+ *
+ * @param _hunkText - The full hunk text (header + body).
+ * @param _filePath - The file path this hunk belongs to.
+ * @param _config - Diff filter configuration.
+ * @returns The detected category, or `null` if no filter applies.
+ *
+ * @internal
+ * @todo Implement heuristic classification using FORMAT_NOISE_PATTERNS,
+ *       COMMENT_PATTERNS, LOCKFILE_PATTERNS, and GENERATED_CODE_MARKERS.
+ */
+export function classifyHunk(
+  _hunkText: string,
+  _filePath: string,
+  _config: DiffFilterConfig,
+): DiffFilterCategory | null {
+  // Stub: no-op; classification pipeline:
+  //   1. Check whitespace-only / format-noise patterns
+  //   2. Check comment-only patterns with language-aware COMMENT_PATTERNS
+  //   3. Check boilerplate markers (file-level, cached per file)
+  //   4. Apply guardrails (keyword checks for comment-only exceptions)
+  //   5. Return category or null
+  return null;
+}
+
+/**
+ * Main filter entry point: classify and strip low-information hunks from a diff.
+ *
+ * @param diffContent - Raw unified diff string (output of `git diff`).
+ * @param config - Diff filter configuration.
+ * @returns `DiffFilterResult` with filtered content, hunk metadata, and stats.
+ *
+ * @todo Implement full pipeline: parse → classify per hunk → strip/truncate → reassemble.
+ */
+export function filterDiff(
+  diffContent: string,
+  config: DiffFilterConfig,
+): DiffFilterResult {
+  // Stub: returns pass-through result with zero hunks classified.
+  // Full implementation will:
+  //   1. Call parseDiffHunks(diffContent)
+  //   2. For each hunk, call classifyHunk()
+  //   3. Strip matched hunks, truncate oversized hunks
+  //   4. Reassemble filtered content
+  //   5. Return DiffFilterResult with per-hunk metadata and stats
+  const lines = diffContent.split("\n");
+  return {
+    filteredContent: diffContent,
+    hunks: [],
+    stats: {
+      totalInputLines: lines.length,
+      totalOutputLines: lines.length,
+      strippedHunks: 0,
+      truncatedHunks: 0,
+      removedLines: 0,
+    },
+  };
+}
