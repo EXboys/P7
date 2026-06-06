@@ -4,7 +4,6 @@ import { resolve } from "path";
 import { loadConfig, saveConfig } from "./config.ts";
 import { scanProject } from "./scanner.ts";
 import { generatePlan } from "./planner.ts";
-import { executePlan, loadLatestPlan } from "./executor.ts";
 import { runDaily } from "./daily.ts";
 import { runDiscoveryDaily } from "./discovery-daily.ts";
 import {
@@ -14,12 +13,14 @@ import {
   deriveThemesFromSignals,
 } from "./tech-discovery.ts";
 import { selectGoal } from "./goal-selector.ts";
-import { decideApproval, getApprovalRecord, listPendingApprovals } from "./approval.ts";
+import { listPendingApprovals } from "./approval.ts";
 import { extractLastJsonBlock, repairJson } from "./json-utils.ts";
 import { listPlanStates } from "./state.ts";
 import { runPipelineCheck, pipelineReady } from "./pipeline-check.ts";
-import { runPrReviewSweep } from "./vcs/pr-reviewer.ts";
 import { auditTokenConsumption } from "./token-audit.ts";
+import { approvePlanUseCase, rejectPlanUseCase } from "./usecases/approve-plan.ts";
+import { executeApprovedPlanUseCase } from "./usecases/execute-approved-plan.ts";
+import { reviewOpenPrsUseCase } from "./usecases/review-open-prs.ts";
 
 const [, , cmd, projectArg, ...rest] = process.argv;
 
@@ -52,18 +53,11 @@ async function main(): Promise<void> {
     }
     case "execute": {
       const p = projectPath();
-      const cfg = loadConfig(p);
-      const scan = await scanProject(p);
       const planId = flag("--plan-id");
-      const approval = planId ? getApprovalRecord(p, planId) : null;
-      if (planId && approval?.status !== "approved" && !rest.includes("--force")) {
-        throw new Error(`Plan ${planId} is not approved; pass --force to execute anyway`);
-      }
-      const loaded = approval
-        ? { ...approval.plan, planId: approval.planId, goal: approval.goal }
-        : loadLatestPlan(p);
-      if (!loaded) throw new Error("No plan found in .p7/plans");
-      const result = await executePlan(p, loaded, cfg, scan.git?.remoteUrl ?? null);
+      const result = await executeApprovedPlanUseCase(p, {
+        planId,
+        force: rest.includes("--force"),
+      });
       console.log(JSON.stringify(result, null, 2));
       process.exit(result.ok ? 0 : 1);
       break;
@@ -108,8 +102,7 @@ async function main(): Promise<void> {
     }
     case "pr-review": {
       const p = projectPath();
-      const cfg = loadConfig(p);
-      const result = await runPrReviewSweep(p, cfg);
+      const result = await reviewOpenPrsUseCase(p);
       console.log(JSON.stringify(result, null, 2));
       process.exit(result.ok ? 0 : 1);
       break;
@@ -194,29 +187,20 @@ async function main(): Promise<void> {
     case "approve": {
       const planId = flag("--plan-id");
       if (!planId) throw new Error("--plan-id required");
-      const approval = decideApproval(projectPath(), planId, "approved");
-      if (!approval) throw new Error(`Approval not found: ${planId}`);
-      if (rest.includes("--execute")) {
-        const p = projectPath();
-        const cfg = loadConfig(p);
-        const scan = await scanProject(p);
-        const result = await executePlan(
-          p,
-          { ...approval.plan, planId: approval.planId, goal: approval.goal },
-          cfg,
-          scan.git?.remoteUrl ?? null,
-        );
-        console.log(JSON.stringify({ approved: planId, result }, null, 2));
-        process.exit(result.ok ? 0 : 1);
+      const result = await approvePlanUseCase(projectPath(), planId, {
+        execute: rest.includes("--execute"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      if (typeof result === "object" && result && "result" in result) {
+        const executeResult = (result as { result?: { ok?: boolean } }).result;
+        process.exit(executeResult?.ok ? 0 : 1);
       }
-      console.log("approved", planId);
       break;
     }
     case "reject": {
       const planId = flag("--plan-id");
       if (!planId) throw new Error("--plan-id required");
-      decideApproval(projectPath(), planId, "rejected");
-      console.log("rejected", planId);
+      console.log(JSON.stringify(rejectPlanUseCase(projectPath(), planId), null, 2));
       break;
     }
     case "approvals": {

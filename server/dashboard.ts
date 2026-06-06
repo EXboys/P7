@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { homedir } from "os";
-import { join, relative } from "path";
+import { join } from "path";
 import type { ServerConfig } from "./config.ts";
 import { saveServerConfig, writeClaudeSettings } from "./config.ts";
 import { audit } from "./audit.ts";
@@ -20,7 +20,6 @@ import {
   queryEvalRouteStats,
 } from "../src/state.ts";
 import type { PlanStateStatus } from "../src/types.ts";
-import type { JobRow, StepState } from "./queue/types.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
 import {
   autoApproveBlockReason,
@@ -53,9 +52,7 @@ import { listOpenPullRequests } from "../src/vcs/open-prs.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
 import type { DevAgentConfig } from "../src/config.ts";
-import { computeTypeSafetyMetrics, type TypeSafetyMetrics } from "../src/gradual-typecheck-config.ts";
 import { parseFindings } from "../src/diff-critic.ts";
-import { classifyFailure } from "../src/failure-classifier.ts";
 import {
   checkGhAuth,
   collectGhAuthChecks,
@@ -96,6 +93,12 @@ import {
   renderModelSelect,
   type ProjectTab,
 } from "./dashboard-ui.ts";
+import { renderAutomationHealthPage } from "./dashboard-data/automation.ts";
+import {
+  computeOverviewTypeSafetyMetrics,
+  renderOverviewBody,
+} from "./dashboard-data/overview.ts";
+import { formatLimit } from "../src/derived-config.ts";
 
 const LIST_PAGE_SIZE = 20;
 
@@ -109,7 +112,7 @@ function pageOffset(page: number, perPage = LIST_PAGE_SIZE): number {
 }
 
 function limitText(value: number, unit = ""): string {
-  return value === 0 ? "不限制" : `${value}${unit}`;
+  return formatLimit(value, unit);
 }
 
 function applyNonNegativeInt(
@@ -128,92 +131,6 @@ function applyPositiveNumber(
 ): number {
   const n = Number(body[key]);
   return Number.isFinite(n) && n > 0 ? n : current;
-}
-
-function parseStepStates(job: JobRow): StepState[] {
-  if (!job.step_states) return [];
-  try {
-    const parsed = JSON.parse(job.step_states) as StepState[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function renderAutomationHealthPage(opts: {
-  alias: string;
-  dailyCapUsd: number;
-  jobs: JobRow[];
-  states: ReturnType<typeof listPlanStates>;
-  openPrBlocked: string | null;
-  todayCostUsd: number;
-  monthCost: { total: number; jobs: number };
-}): string {
-  const since = Date.now() - 24 * 3600 * 1000;
-  const jobs24h = opts.jobs.filter((j) => new Date(j.created_at).getTime() >= since);
-  const done = jobs24h.filter((j) => j.status === "done").length;
-  const failed = jobs24h.filter((j) => j.status === "failed").length;
-  const running = opts.jobs.filter((j) => j.status === "running" || j.status === "pending");
-  const successRate = done + failed > 0 ? `${Math.round((done / (done + failed)) * 100)}%` : "无数据";
-  const failedKinds = new Map<string, number>();
-  const humanEvents: string[] = [];
-  for (const job of jobs24h.filter((j) => j.status === "failed")) {
-    const c = classifyFailure(job.error ?? "");
-    failedKinds.set(c.kind, (failedKinds.get(c.kind) ?? 0) + 1);
-    if (c.hardStop) humanEvents.push(`${jobKindLabel(job.kind)}：${c.hint}`);
-  }
-  if (opts.openPrBlocked) humanEvents.push(`PR 阻塞：${opts.openPrBlocked}`);
-  if (opts.todayCostUsd >= opts.dailyCapUsd * 0.8) {
-    humanEvents.push(`成本接近日上限：${formatUsd(opts.todayCostUsd)} / ${formatUsd(opts.dailyCapUsd)}`);
-  }
-  const pendingPlans = opts.states.filter((s) => s.status === "pending_approval").length;
-  const failedPlans = opts.states.filter((s) => s.status === "failed").length;
-  const nextAction = running[0]
-    ? `等待 ${jobKindLabel(running[0].kind)} 完成`
-    : opts.openPrBlocked
-      ? "调度器会先复查/合并 OPEN PR"
-      : pendingPlans > 0
-        ? "自动审批或人工审批待处理 Plan"
-        : failedPlans > 0
-          ? "失败分类器会对可修复失败自动重试"
-          : "可继续 discover / plan / execute 下一轮";
-
-  const durations = new Map<string, { totalMs: number; count: number; failed: number }>();
-  for (const job of jobs24h) {
-    for (const step of parseStepStates(job)) {
-      const started = new Date(step.started_at).getTime();
-      const finished = step.finished_at ? new Date(step.finished_at).getTime() : NaN;
-      if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) continue;
-      const cur = durations.get(step.step_name) ?? { totalMs: 0, count: 0, failed: 0 };
-      cur.totalMs += finished - started;
-      cur.count++;
-      if (step.status === "failed") cur.failed++;
-      durations.set(step.step_name, cur);
-    }
-  }
-  const durationRows = [...durations.entries()]
-    .sort((a, b) => b[1].totalMs / b[1].count - a[1].totalMs / a[1].count)
-    .slice(0, 10)
-    .map(([step, v]) => `<tr><td>${esc(step)}</td><td>${Math.round(v.totalMs / v.count / 1000)}s</td><td>${v.count}</td><td>${v.failed}</td></tr>`)
-    .join("");
-  const failureRows = [...failedKinds.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([kind, count]) => `<tr><td>${esc(kind)}</td><td>${count}</td></tr>`)
-    .join("");
-
-  return `<div class="panel">
-<div class="panel-head"><h2>自动化健康</h2><span class="muted">最近 24h</span></div>
-<div class="health-banner ${humanEvents.length ? "fail" : "ok"}"><span class="health-icon">${humanEvents.length ? "!" : "✓"}</span><div><strong>${humanEvents.length ? "需要关注" : "无人值守链路健康"}</strong><span>${esc(nextAction)}</span></div></div>
-<div class="cards">${metricCard(successRate, "24h 成功率")}${metricCard(done, "成功任务")}${metricCard(failed, "失败任务", failed ? "warn" : undefined)}${metricCard(running.length, "待执行/运行中", running.length ? "warn" : undefined)}${metricCard(formatUsd(opts.todayCostUsd), "今日成本")}</div>
-</div>
-<div class="overview-grid">
-<div class="panel"><h2>当前阻塞项</h2>${humanEvents.length ? `<ul>${humanEvents.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : `<p class="muted">没有需要人工介入的阻塞项。</p>`}</div>
-<div class="panel"><h2>成本与吞吐</h2><p class="muted">今日 ${formatUsd(opts.todayCostUsd)} / 日上限 ${formatUsd(opts.dailyCapUsd)}；本月 ${formatUsd(opts.monthCost.total)}，共 ${opts.monthCost.jobs} 个计费任务。</p><p class="muted">下一动作：${esc(nextAction)}</p></div>
-</div>
-<div class="overview-grid">
-<div class="panel"><h2>失败类型</h2><div class="tbl-wrap"><table><thead><tr><th>类型</th><th>次数</th></tr></thead><tbody>${failureRows || `<tr><td colspan="2" class="empty">无失败</td></tr>`}</tbody></table></div></div>
-<div class="panel"><h2>阶段耗时</h2><div class="tbl-wrap"><table><thead><tr><th>阶段</th><th>平均耗时</th><th>次数</th><th>失败</th></tr></thead><tbody>${durationRows || `<tr><td colspan="4" class="empty">暂无 step_states</td></tr>`}</tbody></table></div></div>
-</div>`;
 }
 
 function renderListPager(opts: {
@@ -244,31 +161,6 @@ function renderListPager(opts: {
 <span class="pager-info">第 ${start}-${end} 条 / 共 ${opts.total} 条 · 第 ${page} / ${totalPages} 页</span>
 <div class="pager-links">${prev}${next}</div>
 </nav>`;
-}
-
-/**
- * Recursively collect .ts / .tsx source files from a directory,
- * excluding node_modules and hidden directories.
- * Returns absolute paths; caller should relativize against the project root.
- */
-function collectProjectFiles(dir: string, depth = 0): string[] {
-  if (depth > 12) return [];
-  const files: string[] = [];
-  try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
-      const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...collectProjectFiles(fullPath, depth + 1));
-      } else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))) {
-        files.push(fullPath);
-      }
-    }
-  } catch {
-    /* permission denied or transient error — skip silently */
-  }
-  return files;
 }
 
 function applyVcsConfigFromBody(
@@ -624,80 +516,29 @@ export function createDashboard(
     const pending = existsSync(proj.path) ? listPendingApprovals(proj.path).length : 0;
     const states = existsSync(proj.path) ? listPlanStates(proj.path, 12) : [];
     const snap = existsSync(proj.path) ? loadSnapshot(proj.path) : null;
-    const executing = states.filter((s) => s.status === "executing").length;
-    const prCount = states.filter((s) => s.prUrl).length;
-    const signalCount = snap?.signals.length ?? 0;
-
-    // Compute type safety metrics for dashboard overview cards.
-    let metrics: TypeSafetyMetrics = { strictFiles: 0, anyEscapePaths: 0, coveragePercent: 0, totalFiles: 0 };
+    let metrics = { strictFiles: 0, anyEscapePaths: 0, coveragePercent: 0, totalFiles: 0 };
     try {
       const dc = loadConfig(proj.path);
-      const sourceFiles = collectProjectFiles(proj.path);
-      if (sourceFiles.length > 0) {
-        const relFiles = sourceFiles.map((f) => relative(proj.path, f));
-        metrics = computeTypeSafetyMetrics(relFiles, dc.gradual_type_checking ?? { rules: [] });
-      }
+      metrics = computeOverviewTypeSafetyMetrics(proj.path, dc);
     } catch {
       /* non-blocking — dashboard should not crash on file walk errors */
     }
-
-    const healthHtml = checks.length
-      ? renderPipelineChecksPanel(alias, checks)
-      : `<p class="muted">项目路径不可用</p>`;
-
-    const roadmap = existsSync(proj.path) ? loadRoadmap(proj.path) : null;
-    const roadmapHtml = roadmap?.active.length
-      ? `<div class="panel"><div class="panel-head"><h2>Roadmap 进行中</h2><a href="${base}/plan?section=roadmap">查看全部</a></div>
-<ul class="roadmap-preview">${roadmap.active
-          .slice(0, 4)
-          .map((s) => `<li><span class="dot"></span><span>${esc(s.text)}</span></li>`)
-          .join("")}</ul></div>`
-      : `<div class="panel"><div class="panel-head"><h2>Roadmap</h2><a href="${base}/plan?section=roadmap">去生成</a></div>
-<p class="muted" style="margin:0">尚无 Active 项。先抓取趋势，再 AI 刷新 Roadmap。</p></div>`;
-
-    const recentRows = states
-      .slice(0, 10)
-      .map(
-        (s) =>
-          `<tr><td><a href="${base}/plans/${encodeURIComponent(s.planId)}">${esc(s.title || s.planId)}</a></td><td>${statusBadge(s.status)}</td><td class="muted recent-row">${esc(new Date(s.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }))}</td></tr>`,
-      )
-      .join("");
-
-    const recentHtml = `<div class="panel"><div class="panel-head"><h2>最近动态</h2><a href="${base}/run">执行记录</a></div>
-<p class="muted" style="margin:0 0 10px;font-size:12px">成功、失败和进行中状态按更新时间倒序混排；失败详情可到运行页查看。</p>
-<div class="tbl-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>更新</th></tr></thead><tbody>${recentRows || `<tr><td colspan="3" class="empty">暂无记录，从趋势或一键发现开始</td></tr>`}</tbody></table></div></div>`;
-
-    const pendingBanner =
-      pending > 0
-        ? `<div class="flash warn-banner"><strong>${pending} 个 Plan 待审批</strong> — 请先在侧栏进入「规划 → Plan 审批」确认后再执行。<a class="btn sm" style="margin-left:12px" href="${base}/plan?section=plans">去审批</a></div>`
-        : "";
-
-    const themes =
-      snap?.themes?.length
-        ? `<p class="muted overview-themes">今日主题：<strong>${esc(snap.themes.join(" · "))}</strong></p>`
-        : "";
-
-    const nextStep = overviewNextStep({
-      blockers,
-      pending,
-      hasSnapshot: Boolean(snap),
-      signalCount,
-      base,
-    });
 
     const reconcileFlash =
       stability.reconciled.length > 0
         ? `已校正 ${stability.reconciled.length} 个假「执行中」状态`
         : flash;
-
-    const body = `<div class="overview-page">
-${pendingBanner}
-${nextStep}
-${themes}
-<div class="cards">${metricCard(signalCount, "今日信号", signalCount ? undefined : "warn")}${metricCard(pending, "待审批", pending ? "warn" : undefined)}${metricCard(executing, "执行中", executing ? "warn" : undefined)}${metricCard(prCount, "已开 PR")}${metricCard(metrics.strictFiles, "严格文件")}${metricCard(metrics.anyEscapePaths, "any 逃逸", metrics.anyEscapePaths > 0 ? "warn" : undefined)}${metricCard(metrics.coveragePercent + "%", "覆盖率")}</div>
-<div class="overview-grid">${roadmapHtml}${recentHtml}</div>
-<div class="panel" id="health" style="margin-bottom:0"><h2 style="margin-bottom:10px">环境检查</h2>${healthHtml}</div>
-</div>`;
+    const body = renderOverviewBody({
+      alias,
+      base,
+      projectPath: proj.path,
+      checks,
+      blockers,
+      pending,
+      states,
+      snapshot: snap,
+      metrics,
+    });
 
     const html = projectShell(cfg, alias, "overview", {
       title: "工作台",

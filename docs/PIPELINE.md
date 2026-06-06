@@ -94,3 +94,18 @@ bun run src/index.ts discover-daily /path/to/repo
 | `allow_to_main` | `false` |
 | `discovery.allow_template_fallback` | `false` |
 | `auto_approve` | 主仓库建议关，实验仓可开 |
+
+## 8. 代码架构边界
+
+P7 当前按四层维护：
+
+- `src/usecases/`：应用编排入口，CLI、Worker、Dashboard 的核心动作应优先委托这里。
+- `src/` 领域与基础设施：Plan、Executor、State、VCS、SDK、配置派生逻辑；不得 import `server/`。
+- `server/`：HTTP Dashboard、Scheduler、Worker、队列存储与页面渲染。
+- `server/dashboard-data/`：Dashboard 页面数据聚合与页面 body 组装，路由只负责参数、鉴权、响应。
+
+架构护栏：
+
+- `src/execution/step-reporter.ts` 负责执行步骤上报，Executor 不直接写 `server/queue/db.ts`。
+- `src/job-read-model.ts` 提供 src 侧只读 job 查询，避免恢复/审批逻辑依赖 server 层。
+- `tests/architecture-boundaries.test.ts` 会阻止 `src -> server` 反向 import。

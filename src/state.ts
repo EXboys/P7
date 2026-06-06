@@ -4,6 +4,11 @@ import { join } from "path";
 import { legacyProjectDir, p7ProjectDir, projectDataDirForRead } from "./p7-paths.ts";
 import type { PlanState, PlanStateStatus, VcsAccountPublishResult, ConvergenceMetrics } from "./types.ts";
 import type { SdkTokenUsage } from "./sdk-cost.ts";
+import {
+  PLAN_STATE_STATUSES,
+  type BackpressureEvent,
+  type BackpressureEventType,
+} from "./state-schema.ts";
 
 /** 按 goal 维度归因的成本明细 */
 export interface GoalCostBreakdown {
@@ -20,36 +25,12 @@ export interface CostSummary {
   byGoal: GoalCostBreakdown[];
 }
 
-export type BackpressureEventType =
-  | "degradation"
-  | "retry_backoff"
-  | "cost_limit_hit"
-  | "execution_recovery";
-
-export interface BackpressureEvent {
-  type: BackpressureEventType;
-  timestamp: string;
-  detail: string;
-  attempt?: number;
-  delayMs?: number;
-  limitUsd?: number;
-  actualUsd?: number;
-}
+export type { BackpressureEvent, BackpressureEventType } from "./state-schema.ts";
 
 /** PlanState 可能携带背压事件（本地扩展，不入侵 types.ts 的接口定义） */
 type PlanStateWithBp = PlanState & { backpressureEvents?: BackpressureEvent[] };
 
-const STATUS_VALUES: PlanStateStatus[] = [
-  "planned",
-  "pending_approval",
-  "approved",
-  "rejected",
-  "executing",
-  "pushed",
-  "pr_opened",
-  "merged",
-  "failed",
-];
+const STATUS_VALUES: PlanStateStatus[] = PLAN_STATE_STATUSES;
 
 const dbCache = new Map<string, Database>();
 

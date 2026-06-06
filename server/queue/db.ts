@@ -11,6 +11,7 @@ import {
   filterActiveDailyToday,
   filterCompletedFullDailyToday,
 } from "../../src/daily-schedule.ts";
+import { updateJobStepState as updateJobStepStateInJobsDb } from "../../src/job-step-state.ts";
 
 function dbPath(): string {
   return join(resolveP7HomeDir(), "jobs.db");
@@ -291,46 +292,7 @@ export async function updateJobStepState(
   id: string,
   step: StepState,
 ): Promise<void> {
-  const d = getDb();
-  // 读取当前 step_states
-  const row = d
-    .query("SELECT step_states FROM jobs WHERE id = ?")
-    .get(id) as { step_states: string | null } | null;
-  if (!row) return; // job 不存在，静默跳过
-
-  let steps: StepState[] = [];
-  if (row.step_states) {
-    try {
-      steps = JSON.parse(row.step_states) as StepState[];
-      if (!Array.isArray(steps)) steps = [];
-    } catch {
-      steps = []; // 损坏的 JSON，重置为空数组
-    }
-  }
-
-  // 按 step_name 查找并更新，未找到则追加
-  const idx = steps.findIndex((s) => s.step_name === step.step_name);
-  if (idx >= 0) {
-    steps[idx] = step;
-  } else {
-    steps.push(step);
-  }
-
-  // Retry up to 3 times on SQLITE_BUSY (WAL mode concurrent write contention)
-  const json = JSON.stringify(steps);
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      d.run("UPDATE jobs SET step_states = ? WHERE id = ?", [json, id]);
-      return;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("SQLITE_BUSY") && attempt < 2) {
-        await Bun.sleep(10 + Math.random() * 20);
-        continue;
-      }
-      throw e;
-    }
-  }
+  return updateJobStepStateInJobsDb(id, step);
 }
 
 export async function updateJobStepStates(id: string, steps: StepState[]): Promise<void> {

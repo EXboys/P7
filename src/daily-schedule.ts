@@ -1,4 +1,4 @@
-import type { JobRow } from "../server/queue/types.ts";
+import type { JobRow } from "./job-types.ts";
 
 export function isRecoverStallPayload(payload: string): boolean {
   try {

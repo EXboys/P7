@@ -30,8 +30,7 @@ import {
   type WorktreeInfo,
 } from "./worktree.ts";
 import { executorSemaphore, withExponentialBackoff } from "./retry.ts";
-import type { StepState } from "../server/queue/types.ts";
-import { updateJobStepState } from "../server/queue/db.ts";
+import { createJobStepReporter } from "./execution/step-reporter.ts";
 import { addSdkCost, emptySdkCost } from "./sdk-cost.ts";
 import { planDisplayTitle, planPublishTitle, planRoadmapHint } from "./plan-i18n.ts";
 import { scaffoldMissingPlanFiles } from "./executor-scaffold.ts";
@@ -398,25 +397,8 @@ export async function executePlan(
   const start = Date.now();
   let wt: WorktreeInfo | null = null;
 
-  // ── Step state tracking (persisted to jobs.db for resumability) ──
-  const jobId = process.env.P7_JOB_ID;
-  const stepStartTimes = new Map<string, string>();
-
-  /**
-   * 写入单步状态快照到 jobs.db 的 step_states 列。
-   * 无 jobId 时静默跳过 —— 用户直接 CLI 运行 executor 时 P7_JOB_ID 未设置，
-   * 这是设计妥协而非 bug。
-   */
-  const writeStepState = (step: StepState) => {
-    if (!jobId) return;
-    if (step.status === "running") {
-      stepStartTimes.set(step.step_name, step.started_at);
-    } else if (!step.started_at) {
-      step.started_at = stepStartTimes.get(step.step_name) ?? "";
-    }
-    updateJobStepState(jobId, step).catch(() => {});
-  };
-  // ────────────────────────────────────────────────────────────────
+  const stepReporter = createJobStepReporter(process.env.P7_JOB_ID);
+  const writeStepState = stepReporter.record;
 
   let sdkCost = emptySdkCost();
 
@@ -828,18 +810,7 @@ export async function executePlan(
     }
     await appendLesson(projectPath, `execute:failed "${planDisplayTitle(plan)}" x ${err.slice(0, 120)}`);
     // Mark any running steps as failed so no step stays in "running" forever
-    if (jobId) {
-      const now = new Date().toISOString();
-      for (const [stepName, startedAt] of stepStartTimes) {
-        writeStepState({
-          step_name: stepName,
-          status: "failed",
-          started_at: startedAt,
-          finished_at: now,
-          error: err.slice(0, 500),
-        });
-      }
-    }
+    stepReporter.failRunning(err);
     return {
       ok: false,
       error: err,

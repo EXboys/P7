@@ -6,7 +6,7 @@ import { countQueuedPlans, getPlanState, preparePlanExecuteRetry, transitionPlan
 import { planDisplayTitle } from "./plan-i18n.ts";
 import { planGoalMatchesRoadmapDone, recommendRoadmapGoal, roadmapTextMatches, firstUnfinishedStep } from "./roadmap.ts";
 import { appendLesson } from "./agent-memory.ts";
-import { listJobsForProject } from "../server/queue/store.ts";
+import { listJobsForProject } from "./job-read-model.ts";
 import type { ApprovalRecord, Plan, PlanRecord, PlanState } from "./types.ts";
 
 export function approvalsDir(projectPath: string): string {

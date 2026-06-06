@@ -50,6 +50,9 @@ export interface GradualTypeCheckConfig {
 
   /** Ordered set of strictness targets for progressive milestones. First match wins; undefined when no targets declared. */
   targets?: TypeStrictnessTarget[];
+
+  /** Effective tsconfig defaults used when no gradual rule overrides a flag. */
+  tsconfigDefaults?: Partial<Record<TscStrictFlag, boolean>>;
 }
 
 /* ── Strictness level presets ── */
@@ -314,6 +317,10 @@ export interface TypeSafetyMetrics {
   totalFiles: number;
 }
 
+export function defaultNoImplicitAnyEnabled(config: GradualTypeCheckConfig): boolean {
+  return config.tsconfigDefaults?.noImplicitAny === true;
+}
+
 /**
  * Compute `TypeSafetyMetrics` from a `GradualTypeCheckConfig` and a list of
  * project source file paths.
@@ -336,8 +343,10 @@ export function computeTypeSafetyMetrics(
     const rule = resolveTypeCheckStrictness(filePath, config);
 
     if (rule === null) {
-      // No rule matched — file inherits tsconfig defaults; count as any-escape
-      anyEscapePaths++;
+      // No rule matched — file inherits tsconfig defaults.
+      if (!defaultNoImplicitAnyEnabled(config)) {
+        anyEscapePaths++;
+      }
       continue;
     }
 
@@ -349,8 +358,9 @@ export function computeTypeSafetyMetrics(
       strictFiles++;
     }
 
-    // Any-escape: noImplicitAny not explicitly enabled
-    if (rule.flags.noImplicitAny !== true) {
+    // Any-escape: effective noImplicitAny is disabled after applying rule overrides.
+    const noImplicitAny = rule.flags.noImplicitAny ?? defaultNoImplicitAnyEnabled(config);
+    if (noImplicitAny !== true) {
       anyEscapePaths++;
     }
   }

@@ -199,6 +199,18 @@ describe("computeTypeSafetyMetrics", () => {
     expect(metrics.anyEscapePaths).toBe(2);
     expect(metrics.coveragePercent).toBe(0);
   });
+
+  test("unmatched files inherit safe noImplicitAny from tsconfig defaults", () => {
+    const unmatchedFiles = ["other/config.ts", "docs/readme.md"];
+    const metrics = computeTypeSafetyMetrics(unmatchedFiles, {
+      ...multiRuleConfig,
+      tsconfigDefaults: { noImplicitAny: true },
+    });
+
+    expect(metrics.totalFiles).toBe(2);
+    expect(metrics.anyEscapePaths).toBe(0);
+    expect(metrics.coveragePercent).toBe(0);
+  });
 });
 
 /* ── Target config fixtures ── */

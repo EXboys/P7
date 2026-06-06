@@ -6,8 +6,8 @@ import {
 } from "./roadmap.ts";
 import { getApprovalRecord, listApprovedForExecution, listPendingApprovals, sweepStuckApprovedPlans } from "./approval.ts";
 import { countQueuedPlans, getPlanState } from "./state.ts";
-import { listJobsForProject } from "../server/queue/store.ts";
-import type { JobRow } from "../server/queue/types.ts";
+import { listJobsForProject } from "./job-read-model.ts";
+import type { JobRow } from "./job-types.ts";
 
 export const PIPELINE_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000;
 

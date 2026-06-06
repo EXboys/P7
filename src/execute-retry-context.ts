@@ -1,8 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { projectSubpathForRead } from "./p7-paths.ts";
-import { listJobsForProject } from "../server/queue/store.ts";
-import { readJobLog } from "../server/queue/worker.ts";
+import { listJobsForProject, readJobLog } from "./job-read-model.ts";
 
 const LOG_TAIL_CHARS = 3500;
 
