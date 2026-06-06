@@ -8,6 +8,7 @@ import { refreshRoadmapIfExhausted } from "./roadmap-refresh.ts";
 import { formatDiscoveryForPrompt, loadSnapshot } from "./tech-discovery.ts";
 import { readPrompt, runSdkQuery } from "./sdk.ts";
 import { GoalSelectionSchema, type GoalSelection, type ProjectScan } from "./types.ts";
+import { countQueuedPlans, listPlanStates } from "./state.ts";
 
 function loadFailureTargets(projectPath: string): { goal: string; at: number }[] {
   const dir = projectSubpathForRead(projectPath, "failed-plans");
@@ -44,6 +45,33 @@ function missionRetry(goal: string): boolean {
   return goal.endsWith("?") || goal.endsWith("？");
 }
 
+function recentHotFiles(projectPath: string): string[] {
+  const proc = Bun.spawnSync(
+    ["git", "-C", projectPath, "log", "--since=7 days ago", "--name-only", "--pretty=format:"],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  if (proc.exitCode !== 0) return [];
+  const counts = new Map<string, number>();
+  const out = new TextDecoder().decode(proc.stdout);
+  for (const line of out.split(/\r?\n/)) {
+    const file = line.trim();
+    if (!file || file.includes(" ")) continue;
+    counts.set(file, (counts.get(file) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([file, n]) => `${file} (${n})`);
+}
+
+function recentFailureSummary(projectPath: string): string {
+  return listPlanStates(projectPath, 40)
+    .filter((s) => s.status === "failed")
+    .slice(0, 5)
+    .map((s) => `- ${s.title}: ${(s.error ?? "unknown").slice(0, 120)}`)
+    .join("\n");
+}
+
 export async function selectGoal(
   projectPath: string,
   scan: ProjectScan,
@@ -75,12 +103,17 @@ ${radar}
 
 近期提交：${scan.git?.recentCommits.slice(0, 5).map((c) => c.subject).join("; ") ?? "无"}
 
+队列深度：${countQueuedPlans(projectPath)} / ${cfg.max_pending_plans}
+近期热区：${recentHotFiles(projectPath).join("；") || "无"}
+近期失败：
+${recentFailureSummary(projectPath) || "无"}
+
 教训摘要：
 ${claudeMd}
 
 ROADMAP 快速路径${fast ? `（已跳过或不可用：${fast}）` : "不可用"}
 
-请选择今日目标 JSON。`;
+请选择今日目标 JSON。优先选择最小可交付、低冲突、低重复的目标；避免与近期失败语义重复，必要时把大目标缩成第一段可独立交付的子目标。`;
 
   const run = async () => {
     const { text } = await runSdkQuery({

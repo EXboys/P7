@@ -344,7 +344,15 @@ a.meta-tile:hover{border-color:rgba(107,159,255,.4);background:rgba(107,159,255,
 .chart-empty{text-align:center;padding:32px 16px;color:var(--mut);font-size:13px}
 `;
 
-export type ProjectTab = "overview" | "trends" | "plan" | "run" | "review" | "vulnerabilities" | "settings";
+export type ProjectTab =
+  | "overview"
+  | "trends"
+  | "plan"
+  | "run"
+  | "review"
+  | "automation"
+  | "vulnerabilities"
+  | "settings";
 
 export type SystemPage = "/jobs" | "/settings" | "/logs";
 
@@ -354,6 +362,7 @@ type NavIcon =
   | "plan"
   | "run"
   | "review"
+  | "automation"
   | "vulnerabilities"
   | "settings"
   | "bind"
@@ -368,6 +377,8 @@ const NAV_SVG: Record<NavIcon, string> = {
   run: '<svg viewBox="0 0 24 24"><polygon points="9,7 18,12 9,17" fill="currentColor" stroke="none"/></svg>',
   review:
     '<svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>',
+  automation:
+    '<svg viewBox="0 0 24 24"><path d="M4 13a8 8 0 0 1 14-5"/><path d="M18 4v4h-4"/><path d="M20 11a8 8 0 0 1-14 5"/><path d="M6 20v-4h4"/></svg>',
   vulnerabilities:
     '<svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>',
   settings:
@@ -397,6 +408,7 @@ const PIPELINE: {
   { tab: "plan", label: "规划", icon: "plan" },
   { tab: "run", label: "运行", icon: "run" },
   { tab: "review", label: "Review", icon: "review" },
+  { tab: "automation", label: "健康", icon: "automation" },
   { tab: "vulnerabilities", label: "漏洞", icon: "vulnerabilities" },
   {
     tab: "settings",

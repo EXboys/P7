@@ -88,7 +88,16 @@ export interface ExecutionResult {
   previewUrl?: string;
   prUrl?: string;
   issueUrl?: string;
-  mergeStatus?: "not_requested" | "queued" | "merged" | "failed" | "skipped";
+  mergeStatus?:
+    | "not_requested"
+    | "queued"
+    | "merged"
+    | "failed"
+    | "skipped"
+    | "pending_checks"
+    | "behind"
+    | "merge_blocked"
+    | "closed";
   accountResults?: VcsAccountPublishResult[];
   costUsd?: number;
   tokenUsage?: SdkTokenUsage;

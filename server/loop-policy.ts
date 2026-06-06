@@ -1,6 +1,6 @@
 import type { ServerConfig } from "./config.ts";
 import {
-  hasCompletedFullDailyToday,
+  countCompletedFullDailyToday,
   lastConsecutiveFailures,
   sumTodayJobCostUsd,
 } from "./queue/store.ts";
@@ -34,8 +34,9 @@ export function maybeContinueLoop(
     return { continue: false, reason: "loop_planning_off" };
   }
 
-  if (hasCompletedFullDailyToday(alias)) {
-    return { continue: false, reason: "daily_done_today" };
+  const dailyLimit = dc.discovery.daily_run_limit ?? 1;
+  if (dailyLimit > 0 && countCompletedFullDailyToday(alias) >= dailyLimit) {
+    return { continue: false, reason: "daily_limit_reached" };
   }
 
   if (

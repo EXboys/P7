@@ -53,6 +53,14 @@ type PrView = {
   state?: string;
 };
 
+type CheckState = "passing" | "pending" | "failing" | "unknown";
+
+type CheckRow = {
+  name?: string;
+  state?: string;
+  bucket?: string;
+};
+
 function viewPr(
   projectPath: string,
   prUrl: string,
@@ -72,6 +80,57 @@ function viewPr(
   } catch {
     return null;
   }
+}
+
+function requiredChecksState(
+  projectPath: string,
+  prUrl: string,
+  env?: Record<string, string>,
+): { state: CheckState; detail: string } {
+  const r = ghRun(
+    projectPath,
+    ["gh", "pr", "checks", prUrl, "--required", "--json", "name,state,bucket"],
+    env,
+  );
+  if (!r.ok) {
+    if (/no required checks|no checks/i.test(r.out)) {
+      return { state: "passing", detail: "无 required checks" };
+    }
+    return { state: "unknown", detail: r.out.slice(0, 160) };
+  }
+  try {
+    const rows = JSON.parse(r.out) as CheckRow[];
+    if (rows.length === 0) return { state: "passing", detail: "无 required checks" };
+    const failing = rows.filter((c) => /fail|cancel|skip|timed/i.test(`${c.state} ${c.bucket}`));
+    if (failing.length > 0) {
+      return {
+        state: "failing",
+        detail: `required checks failed: ${failing.map((c) => c.name ?? c.state ?? "check").join(", ")}`,
+      };
+    }
+    const pending = rows.filter((c) => !/pass|success/i.test(`${c.state} ${c.bucket}`));
+    if (pending.length > 0) {
+      return {
+        state: "pending",
+        detail: `required checks pending: ${pending.map((c) => c.name ?? c.state ?? "check").join(", ")}`,
+      };
+    }
+    return { state: "passing", detail: "required checks passed" };
+  } catch {
+    return { state: "unknown", detail: r.out.slice(0, 160) };
+  }
+}
+
+function syncBaseAfterMerge(projectPath: string, baseBranch: string): string {
+  const fetch = git(projectPath, ["fetch", "origin", baseBranch]);
+  if (!fetch.ok) return `fetch ${baseBranch} failed: ${fetch.out}`;
+  const current = git(projectPath, ["branch", "--show-current"]);
+  if (current.ok && current.out === baseBranch) {
+    const pull = git(projectPath, ["pull", "--ff-only", "origin", baseBranch]);
+    return pull.ok ? `本地 ${baseBranch} 已同步` : `pull ${baseBranch} failed: ${pull.out}`;
+  }
+  const update = git(projectPath, ["branch", "-f", baseBranch, `origin/${baseBranch}`]);
+  return update.ok ? `本地 ${baseBranch} 已指向 origin/${baseBranch}` : `branch sync skipped: ${update.out}`;
 }
 
 async function autoReviewPr(
@@ -278,20 +337,44 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
   const waitMs = (input.mergeWaitMinutes ?? defaultWaitMinutes) * 60 * 1000;
   const deadline = Date.now() + waitMs;
   const baseBranch = defaultBaseBranch(config);
+  let lastStatus: NonNullable<VcsPublishResult["mergeStatus"]> = "merge_blocked";
+  let lastDetail = "等待 GitHub 返回可合并状态";
 
   while (Date.now() < deadline) {
     const pr = viewPr(projectPath, prUrl, mergeEnv);
     if (!pr) {
+      lastDetail = "无法读取 PR 状态";
       await sleep(6_000);
       continue;
     }
 
+    if (pr.state === "CLOSED") {
+      await appendLesson(projectPath, `pr:closed ${prUrl}`);
+      return { mergeStatus: "closed", detail: "PR 已被外部关闭" };
+    }
+
     if (pr.mergeable === "MERGEABLE" && pr.mergeStateStatus === "CLEAN") {
-      if (await tryGhMerge(projectPath, prUrl, mergeEnv)) {
-        const msg = `主账号已合并 PR（${parts.join("；")}）`;
-        await appendLesson(projectPath, `pr:merged ${prUrl}`);
-        return { mergeStatus: "merged", detail: msg };
+      const checks = requiredChecksState(projectPath, prUrl, mergeEnv);
+      if (checks.state === "pending" || checks.state === "unknown") {
+        lastStatus = "pending_checks";
+        lastDetail = checks.detail;
+        parts.push(checks.detail);
+        await sleep(8_000);
+        continue;
       }
+      if (checks.state === "failing") {
+        await appendLesson(projectPath, `pr:checks-failed ${prUrl} — ${checks.detail}`);
+        return { mergeStatus: "failed", detail: checks.detail };
+      }
+      if (await tryGhMerge(projectPath, prUrl, mergeEnv)) {
+        const sync = syncBaseAfterMerge(projectPath, baseBranch);
+        const msg = `主账号已合并 PR（${parts.join("；")}）`;
+        await appendLesson(projectPath, `pr:merged ${prUrl} — ${sync}`);
+        return { mergeStatus: "merged", detail: `${msg}；${sync}` };
+      }
+      parts.push("merge command blocked，等待下一轮状态刷新");
+      lastStatus = "merge_blocked";
+      lastDetail = "merge command blocked";
     }
 
     if (
@@ -299,13 +382,16 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
       pr.mergeStateStatus === "DIRTY" ||
       pr.mergeStateStatus === "BEHIND"
     ) {
+      lastStatus = pr.mergeStateStatus === "BEHIND" ? "behind" : "merge_blocked";
+      lastDetail = `PR 状态 ${pr.mergeable ?? "unknown"} / ${pr.mergeStateStatus ?? "unknown"}`;
       if (vcs.merge_resolve_conflicts !== false) {
         await updatePrBranch(projectPath, prUrl, mergeEnv);
         await sleep(8_000);
         const pr2 = viewPr(projectPath, prUrl, mergeEnv);
         if (pr2?.mergeable === "MERGEABLE" && pr2.mergeStateStatus === "CLEAN") {
           if (await tryGhMerge(projectPath, prUrl, mergeEnv)) {
-            return { mergeStatus: "merged", detail: "主账号 update-branch 后已合并" };
+            const sync = syncBaseAfterMerge(projectPath, baseBranch);
+            return { mergeStatus: "merged", detail: `主账号 update-branch 后已合并；${sync}` };
           }
         }
         const fixed = await resolveConflictsLocally(projectPath, branch, baseBranch, plan, vcs);
@@ -313,8 +399,9 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
         if (fixed.ok) {
           await sleep(6_000);
           if (await tryGhMerge(projectPath, prUrl, mergeEnv)) {
-            await appendLesson(projectPath, `pr:merged after conflict fix ${prUrl}`);
-            return { mergeStatus: "merged", detail: parts.join("；") };
+            const sync = syncBaseAfterMerge(projectPath, baseBranch);
+            await appendLesson(projectPath, `pr:merged after conflict fix ${prUrl} — ${sync}`);
+            return { mergeStatus: "merged", detail: `${parts.join("；")}；${sync}` };
           }
         }
         await sleep(8_000);
@@ -326,14 +413,15 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
     }
 
     if (pr.state === "MERGED") {
-      return { mergeStatus: "merged", detail: "PR 已合并" };
+      const sync = syncBaseAfterMerge(projectPath, baseBranch);
+      return { mergeStatus: "merged", detail: `PR 已合并；${sync}` };
     }
 
     await sleep(8_000);
   }
 
   return {
-    mergeStatus: "failed",
-    detail: `等待合并超时（${input.mergeWaitMinutes ?? defaultWaitMinutes} 分钟）`,
+    mergeStatus: lastStatus,
+    detail: `等待合并超时（${input.mergeWaitMinutes ?? defaultWaitMinutes} 分钟）：${lastDetail}`,
   };
 }

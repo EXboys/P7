@@ -163,6 +163,8 @@ export const DevAgentConfigSchema = z.object({
       allow_template_fallback: z.boolean().default(false),
       /** Roadmap 有未完成步骤且无待执行 Plan 时，调度器自动从 Roadmap 生成 Plan */
       auto_recover_stall: z.boolean().default(true),
+      /** 每日完整 discover 次数上限；0 表示不按天限制，适合无人值守连续循环 */
+      daily_run_limit: z.number().int().nonnegative().default(1),
     })
     .default({
       enabled: true,
@@ -174,6 +176,7 @@ export const DevAgentConfigSchema = z.object({
       auto_execute_after_approve: true,
       allow_template_fallback: false,
       auto_recover_stall: true,
+      daily_run_limit: 1,
     }),
   allowed_api_domains: z.array(z.string()).default(["api.anthropic.com"]),
   max_pending_plans: z.number().int().positive().default(5),
@@ -270,6 +273,7 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         auto_execute_after_approve: true,
         allow_template_fallback: false,
         auto_recover_stall: true,
+        daily_run_limit: 1,
       },
       allowed_api_domains: ["api.anthropic.com"],
       max_pending_plans: 5,

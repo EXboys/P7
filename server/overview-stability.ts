@@ -12,6 +12,7 @@ import { getPlanState, listPlanStatesByStatuses, transitionPlanState } from "../
 import { planDisplayTitle } from "../src/plan-i18n.ts";
 import { listJobsForProject } from "./queue/store.ts";
 import type { JobRow } from "./queue/types.ts";
+import { classifyFailure } from "../src/failure-classifier.ts";
 
 export type OverviewFailureKind = "plan" | "job";
 
@@ -69,51 +70,8 @@ export function reconcilePhantomExecuting(
 }
 
 function classifyRetryHint(error: string): { retryable: boolean; hint: string } {
-  const e = error.toLowerCase();
-  if (/api domain|allowed list|no_llm|llm|auth token|preflight/i.test(e)) {
-    return { retryable: false, hint: "先修环境检查 / API 白名单 / LLM Key" };
-  }
-  if (/open pr|冲突|conflicting/i.test(e)) {
-    return { retryable: false, hint: "先处理 OPEN PR（复查页）" };
-  }
-  if (/max_pending|queue depth/i.test(e)) {
-    return { retryable: false, hint: "先审批或清理积压 Plan" };
-  }
-  if (/permission violations|outside worktree boundary/i.test(e)) {
-    const fatalBoundary = /(?:^|\n)-\s*(Write|Edit): .*outside worktree boundary/i.test(error);
-    if (!fatalBoundary) {
-      return {
-        retryable: true,
-        hint: "只读路径边界误判已降级为非致命，可直接重试执行",
-      };
-    }
-    return {
-      retryable: false,
-      hint: "权限边界拦截：写入路径越过 worktree，请重新生成更准确的 Plan",
-    };
-  }
-  if (/file not in plan/i.test(e)) {
-    return { retryable: false, hint: "Plan 范围不完整，请重新生成 Plan" };
-  }
-  if (/diff too large|too many files/i.test(e)) {
-    return {
-      retryable: false,
-      hint: "改动超过 diff/文件上限：已放宽上限，重试前请让 Plan 拆得更小，或调大 diff_critic 上限",
-    };
-  }
-  if (/exit 143|超时被终止|超时.*终止/i.test(e)) {
-    return {
-      retryable: true,
-      hint: "上次被超时杀掉；已加长 discover 时限，重试前确认 API 可达",
-    };
-  }
-  if (/unable to connect|failedtoopensocket|econnreset|connection refused/i.test(e)) {
-    return { retryable: false, hint: "API 连不上：检查网络、代理、ANTHROPIC_BASE_URL / Key" };
-  }
-  if (/timeout|rate limit/i.test(e)) {
-    return { retryable: true, hint: "多为瞬时故障，可稍后重试" };
-  }
-  return { retryable: true, hint: "可尝试重试；多次失败请查看任务日志" };
+  const classified = classifyFailure(error);
+  return { retryable: classified.retryable, hint: classified.hint };
 }
 
 function jobTitle(job: JobRow): string {

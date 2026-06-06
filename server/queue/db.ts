@@ -7,6 +7,7 @@ import { jobBlockedByRunning, PROJECT_MUTEX_KINDS } from "./project-mutex.ts";
 export { jobBlockedByRunning } from "./project-mutex.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 import {
+  countCompletedFullDailyToday,
   filterActiveDailyToday,
   filterCompletedFullDailyToday,
 } from "../../src/daily-schedule.ts";
@@ -213,6 +214,19 @@ export function hasCompletedFullDailyToday(alias: string): boolean {
     .all(alias, prefix) as JobRow[];
   return filterCompletedFullDailyToday(rows);
 }
+
+export function countCompletedFullDailyTodayForAlias(alias: string): number {
+  const day = new Date().toISOString().slice(0, 10);
+  const prefix = `${day}%`;
+  const rows = getDb()
+    .query(
+      `SELECT * FROM jobs WHERE project_alias = ? AND kind IN ('daily', 'discover-daily') AND created_at LIKE ? AND status = 'done'`,
+    )
+    .all(alias, prefix) as JobRow[];
+  return countCompletedFullDailyToday(rows);
+}
+
+export { countCompletedFullDailyTodayForAlias as countCompletedFullDailyToday };
 
 /** @deprecated */
 export function hasPendingDailyToday(alias: string): boolean {

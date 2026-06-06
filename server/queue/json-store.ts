@@ -4,6 +4,7 @@ import type { JobKind, JobRow, JobStatus } from "./types.ts";
 import { PROJECT_MUTEX_KINDS } from "./project-mutex.ts";
 import { resolveP7HomeDir } from "../../src/p7-paths.ts";
 import {
+  countCompletedFullDailyToday,
   filterActiveDailyToday,
   filterCompletedFullDailyToday,
 } from "../../src/daily-schedule.ts";
@@ -181,6 +182,13 @@ export function hasCompletedFullDailyToday(alias: string): boolean {
   const jobs = loadAll().filter((r) => r.project_alias === alias);
   return filterCompletedFullDailyToday(jobs);
 }
+
+export function countCompletedFullDailyTodayForAlias(alias: string): number {
+  const jobs = loadAll().filter((r) => r.project_alias === alias);
+  return countCompletedFullDailyToday(jobs);
+}
+
+export { countCompletedFullDailyTodayForAlias as countCompletedFullDailyToday };
 
 /** @deprecated 用 hasActiveDailyJob / hasCompletedFullDailyToday */
 export function hasPendingDailyToday(alias: string): boolean {

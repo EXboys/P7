@@ -36,3 +36,13 @@ export function filterCompletedFullDailyToday(jobs: JobRow[]): boolean {
       !isRecoverStallPayload(j.payload),
   );
 }
+
+export function countCompletedFullDailyToday(jobs: JobRow[]): number {
+  return jobs.filter(
+    (j) =>
+      isDailyKind(j.kind) &&
+      jobCreatedToday(j.created_at) &&
+      j.status === "done" &&
+      !isRecoverStallPayload(j.payload),
+  ).length;
+}

@@ -20,6 +20,7 @@ import {
   queryEvalRouteStats,
 } from "../src/state.ts";
 import type { PlanStateStatus } from "../src/types.ts";
+import type { JobRow, StepState } from "./queue/types.ts";
 import { loadSnapshot, listSnapshots } from "../src/tech-discovery.ts";
 import {
   autoApproveBlockReason,
@@ -54,6 +55,7 @@ import { resolveP7HomeDir } from "../src/p7-paths.ts";
 import type { DevAgentConfig } from "../src/config.ts";
 import { computeTypeSafetyMetrics, type TypeSafetyMetrics } from "../src/gradual-typecheck-config.ts";
 import { parseFindings } from "../src/diff-critic.ts";
+import { classifyFailure } from "../src/failure-classifier.ts";
 import {
   checkGhAuth,
   collectGhAuthChecks,
@@ -104,6 +106,114 @@ function parsePageParam(value: string | undefined): number {
 
 function pageOffset(page: number, perPage = LIST_PAGE_SIZE): number {
   return (Math.max(1, page) - 1) * perPage;
+}
+
+function limitText(value: number, unit = ""): string {
+  return value === 0 ? "不限制" : `${value}${unit}`;
+}
+
+function applyNonNegativeInt(
+  body: Record<string, string>,
+  key: string,
+  current: number,
+): number {
+  const n = Number(body[key]);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : current;
+}
+
+function applyPositiveNumber(
+  body: Record<string, string>,
+  key: string,
+  current: number,
+): number {
+  const n = Number(body[key]);
+  return Number.isFinite(n) && n > 0 ? n : current;
+}
+
+function parseStepStates(job: JobRow): StepState[] {
+  if (!job.step_states) return [];
+  try {
+    const parsed = JSON.parse(job.step_states) as StepState[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function renderAutomationHealthPage(opts: {
+  alias: string;
+  dailyCapUsd: number;
+  jobs: JobRow[];
+  states: ReturnType<typeof listPlanStates>;
+  openPrBlocked: string | null;
+  todayCostUsd: number;
+  monthCost: { total: number; jobs: number };
+}): string {
+  const since = Date.now() - 24 * 3600 * 1000;
+  const jobs24h = opts.jobs.filter((j) => new Date(j.created_at).getTime() >= since);
+  const done = jobs24h.filter((j) => j.status === "done").length;
+  const failed = jobs24h.filter((j) => j.status === "failed").length;
+  const running = opts.jobs.filter((j) => j.status === "running" || j.status === "pending");
+  const successRate = done + failed > 0 ? `${Math.round((done / (done + failed)) * 100)}%` : "无数据";
+  const failedKinds = new Map<string, number>();
+  const humanEvents: string[] = [];
+  for (const job of jobs24h.filter((j) => j.status === "failed")) {
+    const c = classifyFailure(job.error ?? "");
+    failedKinds.set(c.kind, (failedKinds.get(c.kind) ?? 0) + 1);
+    if (c.hardStop) humanEvents.push(`${jobKindLabel(job.kind)}：${c.hint}`);
+  }
+  if (opts.openPrBlocked) humanEvents.push(`PR 阻塞：${opts.openPrBlocked}`);
+  if (opts.todayCostUsd >= opts.dailyCapUsd * 0.8) {
+    humanEvents.push(`成本接近日上限：${formatUsd(opts.todayCostUsd)} / ${formatUsd(opts.dailyCapUsd)}`);
+  }
+  const pendingPlans = opts.states.filter((s) => s.status === "pending_approval").length;
+  const failedPlans = opts.states.filter((s) => s.status === "failed").length;
+  const nextAction = running[0]
+    ? `等待 ${jobKindLabel(running[0].kind)} 完成`
+    : opts.openPrBlocked
+      ? "调度器会先复查/合并 OPEN PR"
+      : pendingPlans > 0
+        ? "自动审批或人工审批待处理 Plan"
+        : failedPlans > 0
+          ? "失败分类器会对可修复失败自动重试"
+          : "可继续 discover / plan / execute 下一轮";
+
+  const durations = new Map<string, { totalMs: number; count: number; failed: number }>();
+  for (const job of jobs24h) {
+    for (const step of parseStepStates(job)) {
+      const started = new Date(step.started_at).getTime();
+      const finished = step.finished_at ? new Date(step.finished_at).getTime() : NaN;
+      if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) continue;
+      const cur = durations.get(step.step_name) ?? { totalMs: 0, count: 0, failed: 0 };
+      cur.totalMs += finished - started;
+      cur.count++;
+      if (step.status === "failed") cur.failed++;
+      durations.set(step.step_name, cur);
+    }
+  }
+  const durationRows = [...durations.entries()]
+    .sort((a, b) => b[1].totalMs / b[1].count - a[1].totalMs / a[1].count)
+    .slice(0, 10)
+    .map(([step, v]) => `<tr><td>${esc(step)}</td><td>${Math.round(v.totalMs / v.count / 1000)}s</td><td>${v.count}</td><td>${v.failed}</td></tr>`)
+    .join("");
+  const failureRows = [...failedKinds.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, count]) => `<tr><td>${esc(kind)}</td><td>${count}</td></tr>`)
+    .join("");
+
+  return `<div class="panel">
+<div class="panel-head"><h2>自动化健康</h2><span class="muted">最近 24h</span></div>
+<div class="health-banner ${humanEvents.length ? "fail" : "ok"}"><span class="health-icon">${humanEvents.length ? "!" : "✓"}</span><div><strong>${humanEvents.length ? "需要关注" : "无人值守链路健康"}</strong><span>${esc(nextAction)}</span></div></div>
+<div class="cards">${metricCard(successRate, "24h 成功率")}${metricCard(done, "成功任务")}${metricCard(failed, "失败任务", failed ? "warn" : undefined)}${metricCard(running.length, "待执行/运行中", running.length ? "warn" : undefined)}${metricCard(formatUsd(opts.todayCostUsd), "今日成本")}</div>
+</div>
+<div class="overview-grid">
+<div class="panel"><h2>当前阻塞项</h2>${humanEvents.length ? `<ul>${humanEvents.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : `<p class="muted">没有需要人工介入的阻塞项。</p>`}</div>
+<div class="panel"><h2>成本与吞吐</h2><p class="muted">今日 ${formatUsd(opts.todayCostUsd)} / 日上限 ${formatUsd(opts.dailyCapUsd)}；本月 ${formatUsd(opts.monthCost.total)}，共 ${opts.monthCost.jobs} 个计费任务。</p><p class="muted">下一动作：${esc(nextAction)}</p></div>
+</div>
+<div class="overview-grid">
+<div class="panel"><h2>失败类型</h2><div class="tbl-wrap"><table><thead><tr><th>类型</th><th>次数</th></tr></thead><tbody>${failureRows || `<tr><td colspan="2" class="empty">无失败</td></tr>`}</tbody></table></div></div>
+<div class="panel"><h2>阶段耗时</h2><div class="tbl-wrap"><table><thead><tr><th>阶段</th><th>平均耗时</th><th>次数</th><th>失败</th></tr></thead><tbody>${durationRows || `<tr><td colspan="4" class="empty">暂无 step_states</td></tr>`}</tbody></table></div></div>
+</div>`;
 }
 
 function renderListPager(opts: {
@@ -1070,6 +1180,37 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
     return c.html(html ?? "not found", html ? 200 : 404);
   });
 
+  app.get("/project/:alias/automation", (c) => {
+    const cfg = getCfg();
+    const alias = c.req.param("alias");
+    const proj = resolveProject(cfg, alias);
+    if (!proj) return c.text("not found", 404);
+    const flash = c.req.query("flash");
+    const states = existsSync(proj.path) ? listPlanStates(proj.path, 200) : [];
+    const dc = existsSync(proj.path) ? loadConfig(proj.path) : null;
+    const openPrBlocked =
+      dc && ghInstalled() && gitRemoteOrigin(proj.path)
+        ? checkPrWorkGate(proj.path, dc).reason || null
+        : null;
+    const body = renderAutomationHealthPage({
+      alias,
+      dailyCapUsd: cfg.daily_cost_cap_usd,
+      jobs: listJobsForProject(alias, 10_000),
+      states,
+      openPrBlocked,
+      todayCostUsd: sumTodayJobCostUsd(alias),
+      monthCost: sumMonthJobCostUsd(alias),
+    });
+    const html = projectShell(cfg, alias, "automation", {
+      title: "自动化健康",
+      description: "无人值守链路的阻塞项、下一动作、成功率、成本与阶段耗时。",
+      body,
+      flash,
+      pipelineDone: 6,
+    });
+    return c.html(html ?? "not found", html ? 200 : 404);
+  });
+
   app.get("/project/:alias/settings", (c) => {
     const cfg = getCfg();
     const alias = c.req.param("alias");
@@ -1093,6 +1234,7 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
       body = `<form method="post" action="/project/${encodeURIComponent(alias)}/config" class="panel">
 <label>北极星目标</label>
 <textarea name="initial_goal" rows="2">${esc(dc.initial_goal)}</textarea>
+<div class="health-banner ok" style="margin:14px 0"><span class="health-icon">✓</span><div><strong>无人值守策略</strong><span>规模阈值填 <code>0</code> 表示不限制；仍保留类型检查、测试、权限边界、成本/超时、PR 冲突等硬停条件。</span></div></div>
 <div class="row">
 <div><label>趋势抓取</label><select name="discovery_enabled"><option value="1" ${dc.discovery.enabled ? "selected" : ""}>开</option><option value="0" ${!dc.discovery.enabled ? "selected" : ""}>关</option></select></div>
 <div><label>批准后自动执行</label><select name="auto_execute_after_approve"><option value="1" ${dc.discovery.auto_execute_after_approve !== false ? "selected" : ""}>是</option><option value="0" ${dc.discovery.auto_execute_after_approve === false ? "selected" : ""}>否</option></select></div>
@@ -1101,8 +1243,34 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
 <div><label>自动审批</label><select name="auto_approve_enabled"><option value="1" ${dc.auto_approve.enabled ? "selected" : ""}>开</option><option value="0" ${!dc.auto_approve.enabled ? "selected" : ""}>关</option></select></div>
 <div><label>diff 行上限（0 = 不限制）</label><input name="diff_lines_max" type="number" min="0" value="${esc(String(dc.auto_approve.diff_lines_max))}"/></div>
 </div>
-<input type="hidden" name="auto_select_goal" value="${dc.auto_select_goal ? "1" : "0"}"/>
-<input type="hidden" name="loop_planning" value="${dc.loop_planning ? "1" : "0"}"/>
+<div class="row">
+<div><label>文件数上限（0 = 不限制）</label><input name="files_max" type="number" min="0" value="${esc(String(dc.auto_approve.files_max))}"/></div>
+<div><label>风险条数上限（0 = 不限制）</label><input name="risks_max" type="number" min="0" value="${esc(String(dc.auto_approve.risks_max))}"/></div>
+</div>
+<div class="row">
+<div><label>实际 diff 行门禁（0 = 不限制）</label><input name="max_diff_ceiling" type="number" min="0" value="${esc(String(dc.diff_critic.max_diff_ceiling))}"/></div>
+<div><label>实际文件数门禁（0 = 不限制）</label><input name="max_files_ceiling" type="number" min="0" value="${esc(String(dc.diff_critic.max_files_ceiling))}"/></div>
+</div>
+<div class="row">
+<div><label>持续选题</label><select name="auto_select_goal"><option value="1" ${dc.auto_select_goal ? "selected" : ""}>开</option><option value="0" ${!dc.auto_select_goal ? "selected" : ""}>关</option></select></div>
+<div><label>循环规划</label><select name="loop_planning"><option value="1" ${dc.loop_planning ? "selected" : ""}>开</option><option value="0" ${!dc.loop_planning ? "selected" : ""}>关</option></select></div>
+</div>
+<div class="row">
+<div><label>单次执行成本上限 USD</label><input name="execution_cost_limit" type="number" min="0.01" step="0.01" value="${esc(String(dc.execution_cost_limit))}"/></div>
+<div><label>目标累计成本上限 USD</label><input name="goal_cost_limit" type="number" min="0.01" step="0.01" value="${esc(String(dc.goal_cost_limit))}"/></div>
+</div>
+<div class="row">
+<div><label>执行超时（分钟）</label><input name="execution_timeout_minutes" type="number" min="1" value="${esc(String(dc.execution_timeout_minutes))}"/></div>
+<div><label>最大待处理 Plan</label><input name="max_pending_plans" type="number" min="1" value="${esc(String(dc.max_pending_plans))}"/></div>
+</div>
+<div class="row">
+<div><label>每日自动循环上限（0 = 不限制）</label><input name="daily_run_limit" type="number" min="0" value="${esc(String(dc.discovery.daily_run_limit ?? 1))}"/></div>
+<div><label>连续失败熔断次数</label><input name="max_consecutive_failures" type="number" min="1" value="${esc(String(dc.max_consecutive_failures))}"/></div>
+</div>
+<div class="row">
+<div><label>测试命令（可选）</label><input name="test_command" value="${esc(dc.test_command ?? "")}" placeholder="bun test"/></div>
+</div>
+<p class="muted" style="margin:12px 0 0;font-size:12px">当前软限制：自动审批 ${limitText(dc.auto_approve.files_max, " 文件")} / ${limitText(dc.auto_approve.diff_lines_max, " 行")} / ${limitText(dc.auto_approve.risks_max, " 风险")}；执行后 diff 门禁 ${limitText(dc.diff_critic.max_files_ceiling, " 文件")} / ${limitText(dc.diff_critic.max_diff_ceiling, " 行")}。</p>
 <input type="hidden" name="hn_limit" value="${esc(String(dc.discovery.hn_limit))}"/>
 <input type="hidden" name="auto_refresh_roadmap" value="${dc.discovery.auto_refresh_roadmap ? "1" : "0"}"/>
 <input type="hidden" name="auto_plan_after_refresh" value="${dc.discovery.auto_plan_after_refresh ? "1" : "0"}"/>
@@ -1204,14 +1372,20 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
     dc.discovery.auto_refresh_roadmap = body.auto_refresh_roadmap === "1";
     dc.discovery.auto_plan_after_refresh = body.auto_plan_after_refresh === "1";
     dc.discovery.auto_execute_after_approve = body.auto_execute_after_approve === "1";
+    dc.discovery.daily_run_limit = applyNonNegativeInt(body, "daily_run_limit", dc.discovery.daily_run_limit ?? 1);
     dc.auto_approve.enabled = body.auto_approve_enabled === "1";
-    const diffLinesMax = Number(body.diff_lines_max);
-    if (Number.isFinite(diffLinesMax) && diffLinesMax >= 0) {
-      dc.auto_approve.diff_lines_max = Math.floor(diffLinesMax);
-    }
+    dc.auto_approve.diff_lines_max = applyNonNegativeInt(body, "diff_lines_max", dc.auto_approve.diff_lines_max);
+    dc.auto_approve.files_max = applyNonNegativeInt(body, "files_max", dc.auto_approve.files_max);
+    dc.auto_approve.risks_max = applyNonNegativeInt(body, "risks_max", dc.auto_approve.risks_max);
+    dc.diff_critic.max_diff_ceiling = applyNonNegativeInt(body, "max_diff_ceiling", dc.diff_critic.max_diff_ceiling);
+    dc.diff_critic.max_files_ceiling = applyNonNegativeInt(body, "max_files_ceiling", dc.diff_critic.max_files_ceiling);
+    dc.execution_timeout_minutes = applyPositiveNumber(body, "execution_timeout_minutes", dc.execution_timeout_minutes);
+    dc.max_pending_plans = Math.max(1, applyNonNegativeInt(body, "max_pending_plans", dc.max_pending_plans));
+    dc.max_consecutive_failures = Math.max(1, applyNonNegativeInt(body, "max_consecutive_failures", dc.max_consecutive_failures));
     const tc = String(body.test_command ?? "").trim();
     dc.test_command = tc || undefined;
-    dc.execution_cost_limit = Number(body.execution_cost_limit) || dc.execution_cost_limit;
+    dc.execution_cost_limit = applyPositiveNumber(body, "execution_cost_limit", dc.execution_cost_limit);
+    dc.goal_cost_limit = applyPositiveNumber(body, "goal_cost_limit", dc.goal_cost_limit);
     saveConfig(proj.path, dc);
     audit("project.config.save", { alias });
     return c.redirect(

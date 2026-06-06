@@ -1,11 +1,12 @@
 import type { ServerConfig } from "./config.ts";
 import { audit } from "./audit.ts";
 import {
+  countCompletedFullDailyToday,
   enqueueJob,
   hasActiveDailyJob,
   hasActiveExecuteJob,
-  hasCompletedFullDailyToday,
   hasProjectMutexInFlight,
+  hasPrReviewInFlight,
 } from "./queue/store.ts";
 import { loadConfig } from "../src/config.ts";
 import { pickNextApprovedPlanForExecution, sweepStuckApprovedPlans } from "../src/approval.ts";
@@ -26,6 +27,23 @@ function prGate(path: string, dc: ReturnType<typeof loadConfig>) {
   return ghInstalled() && gitRemoteOrigin(path)
     ? checkPrWorkGate(path, dc)
     : { blocked: false, reason: "no_gh" };
+}
+
+function enqueuePrReviewForBlock(
+  alias: string,
+  projectPath: string,
+  reason: string,
+  dc: ReturnType<typeof loadConfig>,
+): boolean {
+  if (!dc.vcs.enabled || dc.vcs.review_open_prs === false) return false;
+  if (hasPrReviewInFlight(alias) || hasProjectMutexInFlight(alias, "pr-review")) return false;
+  enqueueJob({
+    kind: "pr-review",
+    payload: { projectPath },
+    projectAlias: alias,
+  });
+  audit("scheduler.pr_review_enqueued_for_block", { alias, reason });
+  return true;
 }
 
 function runSchedulerTick(cfg: ServerConfig): void {
@@ -74,6 +92,7 @@ function runSchedulerTick(cfg: ServerConfig): void {
             continue;
           }
         } else {
+          enqueuePrReviewForBlock(alias, path, "open_prs_block_execute", dc);
           audit("scheduler.skipped", { alias, reason: "open_prs_block_execute" });
         }
       }
@@ -94,6 +113,7 @@ function runSchedulerTick(cfg: ServerConfig): void {
     const stall = shouldEnqueuePipelineRecovery(path, alias, dc);
     if (stall) {
       if (gate.blocked) {
+        enqueuePrReviewForBlock(alias, path, "open_prs_block_recovery", dc);
         audit("scheduler.skipped", { alias, reason: "open_prs_block_recovery" });
         continue;
       }
@@ -119,12 +139,14 @@ function runSchedulerTick(cfg: ServerConfig): void {
       continue;
     }
 
-    if (hasCompletedFullDailyToday(alias)) {
-      audit("scheduler.skipped", { alias, reason: "daily_done_today" });
+    const dailyLimit = dc.discovery.daily_run_limit ?? 1;
+    if (dailyLimit > 0 && countCompletedFullDailyToday(alias) >= dailyLimit) {
+      audit("scheduler.skipped", { alias, reason: "daily_limit_reached", dailyLimit });
       continue;
     }
 
     if (gate.blocked) {
+      enqueuePrReviewForBlock(alias, path, "open_prs_block", dc);
       audit("scheduler.skipped", { alias, reason: "open_prs_block" });
       continue;
     }

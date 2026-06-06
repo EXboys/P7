@@ -18,11 +18,16 @@ import {
 import type { DailyJobPayload, ExecuteJobPayload, JobKind, JobPayload } from "./types.ts";
 import { loadClaudeSettingsEnv } from "../../src/sdk.ts";
 import { loadConfig } from "../../src/config.ts";
-import { getApprovalRecord } from "../../src/approval.ts";
-import { getPlanState, transitionPlanState } from "../../src/state.ts";
+import {
+  canSchedulerRetryFailedPlan,
+  FAILED_RETRY_COOLDOWN_MS,
+  getApprovalRecord,
+} from "../../src/approval.ts";
+import { getPlanState, preparePlanExecuteRetry, transitionPlanState } from "../../src/state.ts";
 import { checkPrWorkGate } from "../../src/vcs/pr-work-gate.ts";
 import { mergeConflictWaitMinutes } from "../../src/vcs/merge-conflict.ts";
 import { ghInstalled, gitRemoteOrigin } from "../../src/gh-status.ts";
+import { classifyFailure } from "../../src/failure-classifier.ts";
 
 const MAX_RUN_MS = 40 * 60 * 1000;
 const STALE_RECLAIM_MS = 20 * 60 * 1000;
@@ -257,6 +262,48 @@ function syncFailedExecutePlanState(projectPath: string, payload: JobPayload, er
   });
 }
 
+function scheduleExecuteRepair(
+  alias: string,
+  projectPath: string,
+  payload: JobPayload,
+  error: string,
+): void {
+  const planId = (payload as ExecuteJobPayload).planId;
+  if (!planId) return;
+  const classified = classifyFailure(error);
+  audit("execute.failure_classified", {
+    alias,
+    planId,
+    kind: classified.kind,
+    autoRepair: classified.autoRepair,
+    retryable: classified.retryable,
+  });
+  if (!classified.autoRepair || !classified.retryable || classified.hardStop) return;
+  setTimeout(() => {
+    try {
+      const state = getPlanState(projectPath, planId);
+      if (!state || !canSchedulerRetryFailedPlan(alias, planId, state)) return;
+      if (!preparePlanExecuteRetry(projectPath, planId)) return;
+      enqueueJob({
+        kind: "execute",
+        payload: { projectPath, planId },
+        projectAlias: alias,
+      });
+      audit("execute.auto_repair_enqueued", {
+        alias,
+        planId,
+        failureKind: classified.kind,
+      });
+    } catch (e) {
+      audit("execute.auto_repair_failed", {
+        alias,
+        planId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, FAILED_RETRY_COOLDOWN_MS);
+}
+
 export function startWorker(cfg: ServerConfig): () => void {
   for (const job of reclaimOrphanedRunningJobs()) {
     audit("job.reclaimed_orphan", { id: job.id, alias: job.project_alias });
@@ -397,12 +444,16 @@ export function startWorker(cfg: ServerConfig): () => void {
               (payload as DailyJobPayload).projectPath ??
               (payload as ExecuteJobPayload).projectPath,
           );
-          if (job.kind === "execute") syncFailedExecutePlanState(projectPath, payload, err);
+          if (job.kind === "execute") {
+            syncFailedExecutePlanState(projectPath, payload, err);
+            scheduleExecuteRepair(job.project_alias, projectPath, payload, err);
+          }
         } catch {
           /* best-effort state sync */
         }
         finishJob(job.id, "failed", null, err);
-        audit("job.failed", { id: job.id, error: err });
+        const classified = classifyFailure(err);
+        audit("job.failed", { id: job.id, error: err, failureKind: classified.kind });
       } finally {
         trackEnd(job.project_alias, job.kind);
       }
