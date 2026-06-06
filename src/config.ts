@@ -82,6 +82,19 @@ export const DevAgentConfigSchema = z.object({
           strip_boilerplate: true,
           max_hunk_lines: 200,
         }),
+      pre_check: z
+        .object({
+          enabled: z.boolean().default(true),
+          block_on_scope_violation: z.boolean().default(true),
+          block_on_size_anomaly: z.boolean().default(true),
+          block_on_security_red_flag: z.boolean().default(true),
+        })
+        .default({
+          enabled: true,
+          block_on_scope_violation: true,
+          block_on_size_anomaly: true,
+          block_on_security_red_flag: true,
+        }),
     })
     .default({
       tolerated_files: [],
@@ -94,6 +107,12 @@ export const DevAgentConfigSchema = z.object({
         strip_comment_only: true,
         strip_boilerplate: true,
         max_hunk_lines: 200,
+      },
+      pre_check: {
+        enabled: true,
+        block_on_scope_violation: true,
+        block_on_size_anomaly: true,
+        block_on_security_red_flag: true,
       },
     }),
   vcs: z
@@ -265,6 +284,12 @@ export function loadConfig(projectPath: string): DevAgentConfig {
           strip_comment_only: true,
           strip_boilerplate: true,
           max_hunk_lines: 200,
+        },
+        pre_check: {
+          enabled: true,
+          block_on_scope_violation: true,
+          block_on_size_anomaly: true,
+          block_on_security_red_flag: true,
         },
       },
       vcs: {
