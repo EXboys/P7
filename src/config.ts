@@ -67,12 +67,34 @@ export const DevAgentConfigSchema = z.object({
       max_diff_multiplier: z.number().default(1.5),
       max_diff_ceiling: z.number().int().nonnegative().default(1000),
       max_files_ceiling: z.number().int().nonnegative().default(8),
+      diff_filter: z
+        .object({
+          enabled: z.boolean().default(true),
+          strip_format_noise: z.boolean().default(true),
+          strip_comment_only: z.boolean().default(true),
+          strip_boilerplate: z.boolean().default(true),
+          max_hunk_lines: z.number().int().nonnegative().default(200),
+        })
+        .default({
+          enabled: true,
+          strip_format_noise: true,
+          strip_comment_only: true,
+          strip_boilerplate: true,
+          max_hunk_lines: 200,
+        }),
     })
     .default({
       tolerated_files: [],
       max_diff_multiplier: 1.5,
       max_diff_ceiling: 1000,
       max_files_ceiling: 8,
+      diff_filter: {
+        enabled: true,
+        strip_format_noise: true,
+        strip_comment_only: true,
+        strip_boilerplate: true,
+        max_hunk_lines: 200,
+      },
     }),
   vcs: z
     .object({
@@ -237,6 +259,13 @@ export function loadConfig(projectPath: string): DevAgentConfig {
         max_diff_multiplier: 1.5,
         max_diff_ceiling: 1000,
         max_files_ceiling: 8,
+        diff_filter: {
+          enabled: true,
+          strip_format_noise: true,
+          strip_comment_only: true,
+          strip_boilerplate: true,
+          max_hunk_lines: 200,
+        },
       },
       vcs: {
         enabled: true,
