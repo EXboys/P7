@@ -715,7 +715,7 @@ ${content ? `<pre class="roadmap-backup-body">${esc(content)}</pre>` : `<p class
       const autoApproveBanner =
         pending.length > 0 && dc.auto_approve.enabled
           ? `<div class="panel" style="margin-bottom:14px;padding:14px 16px">
-<p style="margin:0 0 10px;font-size:13px">自动审批<strong>${dc.auto_approve.enabled ? "已开启" : "已关闭"}</strong>：≤${Math.max(dc.auto_approve.files_max, dc.diff_critic.max_files_ceiling)} 文件、≤${Math.max(dc.auto_approve.diff_lines_max, dc.diff_critic.max_diff_ceiling)} 行、≤${dc.auto_approve.risks_max} 条风险。当前 <strong>${eligible}</strong> / ${pending.length} 个可自动批准。</p>
+<p style="margin:0 0 10px;font-size:13px">自动审批<strong>${dc.auto_approve.enabled ? "已开启" : "已关闭"}</strong>：文件 ${dc.auto_approve.files_max === 0 || dc.diff_critic.max_files_ceiling === 0 ? "不限制" : `≤${Math.max(dc.auto_approve.files_max, dc.diff_critic.max_files_ceiling)}`}、行数 ${dc.auto_approve.diff_lines_max === 0 || dc.diff_critic.max_diff_ceiling === 0 ? "不限制" : `≤${Math.max(dc.auto_approve.diff_lines_max, dc.diff_critic.max_diff_ceiling)}`}、风险 ${dc.auto_approve.risks_max === 0 ? "不限制" : `≤${dc.auto_approve.risks_max} 条`}。当前 <strong>${eligible}</strong> / ${pending.length} 个可自动批准。</p>
 <form class="inline" method="post" action="/trigger/auto-approve-pending"><input type="hidden" name="alias" value="${esc(alias)}"/><button type="submit" class="btn ok">一键自动批准符合条件的 Plan</button></form>
 ${eligible < pending.length ? `<span class="muted" style="margin-left:10px;font-size:12px">其余需人工或调大项目设置中的自动审批上限</span>` : ""}
 </div>`
@@ -1099,7 +1099,7 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
 </div>
 <div class="row">
 <div><label>自动审批</label><select name="auto_approve_enabled"><option value="1" ${dc.auto_approve.enabled ? "selected" : ""}>开</option><option value="0" ${!dc.auto_approve.enabled ? "selected" : ""}>关</option></select></div>
-<div><label>diff 行上限</label><input name="diff_lines_max" type="number" value="${esc(String(dc.auto_approve.diff_lines_max))}"/></div>
+<div><label>diff 行上限（0 = 不限制）</label><input name="diff_lines_max" type="number" min="0" value="${esc(String(dc.auto_approve.diff_lines_max))}"/></div>
 </div>
 <input type="hidden" name="auto_select_goal" value="${dc.auto_select_goal ? "1" : "0"}"/>
 <input type="hidden" name="loop_planning" value="${dc.loop_planning ? "1" : "0"}"/>
@@ -1205,7 +1205,10 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
     dc.discovery.auto_plan_after_refresh = body.auto_plan_after_refresh === "1";
     dc.discovery.auto_execute_after_approve = body.auto_execute_after_approve === "1";
     dc.auto_approve.enabled = body.auto_approve_enabled === "1";
-    dc.auto_approve.diff_lines_max = Number(body.diff_lines_max) || dc.auto_approve.diff_lines_max;
+    const diffLinesMax = Number(body.diff_lines_max);
+    if (Number.isFinite(diffLinesMax) && diffLinesMax >= 0) {
+      dc.auto_approve.diff_lines_max = Math.floor(diffLinesMax);
+    }
     const tc = String(body.test_command ?? "").trim();
     dc.test_command = tc || undefined;
     dc.execution_cost_limit = Number(body.execution_cost_limit) || dc.execution_cost_limit;

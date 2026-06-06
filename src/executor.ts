@@ -620,20 +620,29 @@ export async function executePlan(
 
     const diffStart = new Date().toISOString();
     writeStepState({ step_name: "diff_check", status: "running", started_at: diffStart });
-    const maxFiles = Math.min(
-      Math.max(limits.maxFiles, plan.changes.length),
-      Math.max(cfg.diff_critic.max_files_ceiling, 8),
-    );
+    const maxFiles =
+      cfg.diff_critic.max_files_ceiling === 0
+        ? Infinity
+        : Math.min(
+            Math.max(limits.maxFiles, plan.changes.length),
+            Math.max(cfg.diff_critic.max_files_ceiling, 8),
+          );
     // 天花板至少与 Plan schema 的 estimated_diff_lines 上限(1000)对齐，
     // 避免旧项目配置里的小 max_diff_ceiling(如 300) 把放宽后的大 Plan 压死。
-    const ceiling = Math.max(cfg.diff_critic.max_diff_ceiling, 1000);
-    const maxDiffLines = Math.min(
-      Math.max(
-        Math.ceil(plan.estimated_diff_lines * cfg.diff_critic.max_diff_multiplier),
-        limits.maxDiffLines,
-      ),
-      ceiling,
-    );
+    const ceiling =
+      cfg.diff_critic.max_diff_ceiling === 0
+        ? Infinity
+        : Math.max(cfg.diff_critic.max_diff_ceiling, 1000);
+    const maxDiffLines =
+      ceiling === Infinity
+        ? Infinity
+        : Math.min(
+            Math.max(
+              Math.ceil(plan.estimated_diff_lines * cfg.diff_critic.max_diff_multiplier),
+              limits.maxDiffLines,
+            ),
+            ceiling,
+          );
     if (stats.files > maxFiles) {
       throw new Error(`Too many files changed: ${stats.files} > ${maxFiles}`);
     }

@@ -47,8 +47,8 @@ export const DevAgentConfigSchema = z.object({
   auto_approve: z
     .object({
       enabled: z.boolean().default(true),
-      diff_lines_max: z.number().int().positive().default(300),
-      files_max: z.number().int().positive().default(5),
+      diff_lines_max: z.number().int().nonnegative().default(300),
+      files_max: z.number().int().nonnegative().default(5),
       risks_max: z.number().int().nonnegative().default(5),
     })
     .default({
@@ -65,8 +65,8 @@ export const DevAgentConfigSchema = z.object({
     .object({
       tolerated_files: z.array(z.string()).default([]),
       max_diff_multiplier: z.number().default(1.5),
-      max_diff_ceiling: z.number().int().default(1000),
-      max_files_ceiling: z.number().int().default(8),
+      max_diff_ceiling: z.number().int().nonnegative().default(1000),
+      max_files_ceiling: z.number().int().nonnegative().default(8),
     })
     .default({
       tolerated_files: [],

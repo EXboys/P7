@@ -82,14 +82,22 @@ export function decideApproval(
 }
 
 function autoApproveLimits(cfg: DevAgentConfig): {
-  filesMax: number;
-  linesMax: number;
-  risksMax: number;
+  filesMax: number | null;
+  linesMax: number | null;
+  risksMax: number | null;
 } {
+  const filesUnlimited =
+    cfg.auto_approve.files_max === 0 || cfg.diff_critic.max_files_ceiling === 0;
+  const linesUnlimited =
+    cfg.auto_approve.diff_lines_max === 0 || cfg.diff_critic.max_diff_ceiling === 0;
   return {
-    filesMax: Math.max(cfg.auto_approve.files_max, cfg.diff_critic.max_files_ceiling),
-    linesMax: Math.max(cfg.auto_approve.diff_lines_max, cfg.diff_critic.max_diff_ceiling),
-    risksMax: cfg.auto_approve.risks_max,
+    filesMax: filesUnlimited
+      ? null
+      : Math.max(cfg.auto_approve.files_max, cfg.diff_critic.max_files_ceiling),
+    linesMax: linesUnlimited
+      ? null
+      : Math.max(cfg.auto_approve.diff_lines_max, cfg.diff_critic.max_diff_ceiling),
+    risksMax: cfg.auto_approve.risks_max === 0 ? null : cfg.auto_approve.risks_max,
   };
 }
 
@@ -97,13 +105,13 @@ function autoApproveLimits(cfg: DevAgentConfig): {
 export function autoApproveBlockReason(plan: Plan, cfg: DevAgentConfig): string | null {
   if (!cfg.auto_approve.enabled) return "自动审批已关闭";
   const { filesMax, linesMax, risksMax } = autoApproveLimits(cfg);
-  if (plan.changes.length > filesMax) {
+  if (filesMax !== null && plan.changes.length > filesMax) {
     return `文件 ${plan.changes.length} 个，超过上限 ${filesMax}`;
   }
-  if (plan.estimated_diff_lines > linesMax) {
+  if (linesMax !== null && plan.estimated_diff_lines > linesMax) {
     return `约 ${plan.estimated_diff_lines} 行，超过上限 ${linesMax}`;
   }
-  if (plan.risks.length > risksMax) {
+  if (risksMax !== null && plan.risks.length > risksMax) {
     return `风险 ${plan.risks.length} 条，超过上限 ${risksMax}`;
   }
   return null;
