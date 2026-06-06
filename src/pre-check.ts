@@ -1,0 +1,257 @@
+#!/usr/bin/env bun
+/**
+ * Synchronous pre-check rule engine for diff-critic pipeline.
+ *
+ * Runs three deterministic rules on raw diff content in <5ms:
+ *  1. scopeViolation   — changed files outside plan scope (warning)
+ *  2. diffSizeAnomaly  — actual diff lines >> estimated × multiplier (warning)
+ *  3. securityRedFlag  — high-signal secret patterns (blocker)
+ *
+ * Only ambiguous cases escalate to the LLM evaluator, reducing token cost
+ * and latency for clear violations.
+ *
+ * This module is the standalone type+logic home; consumer modules (e.g.
+ * evaluator-middleware) import from here rather than inlining the logic.
+ */
+
+import type { Plan } from "./types.ts";
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Types
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Per-rule config toggles matching the `diff_critic.pre_check` section in config.ts. */
+export interface PreCheckConfig {
+  enabled: boolean;
+  block_on_scope_violation: boolean;
+  block_on_size_anomaly: boolean;
+  block_on_security_red_flag: boolean;
+}
+
+/** A single finding produced by one deterministic rule. */
+export interface PreCheckFinding {
+  /** Rule identifier, e.g. "scope_violation", "diff_size_anomaly", "security_red_flag". */
+  rule: string;
+  /** Severity: blocker findings halt the pipeline; warnings are advisory. */
+  severity: "blocker" | "warning";
+  /** Human-readable summary of the finding. */
+  message: string;
+  /** Optional contextual detail (e.g. list of violating files, actual vs estimated counts). */
+  detail?: string;
+}
+
+/** Aggregate result from a full pre-check run. */
+export interface PreCheckResult {
+  /** true when no blocker findings exist (warnings alone do not fail). */
+  ok: boolean;
+  /** All findings from every triggered rule, in evaluation order. */
+  findings: PreCheckFinding[];
+  /** Wall-clock time spent in the pre-check (milliseconds, rounded). */
+  latencyMs: number;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Defaults
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Default configuration — all checks enabled, all violations are blockers. */
+export const DEFAULT_PRE_CHECK_CONFIG: PreCheckConfig = {
+  enabled: true,
+  block_on_scope_violation: true,
+  block_on_size_anomaly: true,
+  block_on_security_red_flag: true,
+};
+
+/** Default multiplier applied when checking diff size against estimated lines. */
+export const DEFAULT_SIZE_MULTIPLIER = 3;
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * High-signal secret patterns
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Narrow, high-signal patterns for security red-flag detection.
+ *
+ * Deliberately avoids broad patterns (e.g. "password", "secret") to minimise
+ * false positives on test fixtures and configuration files. Only matches:
+ *  - OpenAI API key format (sk-…)
+ *  - Private key PEM blocks (RSA, EC, DSA, OPENSSH)
+ *  - GitHub tokens (ghp_, gho_, ghu_, ghs_)
+ */
+const SECRET_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\bsk-[A-Za-z0-9]{20,}\b/g, label: "OpenAI API key (sk-…)" },
+  { pattern: /BEGIN\s+(RSA|EC|DSA|OPENSSH)\s+PRIVATE\s+KEY/g, label: "Private key block" },
+  { pattern: /\bgh[opu]_[A-Za-z0-9]{36}\b/g, label: "GitHub token" },
+  { pattern: /\bghs_[A-Za-z0-9]{36}\b/g, label: "GitHub server-to-server token" },
+];
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Helpers
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Extract changed file paths from a unified diff string.
+ *
+ * Parses `+++ b/<path>` lines — the canonical indicator of files touched
+ * by a diff. Returns an empty array if no file paths are found (empty diff
+ * or format mismatch).
+ *
+ * @param diffContent — Raw unified diff output (e.g. from `git diff`).
+ * @returns Array of file paths relative to repo root.
+ */
+export function extractDiffFiles(diffContent: string): string[] {
+  const files: string[] = [];
+  for (const line of diffContent.split("\n")) {
+    const m = line.match(/^\+\+\+ b\/(.+)$/);
+    if (m) files.push(m[1]);
+  }
+  return files;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 1 — Scope violation
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect files changed in the diff that are not listed in the plan's change set.
+ *
+ * Files starting with "." (dotfiles like `.claude/`, `.github/`) are excluded
+ * from violation detection, as they are often managed outside the plan scope.
+ *
+ * @param changedFiles — File paths extracted from the diff (use extractDiffFiles).
+ * @param planFiles — Set of allowed file paths from the plan's changes[].file.
+ * @returns Findings array — empty for no violation, one entry otherwise.
+ */
+export function scopeViolation(
+  changedFiles: string[],
+  planFiles: Set<string>,
+): PreCheckFinding[] {
+  const violations = changedFiles.filter((f) => !planFiles.has(f) && !f.startsWith("."));
+  if (violations.length === 0) return [];
+  return [
+    {
+      rule: "scope_violation",
+      severity: "warning",
+      message: "Diff touches files outside plan scope",
+      detail: violations.join(", "),
+    },
+  ];
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 2 — Diff size anomaly
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect when the actual diff size far exceeds the plan's estimate.
+ *
+ * Compares `actualLines` (derived from diff content) against
+ * `estimatedLines * multiplier`. Only fires when the plan provides a
+ * non-zero estimate, preventing false triggers on unestimated plans.
+ *
+ * @param actualLines — Number of lines in the raw diff (split by "\n").
+ * @param estimatedLines — Plan's `estimated_diff_lines` value.
+ * @param multiplier — Ratio threshold (default DEFAULT_SIZE_MULTIPLIER = 3).
+ * @returns Findings array — empty if within bounds, one entry otherwise.
+ */
+export function diffSizeAnomaly(
+  actualLines: number,
+  estimatedLines: number,
+  multiplier = DEFAULT_SIZE_MULTIPLIER,
+): PreCheckFinding[] {
+  if (estimatedLines <= 0 || actualLines <= estimatedLines * multiplier) return [];
+  return [
+    {
+      rule: "diff_size_anomaly",
+      severity: "warning",
+      message: `Diff size (${actualLines}) exceeds ${multiplier}× estimate (${estimatedLines})`,
+      detail: `Actual: ${actualLines}, Estimated: ${estimatedLines}`,
+    },
+  ];
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 3 — Security red flag
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Scan raw diff content for high-signal secret patterns.
+ *
+ * Matches against a curated list of patterns (API keys, private keys,
+ * GitHub tokens). Any match is treated as a **blocker** — the pipeline
+ * should halt before any LLM call to avoid exposing secrets in prompts
+ * or logs.
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no patterns matched, one entry per pattern type.
+ */
+export function securityRedFlag(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of SECRET_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "security_red_flag",
+        severity: "blocker",
+        message: `Potential secret leak: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Orchestrator — runPreCheck
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Run all three deterministic pre-check rules against a raw diff.
+ *
+ * Evaluation order:
+ *  1. Scope violation  (warning)  — files outside plan scope
+ *  2. Diff size anomaly (warning)  — lines >> estimate × multiplier
+ *  3. Security red flag (blocker)  — secret patterns in diff
+ *
+ * The result's `ok` is `true` only when no blocker findings exist.
+ * Findings include both blocker and warning severities for complete
+ * diagnostic reporting.
+ *
+ * @param diffContent — Raw unified diff output (e.g. from `git diff`).
+ * @param plan — Partial plan with `changes` and `estimated_diff_lines`.
+ * @param config — Optional override; omitted fields fall back to DEFAULT_PRE_CHECK_CONFIG.
+ * @returns PreCheckResult with aggregated findings and latency telemetry.
+ */
+export function runPreCheck(
+  diffContent: string,
+  plan: Pick<Plan, "changes" | "estimated_diff_lines">,
+  config?: Partial<PreCheckConfig>,
+): PreCheckResult {
+  const t0 = performance.now();
+  const cfg: PreCheckConfig = { ...DEFAULT_PRE_CHECK_CONFIG, ...config };
+  const findings: PreCheckFinding[] = [];
+  const planFiles = new Set(plan.changes.map((c) => c.file));
+
+  // Rule 1: scope violation
+  if (cfg.block_on_scope_violation) {
+    const changedFiles = extractDiffFiles(diffContent);
+    findings.push(...scopeViolation(changedFiles, planFiles));
+  }
+
+  // Rule 2: diff size anomaly
+  if (cfg.block_on_size_anomaly) {
+    const actualLines = diffContent.split("\n").length - 1;
+    findings.push(...diffSizeAnomaly(actualLines, plan.estimated_diff_lines));
+  }
+
+  // Rule 3: security red flag
+  if (cfg.block_on_security_red_flag) {
+    findings.push(...securityRedFlag(diffContent));
+  }
+
+  return {
+    ok: !findings.some((f) => f.severity === "blocker"),
+    findings,
+    latencyMs: Math.round(performance.now() - t0),
+  };
+}
