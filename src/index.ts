@@ -123,8 +123,23 @@ async function main(): Promise<void> {
         const items = runPipelineCheck(resolve(p));
         console.log(JSON.stringify({ ready: pipelineReady(items), items }, null, 2));
         process.exit(pipelineReady(items) ? 0 : 1);
+      } else if (projectArg === "iterate") {
+        const p = rest[0];
+        if (!p) {
+          console.error("Usage: bun run src/index.ts pipeline iterate <project-path> [--plan-id <id>] [--round <n>]");
+          process.exit(1);
+        }
+        const planId = flag("--plan-id") ?? "manual";
+        const round = Number(flag("--round") ?? "0");
+        const { runSelfIterationPipeline } = await import("./pipeline-iterator.ts");
+        const { initDb } = await import("./state.ts");
+        const db = initDb(resolve(p));
+        const trace = await runSelfIterationPipeline(db, planId, round);
+        console.log(JSON.stringify(trace, null, 2));
+        process.exit(trace.failedSteps > 0 ? 1 : 0);
       } else {
         console.error("Usage: bun run src/index.ts pipeline check <project-path>");
+        console.error("       bun run src/index.ts pipeline iterate <project-path> [--plan-id <id>] [--round <n>]");
         process.exit(1);
       }
       break;
@@ -235,6 +250,7 @@ Commands:
   discover-daily <project> [--plan-only] [--skip-fetch]
   pr-review <project>   # 扫描 OPEN PR，自动 review / 合并 / 修冲突
   pipeline check <project>
+  pipeline iterate <project> [--plan-id <id>] [--round <n>]
   roadmap fix-template <project>
   radar <project> [--date YYYY-MM-DD]
   approvals <project>
