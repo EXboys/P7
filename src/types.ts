@@ -945,3 +945,54 @@ export interface CalibrationDataset {
   };
   generatedAt: string;
 }
+
+/* ── Pipeline orchestration DSL types ── */
+
+/**
+ * Re-exported from `pipeline-dsl.ts` for cross-module consumption by the
+ * self-iteration orchestration engine and all step implementations.
+ *
+ * SelfIterationStepKind   — 6-step union (pattern_extract, convergence_analyze,
+ *                           early_stop, threshold_calibrate, dynamic_rules_inject,
+ *                           ab_validate)
+ * ArtifactKind            — union tagging all intermediate artifacts
+ * StepExecutionContext   — per-iteration context passed to step execute()
+ * PipelineDagNode         — single DAG node with deps, conditions, retry/timeout
+ * PipelineDagDefinition   — complete pipeline topology definition
+ * StepContract<Input,Output> — generic step contract interface
+ */
+export type {
+  SelfIterationStepKind,
+  ArtifactKind,
+  StepExecutionContext,
+  PipelineDagNode,
+  PipelineDagDefinition,
+  StepContract,
+} from "./pipeline-dsl.ts";
+
+/* ── Pipeline step contract types ── */
+
+/**
+ * Re-exported from `pipeline-contracts.ts` for cross-module consumption by
+ * the orchestration engine, step implementations, and test fixtures.
+ *
+ * PatternReport / FailurePattern          — pattern_extract step outputs
+ * ConvergenceReport                      — convergence_analyze step output
+ * CalibrationReport / PerSeverityCalibration — threshold_calibrate step outputs
+ * RuleEntry / DynamicRulesPayload         — dynamic_rules_inject step outputs
+ * AbTestBreakdown / AbTestResult         — ab_validate step outputs
+ *
+ * Note: EarlyStopDecision is defined directly in this module and is not
+ * re-exported from pipeline-contracts.ts to avoid name collision.
+ */
+export type {
+  FailurePattern,
+  PatternReport,
+  ConvergenceReport,
+  PerSeverityCalibration,
+  CalibrationReport,
+  RuleEntry,
+  DynamicRulesPayload,
+  AbTestBreakdown,
+  AbTestResult,
+} from "./pipeline-contracts.ts";
