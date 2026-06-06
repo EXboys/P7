@@ -19,6 +19,7 @@ import { extractLastJsonBlock, repairJson } from "./json-utils.ts";
 import { listPlanStates } from "./state.ts";
 import { runPipelineCheck, pipelineReady } from "./pipeline-check.ts";
 import { runPrReviewSweep } from "./vcs/pr-reviewer.ts";
+import { auditTokenConsumption } from "./token-audit.ts";
 
 const [, , cmd, projectArg, ...rest] = process.argv;
 
@@ -137,9 +138,18 @@ async function main(): Promise<void> {
         const trace = await runSelfIterationPipeline(db, planId, round);
         console.log(JSON.stringify(trace, null, 2));
         process.exit(trace.failedSteps > 0 ? 1 : 0);
+      } else if (projectArg === "token-audit") {
+        const p = rest[0];
+        if (!p) {
+          console.error("Usage: bun run src/index.ts pipeline token-audit <project-path>");
+          process.exit(1);
+        }
+        const report = auditTokenConsumption(resolve(p));
+        console.log(JSON.stringify(report, null, 2));
       } else {
         console.error("Usage: bun run src/index.ts pipeline check <project-path>");
         console.error("       bun run src/index.ts pipeline iterate <project-path> [--plan-id <id>] [--round <n>]");
+        console.error("       bun run src/index.ts pipeline token-audit <project-path>");
         process.exit(1);
       }
       break;

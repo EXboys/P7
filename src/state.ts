@@ -330,6 +330,11 @@ export function initDb(projectPath: string): Database {
   } catch {
     /* exists */
   }
+  try {
+    db.run("ALTER TABLE sdk_costs ADD COLUMN step_name TEXT");
+  } catch {
+    /* exists */
+  }
 
   /* evaluator_route_stats table: records every routing decision for observability and cost tracking */
   db.run(`
@@ -611,12 +616,12 @@ export function countQueuedPlans(projectPath: string): number {
 
 export function writeSdkCost(
   projectPath: string,
-  params: { planId?: string; role: string; model?: string; costUsd: number; usage?: SdkTokenUsage; goal?: string },
+  params: { planId?: string; role: string; model?: string; costUsd: number; usage?: SdkTokenUsage; goal?: string; stepName?: string },
 ): void {
   const db = initDb(projectPath);
   const stmt = db.prepare(`
-    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, goal)
-    VALUES ($plan_id, $role, $model, $cost_usd, $created_at, $input_tokens, $output_tokens, $cache_read_input_tokens, $cache_creation_input_tokens, $goal)
+    INSERT INTO sdk_costs (plan_id, role, model, cost_usd, created_at, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, goal, step_name)
+    VALUES ($plan_id, $role, $model, $cost_usd, $created_at, $input_tokens, $output_tokens, $cache_read_input_tokens, $cache_creation_input_tokens, $goal, $step_name)
   `);
   withBusyRetry(() => {
     stmt.run({
@@ -630,6 +635,7 @@ export function writeSdkCost(
       $cache_read_input_tokens: params.usage?.cacheReadInputTokens ?? null,
       $cache_creation_input_tokens: params.usage?.cacheCreationInputTokens ?? null,
       $goal: params.goal ?? null,
+      $step_name: params.stepName ?? null,
     });
   });
 }
