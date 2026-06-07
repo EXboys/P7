@@ -30,6 +30,7 @@ import {
 import type { GemmaEvalConfig, GemmaSliceMeta, GemmaEvalResult } from "./gemma-bridge.ts";
 import type { DiffCriticFinding, DcSeverity, Plan } from "./types.ts";
 import type { SdkCostSummary } from "./sdk-cost.ts";
+import { captureEntityDiff, type EntityDiffResult } from "./entity-diff.ts";
 import { reviewDiff } from "./diff-critic.ts";
 import { writeEvalRouteStat } from "./state.ts";
 import { runPreCheck } from "./pre-check.ts";
@@ -53,6 +54,42 @@ const BLOCKER_RISK_RE =
 function detectCriticUrgency(plan: Plan): CriticUrgency {
   const hasBlocker = plan.risks.some((r) => BLOCKER_RISK_RE.test(r));
   return hasBlocker ? "blocker" : "advisory";
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Entity context formatter
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Best-effort entity context formatter.
+ *
+ * Reads the worktree diff, runs entity-level capture via `captureEntityDiff`,
+ * and formats the result as a markdown summary for LLM prompt injection.
+ *
+ * Returns `undefined` when the diff is empty, git is unavailable, or no
+ * entities are detected. Never throws — all errors are silently caught.
+ */
+function formatEntityContext(wtPath: string): string | undefined {
+  try {
+    const diffText = getWorktreeDiff(wtPath);
+    if (!diffText) return undefined;
+
+    const entityResult = captureEntityDiff(diffText);
+    if (entityResult.files.length === 0) return undefined;
+
+    const parts: string[] = [];
+    for (const file of entityResult.files) {
+      parts.push(`#### ${file.filePath}`);
+      for (const entity of file.entities) {
+        const lineInfo = entity.lineNumber > 0 ? `:${entity.lineNumber}` : "";
+        parts.push(`- ${entity.changeType} ${entity.entityType} \`${entity.name}\`${lineInfo}`);
+      }
+    }
+
+    return parts.join("\n");
+  } catch {
+    return undefined;
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -359,6 +396,9 @@ export async function reviewDiffWithRouting(
     }
   }
 
+  // Best-effort entity context for LLM prompt enrichment (silent if empty)
+  const entityContextMd = formatEntityContext(wtPath);
+
   const decision = selectEvaluator(tier, urgency);
 
   const routePoint = "diff_critic";
@@ -369,7 +409,7 @@ export async function reviewDiffWithRouting(
   // Claude route: bypass Gemma entirely
   if (decision.evaluator === "claude") {
     const t0 = performance.now();
-    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    result = await reviewDiff(wtPath, diffStatOut, planTitle, entityContextMd);
     latencyMs = Math.round(performance.now() - t0);
     actualCostUsd = result.cost?.costUsd ?? 0;
     writeEvalRouteStat(projectPath, {
@@ -390,7 +430,7 @@ export async function reviewDiffWithRouting(
   if (!gemmaResult) {
     // Gemma unavailable — transparent fallback to Claude
     const t0 = performance.now();
-    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    result = await reviewDiff(wtPath, diffStatOut, planTitle, entityContextMd);
     latencyMs = Math.round(performance.now() - t0);
     actualCostUsd = result.cost?.costUsd ?? 0;
     writeEvalRouteStat(projectPath, {
@@ -406,7 +446,7 @@ export async function reviewDiffWithRouting(
   // Check if fallback to Claude is warranted
   if (decision.evaluator === "gemma_with_fallback" && shouldFallbackToClaude(gemmaResult)) {
     const t0 = performance.now();
-    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    result = await reviewDiff(wtPath, diffStatOut, planTitle, entityContextMd);
     latencyMs = Math.round(performance.now() - t0);
     actualCostUsd = result.cost?.costUsd ?? 0;
     writeEvalRouteStat(projectPath, {

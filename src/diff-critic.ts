@@ -76,6 +76,7 @@ export async function reviewDiff(
   projectPath: string,
   diffStat: string,
   planSummary: string,
+  entityContext?: string,
 ): Promise<{ ok: boolean; findings: string; structuredFindings: DiffCriticFinding[]; cost?: SdkCostSummary }> {
   try {
     const dynamicRules = buildDynamicRules(projectPath);
@@ -84,8 +85,11 @@ export async function reviewDiff(
       dynamic_rules: dynamicRules ?? "",
       threat_model: threatModel ?? "",
     });
+    const entitySection = entityContext
+      ? `\n## 变更实体上下文\n${entityContext}\n`
+      : "";
     const { text, costUsd, usage } = await runSdkQuery({
-      prompt: `## 计划摘要\n${planSummary}\n\n## git diff --stat\n\`\`\`\n${diffStat}\n\`\`\`\n\n请审查。`,
+      prompt: `## 计划摘要\n${planSummary}${entitySection}\n## git diff --stat\n\`\`\`\n${diffStat}\n\`\`\`\n\n请审查。`,
       cwd: projectPath,
       systemPrompt: system,
       role: "default",
