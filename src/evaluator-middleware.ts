@@ -33,6 +33,7 @@ import type { SdkCostSummary } from "./sdk-cost.ts";
 import { reviewDiff } from "./diff-critic.ts";
 import { writeEvalRouteStat } from "./state.ts";
 import { runPreCheck } from "./pre-check.ts";
+import { runPrecheck } from "./precheck-engine.ts";
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Urgency detection
@@ -265,6 +266,37 @@ export async function reviewDiffWithRouting(
   stats: { files: number; lines: number },
   plan: Plan,
 ): Promise<{ ok: boolean; findings: string; structuredFindings: DiffCriticFinding[]; cost?: SdkCostSummary }> {
+  // Fast pre-check (file-level): deterministic rules on diff --stat before complexity classification.
+  // High-certainty blocker findings (generated_file, minified_asset) short-circuit immediately,
+  // saving the full LLM call path. Runs in <1ms for typical diffs.
+  const fastCheck = runPrecheck(diffStatOut);
+  if (fastCheck.hasHighCertaintyBlocker) {
+    const blockers = fastCheck.findings.filter(
+      (f) => f.severity === "blocker" && f.certainty === "high",
+    );
+    const findingsStr = blockers
+      .map((f) => `- [${f.severity}] ${f.rule}: ${f.message}${f.detail ? ` (${f.detail})` : ""}`)
+      .join("\n");
+    writeEvalRouteStat(projectPath, {
+      routePoint: "pre_check_fast",
+      tier: "trivial",
+      urgency: "blocker",
+      selectedEvaluator: "fast_check_blocked",
+      estimatedCostUsd: 0,
+      actualCostUsd: 0,
+      latencyMs: fastCheck.latencyMs,
+    });
+    return {
+      ok: false,
+      findings: findingsStr,
+      structuredFindings: blockers.map((f) => ({
+        dimension: `pre-check/${f.rule}`,
+        severity: "blocker" as DcSeverity,
+        message: f.message,
+      })),
+    };
+  }
+
   const tier = classifyDiffComplexity(stats.lines, stats.files);
   const urgency = detectCriticUrgency(plan);
 
