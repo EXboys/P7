@@ -101,8 +101,37 @@ function getWorktreeDiff(wtPath: string): string | null {
 
 // Pre-check logic lives in src/pre-check.ts.
 // All rules (scope_violation, diff_size_anomaly, security_red_flag,
-// unsafe_eval, shell_injection, prompt_injection_risk) are evaluated
-// by the canonical runPreCheck() imported above.
+// unsafe_eval, shell_injection, prompt_injection_risk, unsafe_exec,
+// unsafe_inner_html) are evaluated by the canonical runPreCheck() imported above.
+//
+// Inline pattern arrays below serve as defensive documentation — the actual
+// evaluation delegates to pre-check.ts. If the two drift, the source of truth
+// is pre-check.ts.
+
+/* ── Unsafe eval patterns (inline copy for defensive reference) ── */
+
+const UNSAFE_EVAL_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\beval\s*\(/gm, label: "eval() call" },
+  { pattern: /\bnew\s+Function\s*\(/gm, label: "new Function() call" },
+  { pattern: /\bsetTimeout\s*\(\s*["'`]/gm, label: "setTimeout(string) call — eval-like" },
+];
+
+/* ── Unsafe exec patterns (inline copy for defensive reference) ── */
+
+const UNSAFE_EXEC_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\b(exec|execSync)\s*\(/g, label: "exec/execSync() call" },
+  { pattern: /\bspawn(?:Sync)?\s*\(/g, label: "spawn/spawnSync() call" },
+  { pattern: /shell\s*:\s*true/g, label: "shell:true in spawn options" },
+  { pattern: /\bBun\.spawnSync\s*\(/g, label: "Bun.spawnSync() call" },
+];
+
+/* ── Unsafe innerHTML patterns (inline copy for defensive reference) ── */
+
+const UNSAFE_INNER_HTML_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\.innerHTML\s*=/g, label: ".innerHTML assignment" },
+  { pattern: /\bdangerouslySetInnerHTML\b/g, label: "React dangerouslySetInnerHTML" },
+  { pattern: /\bv-html\s*=/g, label: "Vue v-html directive" },
+];
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Gemma diff evaluation
