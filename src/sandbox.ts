@@ -223,6 +223,9 @@ export interface SandboxConfig {
  *
  * The `healthCheck` method returns a status string — "ok" when the runtime
  * is reachable and functional, or an error description otherwise.
+ *
+ * @see WasmSandboxProvider — wasmtime + MicroPython WASM implementation
+ * @see sandbox-provider-wasm.ts — concrete provider module
  */
 export interface SandboxProvider {
   /**
