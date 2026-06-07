@@ -32,6 +32,7 @@ import type { DiffCriticFinding, DcSeverity, Plan } from "./types.ts";
 import type { SdkCostSummary } from "./sdk-cost.ts";
 import { reviewDiff } from "./diff-critic.ts";
 import { writeEvalRouteStat } from "./state.ts";
+import { runPreCheck } from "./pre-check.ts";
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Urgency detection
@@ -94,104 +95,13 @@ function getWorktreeDiff(wtPath: string): string | null {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
- * Pre-check: synchronous rule engine
+ * Pre-check: canonical rule engine (imported)
  * ──────────────────────────────────────────────────────────────────────────── */
 
-interface PreCheckFinding {
-  rule: string;
-  severity: "blocker" | "warning";
-  message: string;
-  detail?: string;
-}
-
-interface PreCheckResult {
-  ok: boolean;
-  findings: PreCheckFinding[];
-  latencyMs: number;
-}
-
-/** High-signal secret patterns for security red-flag detection. */
-const SECRET_PATTERNS: { pattern: RegExp; label: string }[] = [
-  { pattern: /\bsk-[A-Za-z0-9]{20,}\b/g, label: "OpenAI API key (sk-…)" },
-  { pattern: /BEGIN\s+(RSA|EC|DSA|OPENSSH)\s+PRIVATE\s+KEY/g, label: "Private key block" },
-  { pattern: /\bgh[opu]_[A-Za-z0-9]{36}\b/g, label: "GitHub token" },
-  { pattern: /\bghs_[A-Za-z0-9]{36}\b/g, label: "GitHub server-to-server token" },
-];
-
-const DEFAULT_SIZE_MULTIPLIER = 3;
-
-/**
- * Parse changed file paths from `+++ b/<path>` lines in unified diff output.
- */
-function parseChangedFiles(diffContent: string): string[] {
-  const files: string[] = [];
-  for (const line of diffContent.split("\n")) {
-    const m = line.match(/^\+\+\+ b\/(.+)$/);
-    if (m) files.push(m[1]);
-  }
-  return files;
-}
-
-/**
- * Run synchronous rule-based pre-check on raw diff content (＜5ms).
- *
- * Rules:
- *  1. Scope violation   — changed files outside plan.changes (warning)
- *  2. Diff size anomaly — actual lines > estimated × multiplier (warning)
- *  3. Security red flag — high-signal secret patterns (blocker)
- */
-function runPreCheck(
-  diffContent: string,
-  plan: Plan,
-  sizeMultiplier = DEFAULT_SIZE_MULTIPLIER,
-): PreCheckResult {
-  const t0 = performance.now();
-  const findings: PreCheckFinding[] = [];
-  const changedFiles = parseChangedFiles(diffContent);
-  const allowedFiles = new Set(plan.changes.map((c) => c.file));
-
-  // Rule 1: scope violation — files outside plan scope
-  const violations = changedFiles.filter((f) => !allowedFiles.has(f) && !f.startsWith("."));
-  if (violations.length > 0) {
-    findings.push({
-      rule: "scope_violation",
-      severity: "warning",
-      message: "Diff touches files outside plan scope",
-      detail: violations.join(", "),
-    });
-  }
-
-  // Rule 2: diff size anomaly — actual diff far exceeds estimate
-  const actualLines = diffContent.split("\n").length - 1;
-  const estimated = plan.estimated_diff_lines;
-  if (estimated > 0 && actualLines > estimated * sizeMultiplier) {
-    findings.push({
-      rule: "diff_size_anomaly",
-      severity: "warning",
-      message: `Diff size (${actualLines}) exceeds ${sizeMultiplier}× estimate (${estimated})`,
-      detail: `Actual: ${actualLines}, Estimated: ${estimated}`,
-    });
-  }
-
-  // Rule 3: security red flags — scan for high-signal secret patterns
-  for (const { pattern, label } of SECRET_PATTERNS) {
-    const matches = diffContent.match(pattern);
-    if (matches && matches.length > 0) {
-      findings.push({
-        rule: "security_red_flag",
-        severity: "blocker",
-        message: `Potential secret leak: ${label}`,
-        detail: `${matches.length} occurrence(s)`,
-      });
-    }
-  }
-
-  return {
-    ok: !findings.some((f) => f.severity === "blocker"),
-    findings,
-    latencyMs: Math.round(performance.now() - t0),
-  };
-}
+// Pre-check logic lives in src/pre-check.ts.
+// All rules (scope_violation, diff_size_anomaly, security_red_flag,
+// unsafe_eval, shell_injection, prompt_injection_risk) are evaluated
+// by the canonical runPreCheck() imported above.
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Gemma diff evaluation
