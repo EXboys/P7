@@ -88,12 +88,18 @@ export const DevAgentConfigSchema = z.object({
           block_on_scope_violation: z.boolean().default(true),
           block_on_size_anomaly: z.boolean().default(true),
           block_on_security_red_flag: z.boolean().default(true),
+          block_on_unsafe_eval: z.boolean().default(true),
+          block_on_shell_injection: z.boolean().default(true),
+          block_on_prompt_injection_risk: z.boolean().default(true),
         })
         .default({
           enabled: true,
           block_on_scope_violation: true,
           block_on_size_anomaly: true,
           block_on_security_red_flag: true,
+          block_on_unsafe_eval: true,
+          block_on_shell_injection: true,
+          block_on_prompt_injection_risk: true,
         }),
     })
     .default({
@@ -113,6 +119,9 @@ export const DevAgentConfigSchema = z.object({
         block_on_scope_violation: true,
         block_on_size_anomaly: true,
         block_on_security_red_flag: true,
+        block_on_unsafe_eval: true,
+        block_on_shell_injection: true,
+        block_on_prompt_injection_risk: true,
       },
     }),
   vcs: z
@@ -290,6 +299,9 @@ export function loadConfig(projectPath: string): DevAgentConfig {
           block_on_scope_violation: true,
           block_on_size_anomaly: true,
           block_on_security_red_flag: true,
+          block_on_unsafe_eval: true,
+          block_on_shell_injection: true,
+          block_on_prompt_injection_risk: true,
         },
       },
       vcs: {

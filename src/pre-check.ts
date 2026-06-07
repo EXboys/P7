@@ -2,10 +2,13 @@
 /**
  * Synchronous pre-check rule engine for diff-critic pipeline.
  *
- * Runs three deterministic rules on raw diff content in <5ms:
- *  1. scopeViolation   — changed files outside plan scope (warning)
- *  2. diffSizeAnomaly  — actual diff lines >> estimated × multiplier (warning)
- *  3. securityRedFlag  — high-signal secret patterns (blocker)
+ * Runs six deterministic rules on raw diff content in <5ms:
+ *  1. scopeViolation      — changed files outside plan scope (warning)
+ *  2. diffSizeAnomaly     — actual diff lines >> estimated × multiplier (warning)
+ *  3. securityRedFlag     — high-signal secret patterns (blocker)
+ *  4. unsafeEval          — eval() and new Function() calls (blocker)
+ *  5. shellInjection      — exec/spawn with template literal (blocker)
+ *  6. promptInjectionRisk — dynamic interpolation in system prompt (warning)
  *
  * Only ambiguous cases escalate to the LLM evaluator, reducing token cost
  * and latency for clear violations.
@@ -26,6 +29,9 @@ export interface PreCheckConfig {
   block_on_scope_violation: boolean;
   block_on_size_anomaly: boolean;
   block_on_security_red_flag: boolean;
+  block_on_unsafe_eval: boolean;
+  block_on_shell_injection: boolean;
+  block_on_prompt_injection_risk: boolean;
 }
 
 /** A single finding produced by one deterministic rule. */
@@ -60,6 +66,9 @@ export const DEFAULT_PRE_CHECK_CONFIG: PreCheckConfig = {
   block_on_scope_violation: true,
   block_on_size_anomaly: true,
   block_on_security_red_flag: true,
+  block_on_unsafe_eval: true,
+  block_on_shell_injection: true,
+  block_on_prompt_injection_risk: true,
 };
 
 /** Default multiplier applied when checking diff size against estimated lines. */
@@ -83,6 +92,25 @@ const SECRET_PATTERNS: { pattern: RegExp; label: string }[] = [
   { pattern: /BEGIN\s+(RSA|EC|DSA|OPENSSH)\s+PRIVATE\s+KEY/g, label: "Private key block" },
   { pattern: /\bgh[opu]_[A-Za-z0-9]{36}\b/g, label: "GitHub token" },
   { pattern: /\bghs_[A-Za-z0-9]{36}\b/g, label: "GitHub server-to-server token" },
+];
+
+/* ── Unsafe eval patterns ── */
+
+const UNSAFE_EVAL_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\beval\s*\(/gm, label: "eval() call" },
+  { pattern: /\bnew\s+Function\s*\(/gm, label: "new Function() call" },
+];
+
+/* ── Shell injection patterns ── */
+
+const SHELL_INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\b(exec|execSync|execFile|execFileSync)\s*\(\s*`/gm, label: "exec/execSync/execFile with template literal" },
+];
+
+/* ── Prompt injection patterns ── */
+
+const PROMPT_INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\bsystem\s*[=:]\s*`[^`]*\$\{/gm, label: "dynamic interpolation in system prompt assignment" },
 ];
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -202,16 +230,110 @@ export function securityRedFlag(diffContent: string): PreCheckFinding[] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 4 — Unsafe eval
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect eval() and new Function() calls in the diff.
+ *
+ * These patterns are commonly associated with code injection and dynamic code
+ * evaluation risks. Both are treated as blockers to prevent accidental or
+ * purposeful introduction of unsafe dynamic code execution.
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no unsafe eval patterns detected.
+ */
+export function unsafeEval(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of UNSAFE_EVAL_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "unsafe_eval",
+        severity: "blocker",
+        message: `Unsafe eval pattern detected: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 5 — Shell injection
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect exec/execSync calls with template literals in the diff.
+ *
+ * Template literals passed to shell execution functions (exec, execSync, etc.)
+ * can lead to command injection when the template contains interpolated user
+ * input. Blocker severity prevents accidental shell injection vectors.
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no shell injection patterns detected.
+ */
+export function shellInjection(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of SHELL_INJECTION_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "shell_injection",
+        severity: "blocker",
+        message: `Shell injection risk: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 6 — Prompt injection risk
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect dynamic interpolation in system prompt assignments.
+ *
+ * Template literals with interpolation in system prompt assignments can
+ * introduce prompt injection vulnerabilities when user-controlled content
+ * is embedded. Warning severity as this is a heuristic — some interpolations
+ * may be safe (e.g. controlled role names, version strings).
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no prompt injection patterns detected.
+ */
+export function promptInjectionRisk(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of PROMPT_INJECTION_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "prompt_injection_risk",
+        severity: "warning",
+        message: `Prompt injection risk: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
  * Orchestrator — runPreCheck
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /**
- * Run all three deterministic pre-check rules against a raw diff.
+ * Run all six deterministic pre-check rules against a raw diff.
  *
  * Evaluation order:
- *  1. Scope violation  (warning)  — files outside plan scope
- *  2. Diff size anomaly (warning)  — lines >> estimate × multiplier
- *  3. Security red flag (blocker)  — secret patterns in diff
+ *  1. Scope violation        (warning)  — files outside plan scope
+ *  2. Diff size anomaly      (warning)  — lines >> estimate × multiplier
+ *  3. Security red flag      (blocker)  — secret patterns in diff
+ *  4. Unsafe eval            (blocker)  — eval() and new Function() in diff
+ *  5. Shell injection        (blocker)  — exec/spawn with template literal
+ *  6. Prompt injection risk  (warning)  — dynamic interpolation in system prompt
  *
  * The result's `ok` is `true` only when no blocker findings exist.
  * Findings include both blocker and warning severities for complete
@@ -247,6 +369,21 @@ export function runPreCheck(
   // Rule 3: security red flag
   if (cfg.block_on_security_red_flag) {
     findings.push(...securityRedFlag(diffContent));
+  }
+
+  // Rule 4: unsafe eval patterns
+  if (cfg.block_on_unsafe_eval) {
+    findings.push(...unsafeEval(diffContent));
+  }
+
+  // Rule 5: shell injection patterns
+  if (cfg.block_on_shell_injection) {
+    findings.push(...shellInjection(diffContent));
+  }
+
+  // Rule 6: prompt injection risk
+  if (cfg.block_on_prompt_injection_risk) {
+    findings.push(...promptInjectionRisk(diffContent));
   }
 
   return {
