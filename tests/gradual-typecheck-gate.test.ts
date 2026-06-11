@@ -26,7 +26,7 @@ import {
   shouldFallbackToClaude,
   DEFAULT_GEMMA_CONFIG,
 } from "../src/gemma-bridge.ts";
-import { reviewGradualTypeCheck } from "../src/gradual-typechecker.ts";
+import { evaluateGradualTypeGate, parseGradualTypeFindings, reviewGradualTypeCheck } from "../src/gradual-typechecker.ts";
 import type { DiffCriticFinding } from "../src/types.ts";
 
 /* ── Fixtures ─────────────────────────────────────────────────────── */
@@ -275,6 +275,100 @@ describe("gradual-typecheck-gate shouldFallbackToClaude", () => {
   test("returns true when both confidence and latency violate bounds", () => {
     const badResult: GemmaEvalResult = { ...BASE_RESULT, confidence: 0.2, latencyMs: 25_000 };
     expect(shouldFallbackToClaude(badResult)).toBe(true);
+  });
+});
+
+/* ── 5b. evaluateGradualTypeGate decision (always runs, no LLM) ──── */
+
+describe("gradual-typecheck-gate decision", () => {
+  test("blocks on single blocker", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "blocker", message: "any escape detected" },
+    ];
+    const decision = evaluateGradualTypeGate(findings);
+    expect(decision.blocked).toBe(true);
+    expect(decision.reasons).toHaveLength(1);
+    expect(decision.reasons[0]).toBe("any escape detected");
+  });
+
+  test("blocks on multiple blockers", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "blocker", message: "any escape detected" },
+      { dimension: "gradual-typecheck", severity: "blocker", message: "unsafe assertion" },
+    ];
+    const decision = evaluateGradualTypeGate(findings);
+    expect(decision.blocked).toBe(true);
+    expect(decision.reasons).toHaveLength(2);
+    expect(decision.reasons[0]).toBe("any escape detected");
+    expect(decision.reasons[1]).toBe("unsafe assertion");
+  });
+
+  test("passes on warnings-only", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "warning", message: "consider adding type" },
+    ];
+    expect(evaluateGradualTypeGate(findings).blocked).toBe(false);
+  });
+
+  test("passes on info-only", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "info", message: "minor style issue" },
+    ];
+    expect(evaluateGradualTypeGate(findings).blocked).toBe(false);
+  });
+
+  test("passes on empty findings", () => {
+    expect(evaluateGradualTypeGate([]).blocked).toBe(false);
+  });
+
+  test("passes on mixed non-blocker", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "info", message: "minor issue" },
+      { dimension: "gradual-typecheck", severity: "warning", message: "type could be narrowed" },
+    ];
+    expect(evaluateGradualTypeGate(findings).blocked).toBe(false);
+  });
+
+  test("blocks on mixed with at least one blocker", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "info", message: "minor issue" },
+      { dimension: "gradual-typecheck", severity: "blocker", message: "any escape detected" },
+      { dimension: "gradual-typecheck", severity: "warning", message: "type could be narrowed" },
+    ];
+    const decision = evaluateGradualTypeGate(findings);
+    expect(decision.blocked).toBe(true);
+    expect(decision.reasons).toHaveLength(1);
+    expect(decision.reasons[0]).toBe("any escape detected");
+  });
+
+  test("reasons contain exact blocker messages", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "blocker", message: "first blocker message" },
+      { dimension: "gradual-typecheck", severity: "info", message: "info message" },
+      { dimension: "gradual-typecheck", severity: "blocker", message: "second blocker message" },
+    ];
+    const decision = evaluateGradualTypeGate(findings);
+    expect(decision.reasons).toEqual(["first blocker message", "second blocker message"]);
+  });
+
+  test("reasons are empty when not blocked", () => {
+    const findings: DiffCriticFinding[] = [
+      { dimension: "gradual-typecheck", severity: "warning", message: "a warning" },
+    ];
+    const decision = evaluateGradualTypeGate(findings);
+    expect(decision.blocked).toBe(false);
+    expect(decision.reasons).toEqual([]);
+  });
+
+  test("integration with parseGradualTypeFindings", () => {
+    const llmOutput =
+      "- [blocker] 渐进类型-any逃逸: input parameter is typed as `any`\n" +
+      "- [info] 渐进类型-不安全断言: minor style concern\n";
+    const parsed = parseGradualTypeFindings(llmOutput);
+    const decision = evaluateGradualTypeGate(parsed);
+    expect(decision.blocked).toBe(true);
+    expect(decision.reasons).toHaveLength(1);
+    expect(decision.reasons[0]).toContain("`any`");
   });
 });
 
