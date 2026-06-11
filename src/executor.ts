@@ -291,7 +291,7 @@ export async function executePlan(
           systemPrompt: system,
           role: "executor",
           allowedTools: ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
-          hooks: buildPreToolHook(allowedFiles, wt!.path, onDeny, [join(projectPath, '.p7', 'discovery')]) as never,
+          hooks: buildPreToolHook(allowedFiles, wt!.path, onDeny, [join(projectPath, '.p7', 'discovery')], [join(projectPath, '.p7', 'discovery')]) as never,
           maxTurns,
           toolTrace,
           projectPath,
