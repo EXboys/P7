@@ -188,6 +188,7 @@ async function resolveConflictsLocally(
   baseBranch: string,
   plan: Plan,
   vcs: DevAgentConfig["vcs"],
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; detail: string }> {
   const fetch = git(projectPath, ["fetch", "origin", baseBranch, branch]);
   if (!fetch.ok) return { ok: false, detail: `fetch failed: ${fetch.out}` };
@@ -212,6 +213,7 @@ async function resolveConflictsLocally(
 
   const maxPasses = vcs.merge_conflict_passes ?? 3;
   for (let pass = 1; pass <= maxPasses; pass++) {
+    throwIfAborted(signal);
     const status = git(projectPath, ["status", "--porcelain"]);
     const conflictFiles = listUnmergedFiles(projectPath);
     const maxTurns = deriveConflictMaxTurns(conflictFiles.length || 1, vcs);
@@ -272,7 +274,13 @@ export type PrLifecycleInput = {
   mergeWaitMinutes?: number;
   /** planId（如有）用于读取 PlanState 中的 diff-critic findings 做合并前安全检查 */
   planId?: string;
+  signal?: AbortSignal;
+  onPhase?: (phase: string) => void;
 };
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error("任务超时被终止");
+}
 
 export type PrLifecycleResult = {
   mergeStatus: NonNullable<VcsPublishResult["mergeStatus"]>;
@@ -300,6 +308,8 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
   const parts: string[] = [];
 
   if (vcs.auto_review !== false) {
+    input.onPhase?.("自动 review");
+    throwIfAborted(input.signal);
     const review = await autoReviewPr(projectPath, prUrl, plan, mergeEnv);
     parts.push(review);
     await appendLesson(projectPath, `pr:review ${prUrl} — ${review}`);
@@ -339,8 +349,10 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
   const baseBranch = defaultBaseBranch(config);
   let lastStatus: NonNullable<VcsPublishResult["mergeStatus"]> = "merge_blocked";
   let lastDetail = "等待 GitHub 返回可合并状态";
+  input.onPhase?.("等待合并/checks");
 
   while (Date.now() < deadline) {
+    throwIfAborted(input.signal);
     const pr = viewPr(projectPath, prUrl, mergeEnv);
     if (!pr) {
       lastDetail = "无法读取 PR 状态";
@@ -359,6 +371,7 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
         lastStatus = "pending_checks";
         lastDetail = checks.detail;
         parts.push(checks.detail);
+        input.onPhase?.(`等待 checks: ${checks.detail.slice(0, 80)}`);
         await sleep(8_000);
         continue;
       }
@@ -385,6 +398,8 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
       lastStatus = pr.mergeStateStatus === "BEHIND" ? "behind" : "merge_blocked";
       lastDetail = `PR 状态 ${pr.mergeable ?? "unknown"} / ${pr.mergeStateStatus ?? "unknown"}`;
       if (vcs.merge_resolve_conflicts !== false) {
+        input.onPhase?.("update-branch / 解决冲突");
+        throwIfAborted(input.signal);
         await updatePrBranch(projectPath, prUrl, mergeEnv);
         await sleep(8_000);
         const pr2 = viewPr(projectPath, prUrl, mergeEnv);
@@ -394,7 +409,14 @@ export async function runPrReviewAndMerge(input: PrLifecycleInput): Promise<PrLi
             return { mergeStatus: "merged", detail: `主账号 update-branch 后已合并；${sync}` };
           }
         }
-        const fixed = await resolveConflictsLocally(projectPath, branch, baseBranch, plan, vcs);
+        const fixed = await resolveConflictsLocally(
+          projectPath,
+          branch,
+          baseBranch,
+          plan,
+          vcs,
+          input.signal,
+        );
         parts.push(fixed.detail);
         if (fixed.ok) {
           await sleep(6_000);

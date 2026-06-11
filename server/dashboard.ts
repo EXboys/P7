@@ -51,6 +51,7 @@ import { listRoadmapBackups, loadRoadmap, readRoadmapBackup } from "../src/roadm
 import { listOpenPullRequests } from "../src/vcs/open-prs.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { resolveP7HomeDir } from "../src/p7-paths.ts";
+import { reviewMergeGhEnv } from "../src/vcs/gh-env.ts";
 import type { DevAgentConfig } from "../src/config.ts";
 import { parseFindings } from "../src/diff-critic.ts";
 import {
@@ -1033,12 +1034,21 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
       dc && ghInstalled() && gitRemoteOrigin(proj.path)
         ? checkPrWorkGate(proj.path, dc).reason || null
         : null;
+    const openPrs =
+      dc && ghInstalled() && gitRemoteOrigin(proj.path)
+        ? listOpenPullRequests(proj.path, { limit: 20, ghEnv: reviewMergeGhEnv(dc.vcs) })
+        : [];
     const body = renderAutomationHealthPage({
       alias,
       dailyCapUsd: cfg.daily_cost_cap_usd,
       jobs: listJobsForProject(alias, 10_000),
       states,
       openPrBlocked,
+      openPrs,
+      auditEntries: queryAuditLogs(join(resolveP7HomeDir(), "server.log"), {
+        alias,
+        perPage: 200,
+      }).entries,
       todayCostUsd: sumTodayJobCostUsd(alias),
       monthCost: sumMonthJobCostUsd(alias),
     });
@@ -1105,7 +1115,7 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
 <div><label>最大待处理 Plan</label><input name="max_pending_plans" type="number" min="1" value="${esc(String(dc.max_pending_plans))}"/></div>
 </div>
 <div class="row">
-<div><label>每日自动循环上限（0 = 不限制）</label><input name="daily_run_limit" type="number" min="0" value="${esc(String(dc.discovery.daily_run_limit ?? 1))}"/></div>
+<div><label>每日自动循环上限（0 = 不限制）</label><input name="daily_run_limit" type="number" min="0" value="${esc(String(dc.discovery.daily_run_limit ?? 0))}"/></div>
 <div><label>连续失败熔断次数</label><input name="max_consecutive_failures" type="number" min="1" value="${esc(String(dc.max_consecutive_failures))}"/></div>
 </div>
 <div class="row">
@@ -1213,7 +1223,7 @@ ${metricCard(formatUsd(dailyCap), "日上限 (USD)")}
     dc.discovery.auto_refresh_roadmap = body.auto_refresh_roadmap === "1";
     dc.discovery.auto_plan_after_refresh = body.auto_plan_after_refresh === "1";
     dc.discovery.auto_execute_after_approve = body.auto_execute_after_approve === "1";
-    dc.discovery.daily_run_limit = applyNonNegativeInt(body, "daily_run_limit", dc.discovery.daily_run_limit ?? 1);
+    dc.discovery.daily_run_limit = applyNonNegativeInt(body, "daily_run_limit", dc.discovery.daily_run_limit ?? 0);
     dc.auto_approve.enabled = body.auto_approve_enabled === "1";
     dc.auto_approve.diff_lines_max = applyNonNegativeInt(body, "diff_lines_max", dc.auto_approve.diff_lines_max);
     dc.auto_approve.files_max = applyNonNegativeInt(body, "files_max", dc.auto_approve.files_max);

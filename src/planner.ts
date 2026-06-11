@@ -182,8 +182,12 @@ export async function generatePlan(
   const depth = countQueuedPlans(projectPath);
   const degradeThreshold = Math.ceil(cfg.max_pending_plans * 0.7);
   if (depth >= cfg.max_pending_plans) {
+    await appendLesson(
+      projectPath,
+      `plan:queue-full ${depth}/${cfg.max_pending_plans}; wait for execute drain before generating new plan`,
+    );
     throw new Error(
-      `max_pending_plans (${cfg.max_pending_plans}) exceeded: ${depth} plans queued`,
+      `queue full: ${depth}/${cfg.max_pending_plans} plans queued; waiting for execute drain`,
     );
   }
   if (depth >= degradeThreshold) {

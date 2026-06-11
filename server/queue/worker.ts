@@ -28,6 +28,9 @@ import { checkPrWorkGate } from "../../src/vcs/pr-work-gate.ts";
 import { mergeConflictWaitMinutes } from "../../src/vcs/merge-conflict.ts";
 import { ghInstalled, gitRemoteOrigin } from "../../src/gh-status.ts";
 import { classifyFailure } from "../../src/failure-classifier.ts";
+import { executeApprovedPlanUseCase } from "../../src/usecases/execute-approved-plan.ts";
+import { reviewOpenPrsUseCase } from "../../src/usecases/review-open-prs.ts";
+import { awaitWithJobDeadline } from "./usecase-timeout.ts";
 
 const MAX_RUN_MS = 40 * 60 * 1000;
 const STALE_RECLAIM_MS = 20 * 60 * 1000;
@@ -118,6 +121,109 @@ async function pumpStream(
 }
 
 async function runJob(
+  cfg: ServerConfig,
+  jobId: string,
+  kind: string,
+  projectPath: string,
+  payload: JobPayload,
+  projectAlias: string,
+): Promise<unknown> {
+  if (kind === "execute" || kind === "pr-review") {
+    return runUseCaseJob(cfg, jobId, kind, projectPath, payload, projectAlias);
+  }
+  return runSubprocessJob(cfg, jobId, kind, projectPath, payload, projectAlias);
+}
+
+async function runUseCaseJob(
+  cfg: ServerConfig,
+  jobId: string,
+  kind: string,
+  projectPath: string,
+  payload: JobPayload,
+  projectAlias: string,
+): Promise<unknown> {
+  const logPath = jobLogPath(jobId);
+  const timeoutMs = jobTimeoutMs(projectPath, cfg, kind);
+  const timeoutMin = Math.round(timeoutMs / 60000);
+  writeFileSync(
+    logPath,
+    `[${new Date().toISOString()}] 开始 ${kind}\n模式: direct-usecase\n项目: ${projectPath}\n超时上限: ${timeoutMin} 分钟\n\n`,
+  );
+
+  let currentPhase = "已启动 usecase";
+  const started = Date.now();
+  const formatProgress = (): string => {
+    const sec = Math.round((Date.now() - started) / 1000);
+    return `${currentPhase} · ${sec}s / 上限 ${timeoutMin}m`;
+  };
+  const reportPhase = (phase: string): void => {
+    currentPhase = phase;
+    updateJobProgress(jobId, formatProgress());
+  };
+  reportPhase("已启动 usecase");
+
+  const progressIv = setInterval(() => updateJobProgress(jobId, formatProgress()), 5000);
+  const heartbeatIv = setInterval(() => {
+    logLine(logPath, `仍在执行（${formatProgress()}）…`);
+  }, 15000);
+
+  try {
+    const result = await awaitWithJobDeadline(
+      async ({ signal }) => {
+        if (kind === "execute") {
+          return executeApprovedPlanUseCase(projectPath, {
+            planId: (payload as ExecuteJobPayload).planId,
+            jobId,
+            projectAlias,
+            dashboardBaseUrl: dashboardBaseUrl(cfg),
+            signal,
+            onPhase: reportPhase,
+          });
+        }
+        return reviewOpenPrsUseCase(projectPath, { signal, onPhase: reportPhase });
+      },
+      timeoutMs,
+      () => {
+        logLine(logPath, `超时 ${timeoutMin} 分钟，终止 usecase`);
+        reportPhase("超时被终止");
+      },
+    );
+    if (
+      kind === "execute" &&
+      typeof result === "object" &&
+      result !== null &&
+      "ok" in result &&
+      result.ok === false
+    ) {
+      throw new Error(String("error" in result ? result.error : "execute usecase failed"));
+    }
+    if (
+      kind === "pr-review" &&
+      typeof result === "object" &&
+      result !== null &&
+      "ok" in result &&
+      result.ok === false &&
+      "error" in result &&
+      result.error
+    ) {
+      throw new Error(String(result.error));
+    }
+    logLine(logPath, `usecase 完成: ${JSON.stringify(result).slice(0, 4000)}`);
+    return result;
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    logLine(logPath, `usecase 失败: ${err}`);
+    if (/超时.*终止|任务超时被终止/.test(err)) {
+      throw new Error(normalizeJobError(err, 143));
+    }
+    throw e;
+  } finally {
+    clearInterval(progressIv);
+    clearInterval(heartbeatIv);
+  }
+}
+
+async function runSubprocessJob(
   cfg: ServerConfig,
   jobId: string,
   kind: string,

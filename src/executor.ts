@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, realpathSync } from "fs";
-import { dirname, isAbsolute, join, relative, resolve } from "path";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { devAgentDir } from "./config.ts";
 import type { DevAgentConfig } from "./config.ts";
 import { reviewDiff } from "./diff-critic.ts";
@@ -30,7 +30,12 @@ import {
   type WorktreeInfo,
 } from "./worktree.ts";
 import { executorSemaphore, withExponentialBackoff } from "./retry.ts";
+import {
+  buildPreToolHook,
+  fatalExecutorPermissionViolations,
+} from "./execution/permission.ts";
 import { createJobStepReporter } from "./execution/step-reporter.ts";
+import { runTypecheck } from "./execution/typecheck.ts";
 import { addSdkCost, emptySdkCost } from "./sdk-cost.ts";
 import { planDisplayTitle, planPublishTitle, planRoadmapHint } from "./plan-i18n.ts";
 import { scaffoldMissingPlanFiles } from "./executor-scaffold.ts";
@@ -63,255 +68,8 @@ function scaleLimits(plan: Plan): { maxFiles: number; maxDiffLines: number } {
   return { maxFiles: 5, maxDiffLines: 500 };
 }
 
-function normalizeAllowedPath(path: string, cwd: string): string {
-  const cwdNorm = resolve(cwd);
-  if (isAbsolute(path)) {
-    const rel = relative(cwdNorm, resolve(path));
-    return rel === "" ? "" : rel.replace(/\\/g, "/");
-  }
-  return path.replace(/^\.\//, "").replace(/\\/g, "/");
-}
-
-/**
- * Check if a file path resolves within the worktree boundary.
- * For non-existent paths (e.g., new files to write), resolves the parent
- * directory instead to determine boundary membership.
- */
-function isPathWithinWorktree(filePath: string, worktreeRoot: string): boolean {
-  let rootResolved: string;
-  try {
-    rootResolved = realpathSync(worktreeRoot);
-  } catch {
-    return false;
-  }
-
-  const absPath = isAbsolute(filePath)
-    ? resolve(filePath)
-    : resolve(rootResolved, filePath);
-  let resolvedPath: string | undefined;
-  try {
-    resolvedPath = realpathSync(absPath);
-  } catch {
-    // Path doesn't exist yet — walk up to the nearest existing parent.
-    let parent = dirname(absPath);
-    while (parent && parent !== dirname(parent)) {
-      try {
-        resolvedPath = realpathSync(parent);
-        break;
-      } catch {
-        parent = dirname(parent);
-      }
-    }
-    if (!resolvedPath!) return false;
-  }
-  const root = rootResolved.endsWith("/") ? rootResolved : rootResolved + "/";
-  return resolvedPath === rootResolved || resolvedPath.startsWith(root);
-}
-
-/**
- * Detect path traversal attempts in Bash commands —
- * blocks access to parent directories, home dir, and sensitive system paths.
- */
-function hasBashPathTraversal(command: string, worktreeRoot: string): boolean {
-  // Directory traversal above worktree via ..
-  if (/(?:^|\s+)(\.\.\/)/.test(command)) return true;
-
-  // Home directory reference
-  if (/(?:^|\s+)(~)(?:\/|\s+|$)/.test(command)) return true;
-  if (/\$HOME\b/.test(command)) return true;
-
-  // Sensitive absolute system paths not within worktree
-  const sensitivePrefixes = [
-    "/etc/", "/usr/", "/bin/", "/sbin/", "/var/", "/dev/",
-    "/proc/", "/sys/", "/boot/", "/opt/", "/root/", "/tmp/",
-  ];
-  const absPaths = command.match(/(?:\s|^)(\/[^\s;"'|&$()`]+)/g);
-  if (absPaths) {
-    for (const ap of absPaths) {
-      const p = ap.trim();
-      if (p.length < 2 || p === "/" || p.startsWith(worktreeRoot)) continue;
-      if (sensitivePrefixes.some((prefix) => p.startsWith(prefix))) return true;
-    }
-  }
-  return false;
-}
-
-export function buildPreToolHook(
-  allowedFiles: Set<string>,
-  cwd: string,
-  onDeny?: (reason: string) => void,
-  extraReadPaths?: string[],
-) {
-  // Resolve extra read paths to canonical absolute dirs at creation time.
-  // If a path doesn't exist yet, fall back to resolve() for prefix matching.
-  const resolvedExtraReadPaths = (extraReadPaths ?? []).map((p) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return resolve(p);
-    }
-  });
-  const dangerousBash = /\b(git\s+(add|commit|push|reset|checkout|clean|merge|rebase)|rm\s+-|mv\s+|cp\s+|chmod\s+|chown\s+|sed\s+-i|perl\s+-pi|dd\s+|truncate\s+)/i;
-  return {
-    PreToolUse: [
-      {
-        matcher: "Read|Write|Edit|Bash",
-        hooks: [
-          async (input: {
-            tool_name: string;
-            tool_input: { file_path?: string; path?: string; command?: string };
-          }) => {
-            const deny = (reason: string) => {
-              onDeny?.(`${input.tool_name}: ${reason}`);
-              return {
-                hookSpecificOutput: {
-                  hookEventName: "PreToolUse" as const,
-                  permissionDecision: "deny" as const,
-                  permissionDecisionReason: reason,
-                },
-              };
-            };
-            const allow = () => ({
-              hookSpecificOutput: {
-                hookEventName: "PreToolUse" as const,
-                permissionDecision: "allow" as const,
-              },
-            });
-
-            if (input.tool_name === "Bash") {
-              const command = input.tool_input?.command ?? "";
-              if (dangerousBash.test(command)) {
-                return deny(
-                  "Executor Bash may run inspection/tests only; host handles file mutation and git operations",
-                );
-              }
-              if (hasBashPathTraversal(command, cwd)) {
-                return deny("Path traversal detected in Bash command — filesystem boundary enforced");
-              }
-              return allow();
-            }
-
-            const path = input.tool_input?.file_path ?? input.tool_input?.path;
-            if (!path) {
-              return deny("Missing file path in tool input");
-            }
-
-            // Filesystem boundary check (Read/Write/Edit)
-            if (!isPathWithinWorktree(path, cwd)) {
-              // Before denying, check if this is a Read operation within extraReadPaths
-              if (input.tool_name === "Read" && resolvedExtraReadPaths.length > 0) {
-                const absPath = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
-                const withinExtra = resolvedExtraReadPaths.some(
-                  (ep) => absPath === ep || absPath.startsWith(ep.endsWith("/") ? ep : ep + "/"),
-                );
-                if (withinExtra) return allow();
-              }
-              return deny(`File path outside worktree boundary: ${path}`);
-            }
-
-            // Read is allowed for any project file (no plan-file restriction)
-            if (input.tool_name === "Read") {
-              return allow();
-            }
-
-            // Write/Edit: restrict to plan-allowed files
-            const normalized = normalizeAllowedPath(path, cwd);
-            const allowed = [...allowedFiles].some(
-              (f) => normalized === f || normalized.endsWith(`/${f}`) || normalized.endsWith(f),
-            );
-            if (!allowed) {
-              return deny(`File not in plan: ${normalized}`);
-            }
-            return allow();
-          },
-        ],
-      },
-    ],
-  };
-}
-
-export function fatalExecutorPermissionViolations(deniedOps: string[]): string[] {
-  return deniedOps.filter((r) => /^(Write|Edit): .*outside worktree boundary/i.test(r));
-}
-
-function commandExists(name: string): boolean {
-  const proc = Bun.spawnSync(["sh", "-c", `command -v ${name}`], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return proc.exitCode === 0;
-}
-
-/* ── Type-check execution types and parsers ── */
-
-/**
- * Extended type-check result with parsed per-file error counts.
- * Backward compatible — existing callers accessing only `ok`/`out` continue to work.
- */
-export interface TypecheckOutput {
-  ok: boolean;
-  out: string;
-  /** Total number of type errors across all files. */
-  totalErrors: number;
-  /** Per-file error counts extracted from tsc output. */
-  perFileErrors: Record<string, number>;
-}
-
-/** Regex matching standard tsc error lines: `<file>(<line>,<col>): error TS<code>: ...` */
-const TSC_ERROR_RE = /^([^(]+)\(\d+,\s*\d+\):\s+error TS\d+:/gm;
-
-/**
- * Parse tsc text output and extract per-file type error counts.
- * Handles the standard tsc error format (non-pretty mode).
- * Returns an empty report if no errors are found or the format doesn't match.
- *
- * @param out - Raw stdout/stderr text from a tsc invocation.
- */
-export function parseTypecheckErrors(out: string): {
-  perFileErrors: Record<string, number>;
-  totalErrors: number;
-} {
-  const perFileErrors: Record<string, number> = {};
-  let match: RegExpExecArray | null;
-  TSC_ERROR_RE.lastIndex = 0;
-  while ((match = TSC_ERROR_RE.exec(out)) !== null) {
-    const filePath = match[1];
-    perFileErrors[filePath] = (perFileErrors[filePath] ?? 0) + 1;
-  }
-  const totalErrors = Object.values(perFileErrors).reduce(
-    (sum, c) => sum + c,
-    0,
-  );
-  return { perFileErrors, totalErrors };
-}
-
-async function runTypecheck(wtPath: string): Promise<TypecheckOutput> {
-  if (existsSync(join(wtPath, "package.json"))) {
-    const pkg = JSON.parse(readFileSync(join(wtPath, "package.json"), "utf-8"));
-    if (pkg.scripts?.typecheck) {
-      const runner = existsSync(join(wtPath, "bun.lockb")) && commandExists("bun")
-        ? ["bun", "run", "typecheck"]
-        : existsSync(join(wtPath, "pnpm-lock.yaml")) && commandExists("pnpm")
-          ? ["pnpm", "run", "typecheck"]
-          : ["npm", "run", "typecheck"];
-      const proc = Bun.spawnSync(runner, { cwd: wtPath, stdout: "pipe", stderr: "pipe" });
-      const out =
-        new TextDecoder().decode(proc.stdout) +
-        "\n" +
-        new TextDecoder().decode(proc.stderr);
-      const { perFileErrors, totalErrors } = parseTypecheckErrors(out);
-      return { ok: proc.exitCode === 0, out, perFileErrors, totalErrors };
-    }
-  }
-  const runner = commandExists("bunx") ? ["bunx", "tsc", "--noEmit"] : ["npx", "tsc", "--noEmit"];
-  const proc = Bun.spawnSync(runner, { cwd: wtPath, stdout: "pipe", stderr: "pipe" });
-  const out =
-    new TextDecoder().decode(proc.stdout) +
-    "\n" +
-    new TextDecoder().decode(proc.stderr);
-  const { perFileErrors, totalErrors } = parseTypecheckErrors(out);
-  return { ok: proc.exitCode === 0, out, perFileErrors, totalErrors };
-}
+export { buildPreToolHook, fatalExecutorPermissionViolations } from "./execution/permission.ts";
+export { parseTypecheckErrors, type TypecheckOutput } from "./execution/typecheck.ts";
 
 export function diffStatsAgainstBase(wtPath: string, baseCommit: string): { files: number; lines: number } {
   const raw = git(wtPath, ["diff", baseCommit, "--numstat"]);
@@ -388,7 +146,20 @@ export async function executePlan(
   plan: Plan & { planId?: string; goal?: string },
   cfg: DevAgentConfig,
   scanRemote: string | null,
+  opts: {
+    jobId?: string;
+    projectAlias?: string;
+    dashboardBaseUrl?: string;
+    signal?: AbortSignal;
+    onPhase?: (phase: string) => void;
+  } = {},
 ): Promise<ExecutionResult> {
+  const throwIfAborted = (): void => {
+    if (opts.signal?.aborted) throw new Error("任务超时被终止");
+  };
+  const phase = (name: string): void => {
+    opts.onPhase?.(name);
+  };
   const base = resolveExecutionBaseCommit(projectPath, cfg, plan.baseCommit);
   const baseCommit = base.commit;
   const planId = plan.planId;
@@ -397,7 +168,7 @@ export async function executePlan(
   const start = Date.now();
   let wt: WorktreeInfo | null = null;
 
-  const stepReporter = createJobStepReporter(process.env.P7_JOB_ID);
+  const stepReporter = createJobStepReporter(opts.jobId ?? process.env.P7_JOB_ID);
   const writeStepState = stepReporter.record;
 
   let sdkCost = emptySdkCost();
@@ -408,6 +179,7 @@ export async function executePlan(
   let permissionFindings = "";
 
   try {
+    throwIfAborted();
     if (
       scanRemote?.includes("github.com") &&
       ghInstalled() &&
@@ -440,14 +212,16 @@ export async function executePlan(
       `execute:base ${base.source} @ ${baseCommit.slice(0, 7)}${base.synced ? "" : " (未同步远程)"}`,
     );
     const workBranch = resolveWorkBranch(cfg);
+    phase("worktree_create");
     const wtStart = new Date().toISOString();
     writeStepState({ step_name: "worktree_create", status: "running", started_at: wtStart });
     wt = createWorktree(projectPath, baseCommit, cfg);
     writeStepState({ step_name: "worktree_create", status: "completed", started_at: wtStart, finished_at: new Date().toISOString() });
 
     // ── Sandbox preview URL ──
-    const dashboardBaseUrl = process.env.DASHBOARD_BASE_URL ?? process.env.P7_DASHBOARD_URL;
-    const projectAlias = process.env.P7_PROJECT_ALIAS;
+    const dashboardBaseUrl =
+      opts.dashboardBaseUrl ?? process.env.DASHBOARD_BASE_URL ?? process.env.P7_DASHBOARD_URL;
+    const projectAlias = opts.projectAlias ?? process.env.P7_PROJECT_ALIAS;
     const previewUrl = dashboardBaseUrl && projectAlias
       ? `${dashboardBaseUrl.replace(/\/+$/, "")}/sandbox/${encodeURIComponent(projectAlias)}`
       : "";
@@ -465,8 +239,8 @@ export async function executePlan(
           projectPath,
           planId,
           planDisplayTitle(plan),
-          process.env.P7_PROJECT_ALIAS,
-          process.env.P7_JOB_ID,
+          opts.projectAlias ?? process.env.P7_PROJECT_ALIAS,
+          opts.jobId ?? process.env.P7_JOB_ID,
         )
       : "";
     const priorFailureBlock = formatExecuteRetryPromptBlock(priorFailure);
@@ -481,11 +255,13 @@ export async function executePlan(
     let stats = { files: 0, lines: 0 };
     let diffStatOut = "";
 
+    phase("sdk_execution");
     const sdkStart = new Date().toISOString();
     writeStepState({ step_name: "sdk_execution", status: "running", started_at: sdkStart });
     let lastToolSummary = "";
 
     for (let pass = 0; pass < maxAgentPasses; pass++) {
+      throwIfAborted();
       if (pass > 0) {
         const scaffolded = scaffoldMissingPlanFiles(wt.path, plan);
         if (scaffolded.length > 0) {
@@ -600,6 +376,8 @@ export async function executePlan(
 
     writeStepState({ step_name: "sdk_execution", status: "completed", started_at: sdkStart, finished_at: new Date().toISOString() });
 
+    throwIfAborted();
+    phase("diff_check");
     const diffStart = new Date().toISOString();
     writeStepState({ step_name: "diff_check", status: "running", started_at: diffStart });
     const maxFiles =
@@ -633,12 +411,16 @@ export async function executePlan(
     }
     writeStepState({ step_name: "diff_check", status: "completed", started_at: diffStart, finished_at: new Date().toISOString() });
 
+    throwIfAborted();
+    phase("typecheck");
     const tcStart = new Date().toISOString();
     writeStepState({ step_name: "typecheck", status: "running", started_at: tcStart });
     const tc = await runTypecheck(wt.path);
     if (!tc.ok) throw new Error(`typecheck failed: ${tc.out.slice(0, 500)}`);
     writeStepState({ step_name: "typecheck", status: "completed", started_at: tcStart, finished_at: new Date().toISOString() });
 
+    throwIfAborted();
+    phase("test");
     const testStart = new Date().toISOString();
     writeStepState({ step_name: "test", status: "running", started_at: testStart });
     if (cfg.test_command) {
@@ -653,6 +435,8 @@ export async function executePlan(
     }
     writeStepState({ step_name: "test", status: "completed", started_at: testStart, finished_at: new Date().toISOString() });
 
+    throwIfAborted();
+    phase("diff_critic");
     const criticStart = new Date().toISOString();
     writeStepState({ step_name: "diff_critic", status: "running", started_at: criticStart });
     const critic = await reviewDiffWithRouting(projectPath, wt.path, diffStatOut, plan.title, stats, plan);
@@ -803,7 +587,7 @@ export async function executePlan(
         tokenUsage: sdkCost.usage,
       });
       abandonStuckApprovedPlan(projectPath, planId, {
-        projectAlias: process.env.P7_PROJECT_ALIAS,
+        projectAlias: opts.projectAlias ?? process.env.P7_PROJECT_ALIAS,
         goal: plan.goal,
         title: planDisplayTitle(plan),
       });
