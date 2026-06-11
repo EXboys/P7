@@ -369,3 +369,158 @@ describe("executor boundary penetration — whitelist normalization bypass", () 
     }
   });
 });
+
+// ──────────────────────────────────────────────
+// 6. node/bun -e arbitrary code execution bypass
+//    The abs-path regex (?:\s|^)(\/[^\s;"'|&$()`]+)
+//    requires whitespace or start-of-string before
+//    the leading /. When a path appears inside a JS
+//    string literal passed to node -e or bun -e, the
+//    character before / is a quote (') — not whitespace
+//    — so the regex never matches.
+//    node and bun are both in DEFAULT_BASH_COMMAND_ALLOWLIST,
+//    so the allowlist gate does not block them either.
+// ──────────────────────────────────────────────
+describe("executor boundary penetration — node/bun -e code execution bypass", () => {
+  test("Bash: node -e JS string literal with /etc/passwd bypasses abs-path regex", async () => {
+    const root = tempRoot("pen-node-e");
+    try {
+      const h = buildHandler([], root);
+      // require('fs').readFileSync('/etc/passwd') — the /etc is
+      // preceded by a single-quote character, not whitespace,
+      // so (?:\s|^)(\/...) does NOT match → known bypass
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "node -e \"require('fs').readFileSync('/etc/passwd')\"" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: bun -e JS string literal with /etc/passwd bypasses abs-path regex", async () => {
+    const root = tempRoot("pen-bun-e");
+    try {
+      const h = buildHandler([], root);
+      // Same mechanism as node -e: Bun -e also passes JS strings
+      // where /etc/passwd is preceded by a quote, not whitespace
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "bun -e \"const fs=require('fs');fs.readFileSync('/etc/passwd')\"" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: node -e with no embedded path — control: allow normal command", async () => {
+    const root = tempRoot("pen-node-e-ctl");
+    try {
+      const h = buildHandler([], root);
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "node -e \"console.log('hello')\"" },
+      });
+      // No absolute path at all → passes all gates → allow
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: positive control — cat /etc/passwd (space before /) IS denied", async () => {
+    const root = tempRoot("pen-node-e-pos");
+    try {
+      const h = buildHandler([], root);
+      // cat /etc/passwd — there IS a space before /etc, so the
+      // abs-path regex matches /etc/passwd → sensitive prefix → deny
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "cat /etc/passwd" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/path traversal/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ──────────────────────────────────────────────
+// 7. No-space redirect path bypass
+//    The abs-path regex (?:\s|^)(\/...) requires
+//    whitespace or start-of-string before a leading /.
+//    When a redirect operator (>, >>, or <) is placed
+//    directly before the destination path with no
+//    whitespace, the character before / is the operator
+//    itself (>, <) — not whitespace — so the regex
+//    skips the path entirely.
+// ──────────────────────────────────────────────
+describe("executor boundary penetration — no-space redirect path bypass", () => {
+  test("Bash: echo data>/tmp/evil — no space before /tmp bypasses abs-path regex", async () => {
+    const root = tempRoot("pen-nosp-redirect");
+    try {
+      const h = buildHandler([], root);
+      // echo data>/tmp/evil — /tmp is preceded by >, not whitespace,
+      // so (?:\s|^)(\/...) does NOT match → known bypass
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "echo data>/tmp/evil" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: echo data>>/etc/cron.d/evil — no space before /etc bypasses abs-path regex", async () => {
+    const root = tempRoot("pen-nosp-append");
+    try {
+      const h = buildHandler([], root);
+      // echo data>>/etc/cron.d/evil — /etc is preceded by >, not
+      // whitespace → no match for (?:\s|^)(\/...)
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "echo data>>/etc/cron.d/evil" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: echo data<</etc/passwd — no space before /etc bypasses abs-path regex", async () => {
+    const root = tempRoot("pen-nosp-heredoc");
+    try {
+      const h = buildHandler([], root);
+      // echo data<</etc/passwd — /etc is preceded by <, not
+      // whitespace → no match
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "echo data<</etc/passwd" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: positive control — echo data > /tmp/evil (WITH space) IS denied", async () => {
+    const root = tempRoot("pen-nosp-pos");
+    try {
+      const h = buildHandler([], root);
+      // echo data > /tmp/evil — there IS a space before /tmp,
+      // so the abs-path regex matches /tmp/evil → deny
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "echo data > /tmp/evil" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/path traversal/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
