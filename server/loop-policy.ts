@@ -34,7 +34,7 @@ export function maybeContinueLoop(
     return { continue: false, reason: "loop_planning_off" };
   }
 
-  const dailyLimit = dc.discovery.daily_run_limit ?? 1;
+  const dailyLimit = dc.discovery.daily_run_limit ?? 0;
   if (dailyLimit > 0 && countCompletedFullDailyToday(alias) >= dailyLimit) {
     return { continue: false, reason: "daily_limit_reached" };
   }

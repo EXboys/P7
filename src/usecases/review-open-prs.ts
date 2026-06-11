@@ -1,6 +1,11 @@
 import { loadConfig } from "../config.ts";
 import { runPrReviewSweep } from "../vcs/pr-reviewer.ts";
 
-export async function reviewOpenPrsUseCase(projectPath: string) {
-  return runPrReviewSweep(projectPath, loadConfig(projectPath));
+export type ReviewOpenPrsOpts = {
+  signal?: AbortSignal;
+  onPhase?: (phase: string) => void;
+};
+
+export async function reviewOpenPrsUseCase(projectPath: string, opts: ReviewOpenPrsOpts = {}) {
+  return runPrReviewSweep(projectPath, loadConfig(projectPath), opts);
 }

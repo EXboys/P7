@@ -10,7 +10,7 @@ import {
 } from "./queue/store.ts";
 import { loadConfig } from "../src/config.ts";
 import { pickNextApprovedPlanForExecution, sweepStuckApprovedPlans } from "../src/approval.ts";
-import { getPlanState, preparePlanExecuteRetry } from "../src/state.ts";
+import { countQueuedPlans, getPlanState, preparePlanExecuteRetry } from "../src/state.ts";
 import { checkPrWorkGate } from "../src/vcs/pr-work-gate.ts";
 import { ghInstalled, gitRemoteOrigin } from "../src/gh-status.ts";
 import {
@@ -139,9 +139,20 @@ function runSchedulerTick(cfg: ServerConfig): void {
       continue;
     }
 
-    const dailyLimit = dc.discovery.daily_run_limit ?? 1;
+    const dailyLimit = dc.discovery.daily_run_limit ?? 0;
     if (dailyLimit > 0 && countCompletedFullDailyToday(alias) >= dailyLimit) {
       audit("scheduler.skipped", { alias, reason: "daily_limit_reached", dailyLimit });
+      continue;
+    }
+
+    const depth = countQueuedPlans(path);
+    if (depth >= dc.max_pending_plans) {
+      audit("scheduler.skipped", {
+        alias,
+        reason: "queue_full",
+        depth,
+        maxPendingPlans: dc.max_pending_plans,
+      });
       continue;
     }
 
