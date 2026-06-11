@@ -74,6 +74,82 @@ function hasBashPathTraversal(
   return false;
 }
 
+/**
+ * The set of base commands permitted for the executor Bash tool.
+ *
+ * Only commands in this set may execute; all others (curl, wget, python,
+ * awk, xargs, ssh, etc.) are denied before the secondary dangerous-command
+ * and path-traversal gates are checked.
+ *
+ * Commands that can execute arbitrary code (node -e, bun -e, etc.) are
+ * intentionally included because the primary risk vector is network
+ * exfiltration / file mutation — which the file-permission hook and
+ * worktree boundary already mitigate. Agents need these for build and
+ * test commands.
+ */
+export const DEFAULT_BASH_COMMAND_ALLOWLIST: ReadonlySet<string> = new Set([
+  // — File & directory inspection —
+  "ls", "find",
+  // — File content reading —
+  "cat", "head", "tail", "nl",
+  // — Content search —
+  "grep", "egrep", "fgrep", "rg", "ag",
+  // — File metadata —
+  "stat", "file", "du", "df", "wc",
+  // — Text processing (read-only; -i/-I etc. blocked by dangerousBash regex) —
+  "sort", "uniq", "cut", "tr", "fold", "paste", "join", "expand", "unexpand", "fmt",
+  "diff", "comm", "cmp",
+  // — Path utilities —
+  "realpath", "readlink", "basename", "dirname",
+  // — Process / identity —
+  "which", "command", "type", "hash", "getconf",
+  "whoami", "id", "uname", "hostname", "arch", "nproc",
+  // — Output & printing —
+  "echo", "printf", "pwd", "date", "env", "printenv",
+  "true", "false", "yes",
+  // — Build & run —
+  "bun", "bunx", "node", "npm", "npx", "pnpm",
+  "tsc", "eslint", "prettier", "biome",
+  // — Binary inspection —
+  "od", "xxd", "hexdump", "strings",
+  // — Conditionals —
+  "test", "[",
+  // — Process supervision (safe wrapper, no mutation) —
+  "timeout",
+]);
+
+/**
+ * Extract the base command name from a Bash command string.
+ *
+ * Handles:
+ * - Simple commands:  `ls -la`              → "ls"
+ * - Path-qualified:   `/usr/bin/ls -la`     → "ls"
+ * - Quoted commands:  `"my tool" --arg`     → "my tool"
+ * - Env var prefix:   `FOO=bar VAR=val cmd` → "cmd"
+ *
+ * Returns the empty string when the command is empty or whitespace-only.
+ */
+export function getBashBaseCommand(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed) return "";
+
+  // Strip leading environment variable assignments (e.g., FOO=bar VAR=val cmd)
+  const envAssignRe = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
+  let rest = trimmed.replace(envAssignRe, "").trim();
+  if (!rest) return "";
+
+  // Get the first whitespace-delimited token
+  const firstToken = rest.split(/\s+/)[0];
+  if (!firstToken) return "";
+
+  // Strip surrounding quotes
+  const unquoted = firstToken.replace(/^(["'`])(.*)\1$/, "$2");
+
+  // Extract basename for path-qualified commands
+  const lastSlash = unquoted.lastIndexOf("/");
+  return lastSlash >= 0 ? unquoted.slice(lastSlash + 1) : unquoted;
+}
+
 export function buildPreToolHook(
   allowedFiles: Set<string>,
   cwd: string,
@@ -124,14 +200,36 @@ export function buildPreToolHook(
 
             if (input.tool_name === "Bash") {
               const command = input.tool_input?.command ?? "";
+
+              // 1. Positive allowlist gate — reject unknown commands before any secondary check
+              const baseCommand = getBashBaseCommand(command);
+              if (!baseCommand) {
+                return deny("Bash command is empty or whitespace only");
+              }
+              if (!DEFAULT_BASH_COMMAND_ALLOWLIST.has(baseCommand)) {
+                return deny(
+                  `Command '${baseCommand}' is not on the executor Bash allowlist. ` +
+                    `Only inspection, build, and test commands are permitted.`,
+                );
+              }
+
+              // 2. Negative gate — block dangerous patterns within whitelisted commands
               if (dangerousBash.test(command)) {
                 return deny(
                   "Executor Bash may run inspection/tests only; host handles file mutation and git operations",
                 );
               }
-              if (hasBashPathTraversal(command, cwd, resolvedExtraProjectPaths)) {
+
+              // 3. Path traversal gate — block fs boundary escapes.
+              //    Strip the base command token before checking so that
+              //    path-qualified commands (/usr/bin/ls) are not flagged as
+              //    sensitive-path access — only their arguments are checked.
+              const cmdPrefix = command.match(/^\S+/)?.[0] ?? "";
+              const restCommand = cmdPrefix ? command.slice(cmdPrefix.length) : command;
+              if (hasBashPathTraversal(restCommand, cwd, resolvedExtraProjectPaths)) {
                 return deny("Path traversal detected in Bash command — filesystem boundary enforced");
               }
+
               return allow();
             }
 
