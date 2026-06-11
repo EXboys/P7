@@ -18,6 +18,7 @@ import { extractLastJsonBlock, repairJson } from "./json-utils.ts";
 import { listPlanStates } from "./state.ts";
 import { runPipelineCheck, pipelineReady } from "./pipeline-check.ts";
 import { auditTokenConsumption } from "./token-audit.ts";
+import { auditBoundaries } from "./boundary-audit.ts";
 import { approvePlanUseCase, rejectPlanUseCase } from "./usecases/approve-plan.ts";
 import { executeApprovedPlanUseCase } from "./usecases/execute-approved-plan.ts";
 import { reviewOpenPrsUseCase } from "./usecases/review-open-prs.ts";
@@ -207,6 +208,21 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(listPendingApprovals(projectPath()), null, 2));
       break;
     }
+    case "audit": {
+      if (projectArg === "boundaries") {
+        const p = rest[0];
+        if (!p) {
+          console.error("Usage: bun run src/index.ts audit boundaries <project-path>");
+          process.exit(1);
+        }
+        const report = auditBoundaries(resolve(p));
+        console.log(JSON.stringify(report, null, 2));
+        process.exit(report.summary.failed > 0 ? 1 : 0);
+      }
+      console.error("Usage: bun run src/index.ts audit boundaries <project-path>");
+      process.exit(1);
+      break;
+    }
     case "states": {
       console.log(JSON.stringify(listPlanStates(projectPath(), Number(flag("--limit") ?? 50)), null, 2));
       break;
@@ -248,6 +264,7 @@ Commands:
   roadmap fix-template <project>
   radar <project> [--date YYYY-MM-DD]
   approvals <project>
+  audit boundaries <project>
   states <project> [--limit 50]
   approve <project> --plan-id <id> [--execute]
   reject <project> --plan-id <id>
