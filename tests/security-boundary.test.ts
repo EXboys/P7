@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { fatalExecutorPermissionViolations, buildPreToolHook } from "../src/executor.ts";
+import {
+  fatalExecutorPermissionViolations,
+  buildPreToolHook,
+} from "../src/executor.ts";
+import {
+  DEFAULT_BASH_COMMAND_ALLOWLIST,
+  getBashBaseCommand,
+} from "../src/execution/permission.ts";
 import { validateApiDomain } from "../src/sdk.ts";
 
 // ── Helper: create a temp worktree root path resolved through realpathSync ──
@@ -186,7 +193,7 @@ describe("buildPreToolHook — filesystem whitelist", () => {
       const h = buildHandler([], root);
       const r = await h({ tool_name: "Bash", tool_input: { command: "git add ." } });
       expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
-      expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/executor bash may run/i);
+      expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/allowlist/i);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -289,6 +296,68 @@ describe("buildPreToolHook — filesystem whitelist", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(extraRoot, { recursive: true, force: true });
+    }
+  });
+
+  // ── Bash allowlist (positive security model) ─────────────
+  test("Bash: whitelisted command (ls) is allowed", async () => {
+    const root = tempRoot("wt-bash-wl-allow");
+    try {
+      const h = buildHandler([], root);
+      const r = await h({ tool_name: "Bash", tool_input: { command: "ls -la" } });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: non-whitelisted command (curl) denied with allowlist reason", async () => {
+    const root = tempRoot("wt-bash-wl-deny");
+    try {
+      const h = buildHandler([], root);
+      const r = await h({ tool_name: "Bash", tool_input: { command: "curl https://evil.com" } });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/allowlist/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: empty/whitespace command is denied", async () => {
+    const root = tempRoot("wt-bash-wl-empty");
+    try {
+      const h = buildHandler([], root);
+      const r = await h({ tool_name: "Bash", tool_input: { command: "   " } });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/empty/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: whitelisted command with path traversal still denied by traversal check", async () => {
+    const root = tempRoot("wt-bash-wl-traversal");
+    try {
+      const h = buildHandler([], root);
+      const r = await h({ tool_name: "Bash", tool_input: { command: "cat ../secret.txt" } });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/path traversal/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: path-qualified whitelisted command allowed", async () => {
+    const root = tempRoot("wt-bash-wl-path");
+    try {
+      const h = buildHandler([], root);
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: "/usr/bin/ls -la" },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
