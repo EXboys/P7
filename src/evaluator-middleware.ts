@@ -30,8 +30,11 @@ import {
 import type { GemmaEvalConfig, GemmaSliceMeta, GemmaEvalResult } from "./gemma-bridge.ts";
 import type { DiffCriticFinding, DcSeverity, Plan } from "./types.ts";
 import type { SdkCostSummary } from "./sdk-cost.ts";
+import { captureEntityDiff, type EntityDiffResult } from "./entity-diff.ts";
 import { reviewDiff } from "./diff-critic.ts";
 import { writeEvalRouteStat } from "./state.ts";
+import { runPreCheck } from "./pre-check.ts";
+import { runPrecheck } from "./precheck-engine.ts";
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Urgency detection
@@ -51,6 +54,42 @@ const BLOCKER_RISK_RE =
 function detectCriticUrgency(plan: Plan): CriticUrgency {
   const hasBlocker = plan.risks.some((r) => BLOCKER_RISK_RE.test(r));
   return hasBlocker ? "blocker" : "advisory";
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Entity context formatter
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Best-effort entity context formatter.
+ *
+ * Reads the worktree diff, runs entity-level capture via `captureEntityDiff`,
+ * and formats the result as a markdown summary for LLM prompt injection.
+ *
+ * Returns `undefined` when the diff is empty, git is unavailable, or no
+ * entities are detected. Never throws — all errors are silently caught.
+ */
+function formatEntityContext(wtPath: string): string | undefined {
+  try {
+    const diffText = getWorktreeDiff(wtPath);
+    if (!diffText) return undefined;
+
+    const entityResult = captureEntityDiff(diffText);
+    if (entityResult.files.length === 0) return undefined;
+
+    const parts: string[] = [];
+    for (const file of entityResult.files) {
+      parts.push(`#### ${file.filePath}`);
+      for (const entity of file.entities) {
+        const lineInfo = entity.lineNumber > 0 ? `:${entity.lineNumber}` : "";
+        parts.push(`- ${entity.changeType} ${entity.entityType} \`${entity.name}\`${lineInfo}`);
+      }
+    }
+
+    return parts.join("\n");
+  } catch {
+    return undefined;
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -94,104 +133,42 @@ function getWorktreeDiff(wtPath: string): string | null {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
- * Pre-check: synchronous rule engine
+ * Pre-check: canonical rule engine (imported)
  * ──────────────────────────────────────────────────────────────────────────── */
 
-interface PreCheckFinding {
-  rule: string;
-  severity: "blocker" | "warning";
-  message: string;
-  detail?: string;
-}
+// Pre-check logic lives in src/pre-check.ts.
+// All rules (scope_violation, diff_size_anomaly, security_red_flag,
+// unsafe_eval, shell_injection, prompt_injection_risk, unsafe_exec,
+// unsafe_inner_html) are evaluated by the canonical runPreCheck() imported above.
+//
+// Inline pattern arrays below serve as defensive documentation — the actual
+// evaluation delegates to pre-check.ts. If the two drift, the source of truth
+// is pre-check.ts.
 
-interface PreCheckResult {
-  ok: boolean;
-  findings: PreCheckFinding[];
-  latencyMs: number;
-}
+/* ── Unsafe eval patterns (inline copy for defensive reference) ── */
 
-/** High-signal secret patterns for security red-flag detection. */
-const SECRET_PATTERNS: { pattern: RegExp; label: string }[] = [
-  { pattern: /\bsk-[A-Za-z0-9]{20,}\b/g, label: "OpenAI API key (sk-…)" },
-  { pattern: /BEGIN\s+(RSA|EC|DSA|OPENSSH)\s+PRIVATE\s+KEY/g, label: "Private key block" },
-  { pattern: /\bgh[opu]_[A-Za-z0-9]{36}\b/g, label: "GitHub token" },
-  { pattern: /\bghs_[A-Za-z0-9]{36}\b/g, label: "GitHub server-to-server token" },
+const UNSAFE_EVAL_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\beval\s*\(/gm, label: "eval() call" },
+  { pattern: /\bnew\s+Function\s*\(/gm, label: "new Function() call" },
+  { pattern: /\bsetTimeout\s*\(\s*["'`]/gm, label: "setTimeout(string) call — eval-like" },
 ];
 
-const DEFAULT_SIZE_MULTIPLIER = 3;
+/* ── Unsafe exec patterns (inline copy for defensive reference) ── */
 
-/**
- * Parse changed file paths from `+++ b/<path>` lines in unified diff output.
- */
-function parseChangedFiles(diffContent: string): string[] {
-  const files: string[] = [];
-  for (const line of diffContent.split("\n")) {
-    const m = line.match(/^\+\+\+ b\/(.+)$/);
-    if (m) files.push(m[1]);
-  }
-  return files;
-}
+const UNSAFE_EXEC_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\b(exec|execSync)\s*\(/g, label: "exec/execSync() call" },
+  { pattern: /\bspawn(?:Sync)?\s*\(/g, label: "spawn/spawnSync() call" },
+  { pattern: /shell\s*:\s*true/g, label: "shell:true in spawn options" },
+  { pattern: /\bBun\.spawnSync\s*\(/g, label: "Bun.spawnSync() call" },
+];
 
-/**
- * Run synchronous rule-based pre-check on raw diff content (＜5ms).
- *
- * Rules:
- *  1. Scope violation   — changed files outside plan.changes (warning)
- *  2. Diff size anomaly — actual lines > estimated × multiplier (warning)
- *  3. Security red flag — high-signal secret patterns (blocker)
- */
-function runPreCheck(
-  diffContent: string,
-  plan: Plan,
-  sizeMultiplier = DEFAULT_SIZE_MULTIPLIER,
-): PreCheckResult {
-  const t0 = performance.now();
-  const findings: PreCheckFinding[] = [];
-  const changedFiles = parseChangedFiles(diffContent);
-  const allowedFiles = new Set(plan.changes.map((c) => c.file));
+/* ── Unsafe innerHTML patterns (inline copy for defensive reference) ── */
 
-  // Rule 1: scope violation — files outside plan scope
-  const violations = changedFiles.filter((f) => !allowedFiles.has(f) && !f.startsWith("."));
-  if (violations.length > 0) {
-    findings.push({
-      rule: "scope_violation",
-      severity: "warning",
-      message: "Diff touches files outside plan scope",
-      detail: violations.join(", "),
-    });
-  }
-
-  // Rule 2: diff size anomaly — actual diff far exceeds estimate
-  const actualLines = diffContent.split("\n").length - 1;
-  const estimated = plan.estimated_diff_lines;
-  if (estimated > 0 && actualLines > estimated * sizeMultiplier) {
-    findings.push({
-      rule: "diff_size_anomaly",
-      severity: "warning",
-      message: `Diff size (${actualLines}) exceeds ${sizeMultiplier}× estimate (${estimated})`,
-      detail: `Actual: ${actualLines}, Estimated: ${estimated}`,
-    });
-  }
-
-  // Rule 3: security red flags — scan for high-signal secret patterns
-  for (const { pattern, label } of SECRET_PATTERNS) {
-    const matches = diffContent.match(pattern);
-    if (matches && matches.length > 0) {
-      findings.push({
-        rule: "security_red_flag",
-        severity: "blocker",
-        message: `Potential secret leak: ${label}`,
-        detail: `${matches.length} occurrence(s)`,
-      });
-    }
-  }
-
-  return {
-    ok: !findings.some((f) => f.severity === "blocker"),
-    findings,
-    latencyMs: Math.round(performance.now() - t0),
-  };
-}
+const UNSAFE_INNER_HTML_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\.innerHTML\s*=/g, label: ".innerHTML assignment" },
+  { pattern: /\bdangerouslySetInnerHTML\b/g, label: "React dangerouslySetInnerHTML" },
+  { pattern: /\bv-html\s*=/g, label: "Vue v-html directive" },
+];
 
 /* ──────────────────────────────────────────────────────────────────────────────
  * Gemma diff evaluation
@@ -355,6 +332,37 @@ export async function reviewDiffWithRouting(
   stats: { files: number; lines: number },
   plan: Plan,
 ): Promise<{ ok: boolean; findings: string; structuredFindings: DiffCriticFinding[]; cost?: SdkCostSummary }> {
+  // Fast pre-check (file-level): deterministic rules on diff --stat before complexity classification.
+  // High-certainty blocker findings (generated_file, minified_asset) short-circuit immediately,
+  // saving the full LLM call path. Runs in <1ms for typical diffs.
+  const fastCheck = runPrecheck(diffStatOut);
+  if (fastCheck.hasHighCertaintyBlocker) {
+    const blockers = fastCheck.findings.filter(
+      (f) => f.severity === "blocker" && f.certainty === "high",
+    );
+    const findingsStr = blockers
+      .map((f) => `- [${f.severity}] ${f.rule}: ${f.message}${f.detail ? ` (${f.detail})` : ""}`)
+      .join("\n");
+    writeEvalRouteStat(projectPath, {
+      routePoint: "pre_check_fast",
+      tier: "trivial",
+      urgency: "blocker",
+      selectedEvaluator: "fast_check_blocked",
+      estimatedCostUsd: 0,
+      actualCostUsd: 0,
+      latencyMs: fastCheck.latencyMs,
+    });
+    return {
+      ok: false,
+      findings: findingsStr,
+      structuredFindings: blockers.map((f) => ({
+        dimension: `pre-check/${f.rule}`,
+        severity: "blocker" as DcSeverity,
+        message: f.message,
+      })),
+    };
+  }
+
   const tier = classifyDiffComplexity(stats.lines, stats.files);
   const urgency = detectCriticUrgency(plan);
 
@@ -388,6 +396,9 @@ export async function reviewDiffWithRouting(
     }
   }
 
+  // Best-effort entity context for LLM prompt enrichment (silent if empty)
+  const entityContextMd = formatEntityContext(wtPath);
+
   const decision = selectEvaluator(tier, urgency);
 
   const routePoint = "diff_critic";
@@ -398,7 +409,7 @@ export async function reviewDiffWithRouting(
   // Claude route: bypass Gemma entirely
   if (decision.evaluator === "claude") {
     const t0 = performance.now();
-    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    result = await reviewDiff(wtPath, diffStatOut, planTitle, entityContextMd);
     latencyMs = Math.round(performance.now() - t0);
     actualCostUsd = result.cost?.costUsd ?? 0;
     writeEvalRouteStat(projectPath, {
@@ -419,7 +430,7 @@ export async function reviewDiffWithRouting(
   if (!gemmaResult) {
     // Gemma unavailable — transparent fallback to Claude
     const t0 = performance.now();
-    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    result = await reviewDiff(wtPath, diffStatOut, planTitle, entityContextMd);
     latencyMs = Math.round(performance.now() - t0);
     actualCostUsd = result.cost?.costUsd ?? 0;
     writeEvalRouteStat(projectPath, {
@@ -435,7 +446,7 @@ export async function reviewDiffWithRouting(
   // Check if fallback to Claude is warranted
   if (decision.evaluator === "gemma_with_fallback" && shouldFallbackToClaude(gemmaResult)) {
     const t0 = performance.now();
-    result = await reviewDiff(wtPath, diffStatOut, planTitle);
+    result = await reviewDiff(wtPath, diffStatOut, planTitle, entityContextMd);
     latencyMs = Math.round(performance.now() - t0);
     actualCostUsd = result.cost?.costUsd ?? 0;
     writeEvalRouteStat(projectPath, {

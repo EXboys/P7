@@ -91,6 +91,11 @@ export const DevAgentConfigSchema = z.object({
           block_on_hardcoded_credential: z.boolean().default(true),
           block_on_data_exposure_logging: z.boolean().default(true),
           block_on_insecure_security_config: z.boolean().default(true),
+          block_on_unsafe_eval: z.boolean().default(true),
+          block_on_shell_injection: z.boolean().default(true),
+          block_on_prompt_injection_risk: z.boolean().default(true),
+          block_on_unsafe_exec: z.boolean().default(true),
+          block_on_unsafe_inner_html: z.boolean().default(true),
         })
         .default({
           enabled: true,
@@ -100,6 +105,11 @@ export const DevAgentConfigSchema = z.object({
           block_on_hardcoded_credential: true,
           block_on_data_exposure_logging: true,
           block_on_insecure_security_config: true,
+          block_on_unsafe_eval: true,
+          block_on_shell_injection: true,
+          block_on_prompt_injection_risk: true,
+          block_on_unsafe_exec: true,
+          block_on_unsafe_inner_html: true,
         }),
     })
     .default({
@@ -122,6 +132,11 @@ export const DevAgentConfigSchema = z.object({
         block_on_hardcoded_credential: true,
         block_on_data_exposure_logging: true,
         block_on_insecure_security_config: true,
+        block_on_unsafe_eval: true,
+        block_on_shell_injection: true,
+        block_on_prompt_injection_risk: true,
+        block_on_unsafe_exec: true,
+        block_on_unsafe_inner_html: true,
       },
     }),
   vcs: z
@@ -302,6 +317,11 @@ export function loadConfig(projectPath: string): DevAgentConfig {
           block_on_hardcoded_credential: true,
           block_on_data_exposure_logging: true,
           block_on_insecure_security_config: true,
+          block_on_unsafe_eval: true,
+          block_on_shell_injection: true,
+          block_on_prompt_injection_risk: true,
+          block_on_unsafe_exec: true,
+          block_on_unsafe_inner_html: true,
         },
       },
       vcs: {

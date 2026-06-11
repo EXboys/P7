@@ -2,10 +2,18 @@
 /**
  * Synchronous pre-check rule engine for diff-critic pipeline.
  *
- * Runs three deterministic rules on raw diff content in <5ms:
- *  1. scopeViolation   — changed files outside plan scope (warning)
- *  2. diffSizeAnomaly  — actual diff lines >> estimated × multiplier (warning)
- *  3. securityRedFlag  — high-signal secret patterns (blocker)
+ * Runs 11 deterministic rules on raw diff content in <5ms:
+ *  1. scopeViolation              — changed files outside plan scope (warning)
+ *  2. diffSizeAnomaly             — actual diff lines >> estimated × multiplier (warning)
+ *  3. securityRedFlag             — high-signal secret patterns (blocker)
+ *  4. hardcodedCredential         — hardcoded credentials in AI-generated code (blocker)
+ *  5. unsafeEval                  — eval(), new Function(), setTimeout(string) calls (blocker)
+ *  6. shellInjection              — exec/spawn with template literal (blocker)
+ *  7. promptInjectionRisk         — dynamic interpolation in system prompt (warning)
+ *  8. dataExposureLogging         — sensitive data via verbose logging (warning)
+ *  9. unsafeExec                  — exec(), spawn(), shell:true, Bun.spawnSync() calls (blocker)
+ * 10. unsafeInnerHtml             — innerHTML=, dangerouslySetInnerHTML, v-html (warning)
+ * 11. insecureSecurityConfig      — insecure HTTP security header defaults (mixed)
  *
  * Only ambiguous cases escalate to the LLM evaluator, reducing token cost
  * and latency for clear violations.
@@ -29,6 +37,11 @@ export interface PreCheckConfig {
   block_on_hardcoded_credential: boolean;
   block_on_data_exposure_logging: boolean;
   block_on_insecure_security_config: boolean;
+  block_on_unsafe_eval: boolean;
+  block_on_shell_injection: boolean;
+  block_on_prompt_injection_risk: boolean;
+  block_on_unsafe_exec: boolean;
+  block_on_unsafe_inner_html: boolean;
 }
 
 /** A single finding produced by one deterministic rule. */
@@ -66,6 +79,11 @@ export const DEFAULT_PRE_CHECK_CONFIG: PreCheckConfig = {
   block_on_hardcoded_credential: true,
   block_on_data_exposure_logging: true,
   block_on_insecure_security_config: true,
+  block_on_unsafe_eval: true,
+  block_on_shell_injection: true,
+  block_on_prompt_injection_risk: true,
+  block_on_unsafe_exec: true,
+  block_on_unsafe_inner_html: true,
 };
 
 /** Default multiplier applied when checking diff size against estimated lines. */
@@ -89,6 +107,43 @@ const SECRET_PATTERNS: { pattern: RegExp; label: string }[] = [
   { pattern: /BEGIN\s+(RSA|EC|DSA|OPENSSH)\s+PRIVATE\s+KEY/g, label: "Private key block" },
   { pattern: /\bgh[opu]_[A-Za-z0-9]{36}\b/g, label: "GitHub token" },
   { pattern: /\bghs_[A-Za-z0-9]{36}\b/g, label: "GitHub server-to-server token" },
+];
+
+/* ── Unsafe eval patterns ── */
+
+const UNSAFE_EVAL_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\beval\s*\(/gm, label: "eval() call" },
+  { pattern: /\bnew\s+Function\s*\(/gm, label: "new Function() call" },
+  { pattern: /\bsetTimeout\s*\(\s*["'`]/gm, label: "setTimeout(string) call — eval-like" },
+];
+
+/* ── Shell injection patterns ── */
+
+const SHELL_INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\b(exec|execSync|execFile|execFileSync)\s*\(\s*`/gm, label: "exec/execSync/execFile with template literal" },
+];
+
+/* ── Unsafe exec patterns ── */
+
+const UNSAFE_EXEC_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\b(exec|execSync)\s*\(/g, label: "exec/execSync() call" },
+  { pattern: /\bspawn(?:Sync)?\s*\(/g, label: "spawn/spawnSync() call" },
+  { pattern: /shell\s*:\s*true/g, label: "shell:true in spawn options" },
+  { pattern: /\bBun\.spawnSync\s*\(/g, label: "Bun.spawnSync() call" },
+];
+
+/* ── Prompt injection patterns ── */
+
+const PROMPT_INJECTION_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\bsystem\s*[=:]\s*`[^`]*\$\{/gm, label: "dynamic interpolation in system prompt assignment" },
+];
+
+/* ── Unsafe innerHTML patterns ── */
+
+const UNSAFE_INNER_HTML_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\.innerHTML\s*=/g, label: ".innerHTML assignment" },
+  { pattern: /\bdangerouslySetInnerHTML\b/g, label: "React dangerouslySetInnerHTML" },
+  { pattern: /\bv-html\s*=/g, label: "Vue v-html directive" },
 ];
 
 /* ──────────────────────────────────────────────────────────────────────────────
@@ -366,7 +421,37 @@ export function hardcodedCredential(diffContent: string): PreCheckFinding[] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
- * Rule 5 — Sensitive data exposure via verbose logging
+ * Rule 5 — Unsafe eval
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect eval() and new Function() calls in the diff.
+ *
+ * These patterns are commonly associated with code injection and dynamic code
+ * evaluation risks. Both are treated as blockers to prevent accidental or
+ * purposeful introduction of unsafe dynamic code execution.
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no unsafe eval patterns detected.
+ */
+export function unsafeEval(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of UNSAFE_EVAL_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "unsafe_eval",
+        severity: "blocker",
+        message: `Unsafe eval pattern detected: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 6 — Shell injection
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -399,7 +484,134 @@ export function dataExposureLogging(diffContent: string): PreCheckFinding[] {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
- * Rule 6 — Insecure security header defaults
+ * Rule 6 — Shell injection
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect exec/execSync calls with template literals in the diff.
+ *
+ * Template literals passed to shell execution functions (exec, execSync, etc.)
+ * can lead to command injection when the template contains interpolated user
+ * input. Blocker severity prevents accidental shell injection vectors.
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no shell injection patterns detected.
+ */
+export function shellInjection(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of SHELL_INJECTION_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "shell_injection",
+        severity: "blocker",
+        message: `Shell injection risk: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 7 — Prompt injection risk
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect dynamic interpolation in system prompt assignments.
+ *
+ * Template literals with interpolation in system prompt assignments can
+ * introduce prompt injection vulnerabilities when user-controlled content
+ * is embedded. Warning severity as this is a heuristic — some interpolations
+ * may be safe (e.g. controlled role names, version strings).
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no prompt injection patterns detected.
+ */
+export function promptInjectionRisk(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of PROMPT_INJECTION_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "prompt_injection_risk",
+        severity: "warning",
+        message: `Prompt injection risk: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 9 — Unsafe exec
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect exec(), spawn(), shell:true, and Bun.spawnSync() calls in the diff.
+ *
+ * These patterns represent direct OS command execution and subprocess spawning.
+ * Unlike shellInjection (which catches template-literal-based injection vectors),
+ * this is a broader check flagging ANY usage of these APIs — useful for catching
+ * GenAI-generated code that introduces unexpected subprocess calls (e.g. Meta AI
+ * chatbot abuse where exec() was used for API key exfiltration).
+ *
+ * Blocker severity prevents accidental introduction of OS command execution
+ * vectors in reviewed code.
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no unsafe exec patterns detected.
+ */
+export function unsafeExec(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of UNSAFE_EXEC_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "unsafe_exec",
+        severity: "blocker",
+        message: `Unsafe exec pattern detected: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 10 — Unsafe innerHTML
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Detect .innerHTML assignments, dangerouslySetInnerHTML, and v-html usage.
+ *
+ * These patterns introduce XSS vulnerabilities when user-controlled content
+ * is interpolated into raw HTML. Warning severity because some usages may be
+ * safe (e.g. trusted content, sanitized input) — flagged for LLM review
+ * rather than automatic blocking.
+ *
+ * @param diffContent — Raw unified diff output.
+ * @returns Findings array — empty if no unsafe innerHTML patterns detected.
+ */
+export function unsafeInnerHtml(diffContent: string): PreCheckFinding[] {
+  const findings: PreCheckFinding[] = [];
+  for (const { pattern, label } of UNSAFE_INNER_HTML_PATTERNS) {
+    const matches = diffContent.match(pattern);
+    if (matches && matches.length > 0) {
+      findings.push({
+        rule: "unsafe_inner_html",
+        severity: "warning",
+        message: `Unsafe innerHTML pattern detected: ${label}`,
+        detail: `${matches.length} occurrence(s)`,
+      });
+    }
+  }
+  return findings;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * Rule 11 — Insecure security header defaults
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -432,15 +644,20 @@ export function insecureSecurityConfig(diffContent: string): PreCheckFinding[] {
  * ──────────────────────────────────────────────────────────────────────────── */
 
 /**
- * Run all six deterministic pre-check rules against a raw diff.
+ * Run all 11 deterministic pre-check rules against a raw diff.
  *
  * Evaluation order:
- *  1. Scope violation          (warning)  — files outside plan scope
- *  2. Diff size anomaly        (warning)  — lines >> estimate × multiplier
- *  3. Security red flag        (blocker)  — secret patterns in diff
- *  4. Hardcoded credential     (blocker)  — credentials in AI-generated code
- *  5. Data exposure logging    (warning)  — sensitive data via verbose logging
- *  6. Insecure security config (mixed)    — insecure HTTP header defaults
+ *  1. Scope violation              (warning)  — files outside plan scope
+ *  2. Diff size anomaly            (warning)  — lines >> estimate × multiplier
+ *  3. Security red flag            (blocker)  — secret patterns in diff
+ *  4. Hardcoded credential         (blocker)  — credentials in AI-generated code
+ *  5. Unsafe eval                  (blocker)  — eval(), new Function(), setTimeout(string) in diff
+ *  6. Shell injection              (blocker)  — exec/spawn with template literal
+ *  7. Prompt injection risk        (warning)  — dynamic interpolation in system prompt
+ *  8. Data exposure logging        (warning)  — sensitive data via verbose logging
+ *  9. Unsafe exec                  (blocker)  — exec(), spawn(), shell:true, Bun.spawnSync() in diff
+ * 10. Unsafe innerHTML             (warning)  — innerHTML=, dangerouslySetInnerHTML, v-html in diff
+ * 11. Insecure security config     (mixed)    — insecure HTTP security header defaults
  *
  * The result's `ok` is `true` only when no blocker findings exist.
  * Findings include both blocker and warning severities for complete
@@ -483,12 +700,37 @@ export function runPreCheck(
     findings.push(...hardcodedCredential(diffContent));
   }
 
-  // Rule 5: data exposure logging
+  // Rule 5: unsafe eval patterns
+  if (cfg.block_on_unsafe_eval) {
+    findings.push(...unsafeEval(diffContent));
+  }
+
+  // Rule 6: shell injection patterns
+  if (cfg.block_on_shell_injection) {
+    findings.push(...shellInjection(diffContent));
+  }
+
+  // Rule 7: prompt injection risk
+  if (cfg.block_on_prompt_injection_risk) {
+    findings.push(...promptInjectionRisk(diffContent));
+  }
+
+  // Rule 8: data exposure logging
   if (cfg.block_on_data_exposure_logging) {
     findings.push(...dataExposureLogging(diffContent));
   }
 
-  // Rule 6: insecure security config
+  // Rule 9: unsafe exec patterns (broader than shell_injection — catches any exec/spawn)
+  if (cfg.block_on_unsafe_exec) {
+    findings.push(...unsafeExec(diffContent));
+  }
+
+  // Rule 10: unsafe innerHTML patterns
+  if (cfg.block_on_unsafe_inner_html) {
+    findings.push(...unsafeInnerHtml(diffContent));
+  }
+
+  // Rule 11: insecure security config
   if (cfg.block_on_insecure_security_config) {
     findings.push(...insecureSecurityConfig(diffContent));
   }
