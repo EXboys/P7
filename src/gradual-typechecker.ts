@@ -49,6 +49,32 @@ export function parseGradualTypeFindings(text: string): DiffCriticFinding[] {
 }
 
 /**
+ * Gate decision returned by evaluateGradualTypeGate.
+ * - blocked: true when any finding has severity 'blocker'
+ * - reasons: array of blocker finding messages
+ */
+export interface GateDecision {
+  blocked: boolean;
+  reasons: string[];
+}
+
+/**
+ * Pure function: decides whether the gradual type-check gate blocks the diff.
+ * Blocked = any finding with severity 'blocker'.
+ * Reasons = message text of all blocker findings.
+ *
+ * @param findings - Structured findings from parseGradualTypeFindings or any source
+ * @returns GateDecision with blocked flag and blocker message reasons
+ */
+export function evaluateGradualTypeGate(findings: DiffCriticFinding[]): GateDecision {
+  const blockers = findings.filter((f) => f.severity === "blocker");
+  return {
+    blocked: blockers.length > 0,
+    reasons: blockers.map((f) => f.message),
+  };
+}
+
+/**
  * 审查 diff 中的渐进类型违规。
  *
  * 读取 prompts/gradual-typecheck.md 作为系统提示，将 diffStat 插值到用户消息中，
