@@ -19,8 +19,10 @@ function buildHandler(
   allowedFiles: string[],
   cwd: string,
   onDeny?: (reason: string) => void,
+  extraReadPaths?: string[],
+  extraProjectPaths?: string[],
 ) {
-  const hook = buildPreToolHook(new Set(allowedFiles), cwd, onDeny);
+  const hook = buildPreToolHook(new Set(allowedFiles), cwd, onDeny, extraReadPaths, extraProjectPaths);
   return hook.PreToolUse[0].hooks[0];
 }
 
@@ -234,6 +236,59 @@ describe("buildPreToolHook — filesystem whitelist", () => {
       expect(r.hookSpecificOutput.permissionDecisionReason).toMatch(/path traversal/i);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Bash: allows ../ when path resolves within extraProjectPaths", async () => {
+    const root = tempRoot("wt-bash-ext-allow");
+    const extraRoot = tempRoot("extra-bash-allow");
+    try {
+      writeFileSync(join(extraRoot, "data.json"), "{}");
+      const extraDirName = extraRoot.split("/").pop()!;
+      const h = buildHandler([], root, undefined, [], [extraRoot]);
+      const r = await h({
+        tool_name: "Bash",
+        tool_input: { command: `cat ../${extraDirName}/data.json` },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(extraRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("Write: allows files within extraProjectPaths", async () => {
+    const root = tempRoot("wt-write-ext");
+    const extraRoot = tempRoot("extra-write-allow");
+    try {
+      mkdirSync(extraRoot, { recursive: true });
+      const h = buildHandler([], root, undefined, [], [extraRoot]);
+      const r = await h({
+        tool_name: "Write",
+        tool_input: { file_path: join(extraRoot, "newfile.ts") },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(extraRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("Edit: allows files within extraProjectPaths", async () => {
+    const root = tempRoot("wt-edit-ext");
+    const extraRoot = tempRoot("extra-edit-allow");
+    try {
+      mkdirSync(extraRoot, { recursive: true });
+      writeFileSync(join(extraRoot, "existing.ts"), "// existing");
+      const h = buildHandler([], root, undefined, [], [extraRoot]);
+      const r = await h({
+        tool_name: "Edit",
+        tool_input: { file_path: join(extraRoot, "existing.ts") },
+      });
+      expect(r.hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(extraRoot, { recursive: true, force: true });
     }
   });
 });

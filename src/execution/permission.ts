@@ -37,8 +37,26 @@ function isPathWithinWorktree(filePath: string, worktreeRoot: string): boolean {
   return resolvedPath === rootResolved || resolvedPath.startsWith(root);
 }
 
-function hasBashPathTraversal(command: string, worktreeRoot: string): boolean {
-  if (/(?:^|\s+)(\.\.\/)/.test(command)) return true;
+function hasBashPathTraversal(
+  command: string,
+  worktreeRoot: string,
+  extraAllowedBashPrefixes?: string[],
+): boolean {
+  if (/(?:^|\s+)(\.\.\/)/.test(command)) {
+    if (extraAllowedBashPrefixes && extraAllowedBashPrefixes.length > 0) {
+      const extraMatch = command.match(/\.\.[\/\w.\-]+/) || command.match(/\.\.\/?/);
+      if (extraMatch) {
+        const fullPath = resolve(worktreeRoot, extraMatch[0]);
+        const isAllowed = extraAllowedBashPrefixes.some((prefix) => {
+          const resolvedPrefix = resolve(prefix);
+          const normalizedPrefix = resolvedPrefix.endsWith("/") ? resolvedPrefix : resolvedPrefix + "/";
+          return fullPath === resolvedPrefix || fullPath.startsWith(normalizedPrefix);
+        });
+        if (isAllowed) return false;
+      }
+    }
+    return true;
+  }
   if (/(?:^|\s+)(~)(?:\/|\s+|$)/.test(command)) return true;
   if (/\$HOME\b/.test(command)) return true;
   const sensitivePrefixes = [
@@ -61,8 +79,16 @@ export function buildPreToolHook(
   cwd: string,
   onDeny?: (reason: string) => void,
   extraReadPaths?: string[],
+  extraProjectPaths?: string[],
 ) {
   const resolvedExtraReadPaths = (extraReadPaths ?? []).map((p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  });
+  const resolvedExtraProjectPaths = (extraProjectPaths ?? []).map((p) => {
     try {
       return realpathSync(p);
     } catch {
@@ -103,7 +129,7 @@ export function buildPreToolHook(
                   "Executor Bash may run inspection/tests only; host handles file mutation and git operations",
                 );
               }
-              if (hasBashPathTraversal(command, cwd)) {
+              if (hasBashPathTraversal(command, cwd, resolvedExtraProjectPaths)) {
                 return deny("Path traversal detected in Bash command — filesystem boundary enforced");
               }
               return allow();
@@ -112,9 +138,10 @@ export function buildPreToolHook(
             const path = input.tool_input?.file_path ?? input.tool_input?.path;
             if (!path) return deny("Missing file path in tool input");
             if (!isPathWithinWorktree(path, cwd)) {
-              if (input.tool_name === "Read" && resolvedExtraReadPaths.length > 0) {
+              const allExtraPaths = [...resolvedExtraReadPaths, ...resolvedExtraProjectPaths];
+              if (allExtraPaths.length > 0) {
                 const absPath = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
-                const withinExtra = resolvedExtraReadPaths.some(
+                const withinExtra = allExtraPaths.some(
                   (ep) => absPath === ep || absPath.startsWith(ep.endsWith("/") ? ep : ep + "/"),
                 );
                 if (withinExtra) return allow();
